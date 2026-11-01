@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 const SW: f32 = 520.0;
 /// Opening height; the window then fits itself to its rows.
 const SH: f32 = 470.0;
-const BROWSERS: [&str; 6] = ["chrome", "edge", "brave", "opera", "vivaldi", "firefox"];
+const BROWSERS: &[&str] = crate::platform::HOST_BROWSERS;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Part {
@@ -284,8 +284,8 @@ pub fn run() -> eframe::Result<()> {
         .with_title("Get ready — Download Craft")
         .with_inner_size([SW, SH])
         .with_resizable(false)
-        .with_decorations(false)
-        .with_transparent(true);
+        .with_decorations(crate::platform::system_title_bar())
+        .with_transparent(!crate::platform::system_title_bar());
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }

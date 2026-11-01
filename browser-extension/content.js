@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.9.12";
+  const EXT_VER = "0.9.13";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -684,12 +684,11 @@
       seen.add(url);
       out.push({ url, kind, dist: dist == null ? null : dist, w: w || 0, h: h || 0 });
     };
-    // 1. The player's own poster.
+    // 1. The player's own poster. Other videos' posters never count: in a
+    //    post window the feed reel behind it is still mounted, and its
+    //    poster won over the post's own picture.
     try {
-      for (const v of document.querySelectorAll("video")) {
-        const p = v.getAttribute("poster") || v.poster || "";
-        add(p, 1, v === video ? 0 : fbRectDist(v.getBoundingClientRect(), video), 0, 0);
-      }
+      if (video) add(video.getAttribute("poster") || video.poster || "", 1, 0, 0, 0);
     } catch (e) { /* ignore */ }
     // 2. Images and CSS backdrops beside the player (Facebook paints the reel
     //    poster as a background-image on a div when there is no <img>).
@@ -702,6 +701,9 @@
         const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
         if (!r || r.width < 80 || r.height < 60) continue;
         const dist = fbRectDist(r, video);
+        // Only what sits on the player itself: avatars and neighbouring
+        // posts' pictures beside it are not this video.
+        if (dist !== 0) continue;
         if (el.tagName === "IMG") {
           const u = el.currentSrc || el.src || el.getAttribute("data-src") || "";
           add(u, 0.8, dist, el.naturalWidth || r.width, el.naturalHeight || r.height);
@@ -716,7 +718,7 @@
     // 3. Page metas, then 4. whatever the embedded JSON happens to hold. Both
     //    describe the page that loaded first, so only while it is still this
     //    page: after a reel swap they are the previous reel's poster.
-    if (!current) return out;
+    if (!current || fbInOverlay(video)) return out;
     add(fbMeta("og:image:secure_url"), 0.6, null, 0, 0);
     add(fbMeta("og:image"), 0.6, null, 0, 0);
     add(fbMeta("twitter:image"), 0.5, null, 0, 0);
@@ -724,6 +726,24 @@
       add(fbJsonUrlNear(html, k), 0.4, null, 0, 0);
     }
     return out;
+  }
+  // The video sits in a post window or other layer opened over the page:
+  // the page's metas and JSON then describe the page underneath.
+  function fbInOverlay(video) {
+    try { return !!(video && video.closest && video.closest('[role="dialog"],[aria-modal="true"]')); } catch (e) { return false; }
+  }
+  // A still of what the player is showing right now (or its first frame):
+  // the one picture that is certainly this video. Null when the browser
+  // will not hand the pixels over (a cross-origin, tainted video).
+  function fbFrame(video) {
+    try {
+      if (!video || video.readyState < 2 || !(video.videoWidth > 0)) return "";
+      const w = 320, h = Math.max(1, Math.round(320 * video.videoHeight / video.videoWidth));
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(video, 0, 0, w, h);
+      return c.toDataURL("image/jpeg", 0.8);
+    } catch (e) { return ""; }
   }
   function fbJsonUrls(html) {
     const out = {};
@@ -770,6 +790,8 @@
     if (/^(see posts, photos and more|log in to facebook|content not available|this content isn)/.test(low)) return false;
     if (/^♪/.test(t) || /original audio$/i.test(t)) return false;
     if (/(^|\s)[·•]\s*follow(ed|ing)?$/i.test(t)) return false;
+    // A post's byline ("AI content · Name", "2h · Shared with Public").
+    if (/^[^·•]{0,40}\s[·•]\s/.test(t) && t.length < 90) return false;
     if (/^\d[\d.,\s]*[km]?$/i.test(t)) return false;
     return true;
   }
@@ -824,8 +846,17 @@
   // near the player (author line, audio line and counters lose).
   function fbDomCaption(video) {
     try {
+      // The post (or window) that holds this video, not the whole page:
+      // the feed behind a post window and its sidebars name other things.
+      const scope = (video && video.closest && video.closest('[role="dialog"],[role="article"],[aria-posinset]')) || document;
+      // Facebook marks the post's own text: that is the caption when present.
+      const msg = scope.querySelector && scope.querySelector('[data-ad-preview="message"],[data-ad-comet-preview="message"]');
+      if (msg) {
+        const t = fbCleanCaption(msg.textContent);
+        if (fbCaptionUsable(t)) return t;
+      }
       const sel = 'div[dir="auto"], span[dir="auto"], h1, h2, h3';
-      const nodes = document.querySelectorAll(sel);
+      const nodes = scope.querySelectorAll(sel);
       const v = video && video.getBoundingClientRect ? video.getBoundingClientRect() : null;
       let best = "";
       let bs = 0;
@@ -1077,7 +1108,14 @@
       current,
       since: fbReelAt,
       key: fbReelKey,
-      thumb: fbPickThumb(fbThumbCandidates(html, video, current)),
+      // The player's own poster, then a frame of the video itself, then
+      // pictures on the player; the page's own image last.
+      thumb: (() => {
+        let own = "";
+        try { own = video && (video.getAttribute("poster") || video.poster) || ""; } catch (e) { own = ""; }
+        if (fbThumbOk(own)) return own;
+        return fbFrame(video) || fbPickThumb(fbThumbCandidates(html, video, current));
+      })(),
     };
   }
   function fbQuality(w, h, isHd) {
@@ -2144,7 +2182,8 @@
       + "display:flex;align-items:center;justify-content:center;background:" + T.thumbBg + ";color:#fff;";
     const play = svgIcon(14, ICON_PLAY, 0);
     play.style.opacity = ".85";
-    if (s.thumb && /^https?:\/\//i.test(s.thumb)) {
+    // An https picture, or a frame grabbed from the player (data:image/…).
+    if (s.thumb && (/^https?:\/\//i.test(s.thumb) || /^data:image\/(jpeg|png|webp);base64,/i.test(s.thumb))) {
       const im = document.createElement("img");
       im.src = s.thumb;
       im.loading = "lazy";
@@ -2516,16 +2555,26 @@
       // Mostly scrolled away = not the video being watched: its bar would be
       // pinned to the window edge, over the page.
       const visH=Math.min(r.bottom,vh)-Math.max(r.top,0), visW=Math.min(r.right,vw)-Math.max(r.left,0);
-      const top=Math.max(8,Math.min(vh-32,r.top+8));
-      // Anchored by its right edge, 8px inside the player's: pointing at it
-      // grows it to the left, into the player, never out past its edge.
-      const right=Math.max(8,vw-r.right+8);
-      // Hidden while a header pinned to the page (Facebook's top bar, a
-      // site's sticky menu) covers that spot, as IDM's does: drawn above
-      // everything, it used to float on top of the header after scrolling.
-      const shown=r.width>=120 && r.height>=70 && visW>0 && visH>=Math.min(r.height*0.35,200)
+      // On the player's top edge, outside the video (IDM's place): nothing
+      // of the picture is covered. Only when the player touches the top of
+      // the window does it go just inside the corner instead.
+      // Anchored by its right edge to the player's: pointing at it grows it
+      // to the left, along the player, never out past its edge.
+      const right=Math.max(8,vw-r.right);
+      // Where it goes: on the player's top edge, outside the video (IDM's
+      // place); when a header pinned to the page (Facebook's top bar, a
+      // site's sticky menu) sits there, just inside the player's corner;
+      // and when that is covered too, down the player until clear of it.
+      // It moves out of the header's way instead of hiding behind it.
+      const free=(y)=>y>=8 && y<=vh-32 && !coveredByPinned(vw-right-12,y+15,video,host);
+      let top=-1;
+      const tries=[r.top-34,r.top+8];
+      for(let y=r.top+24;y<=Math.min(r.bottom-40,r.top+240);y+=16)tries.push(y);
+      for(const y of tries){if(free(y)){top=y;break;}}
+      const shown=top>=0 && r.width>=120 && r.height>=70 && visW>0 && visH>=Math.min(r.height*0.35,200)
         && (!fbActive || video===fbActive)
-        && !coveredByPinned(vw-right-12,top+15,video,host);
+        && !videoOccluded(video,host);
+      if(top<0)top=Math.max(8,Math.min(vh-32,r.top+8));
       host.style.display=shown ? "block" : "none";
       if(activeBarDrag===host || applySavedBarPosition(host))return;
       host.style.position="fixed";host.style.left="auto";host.style.bottom="auto";
@@ -2570,6 +2619,48 @@
           if (n.contains(video)) return false; // the player's own overlay
           const pos = getComputedStyle(n).position;
           if (pos === "fixed" || pos === "sticky") return true;
+        }
+        return false;
+      }
+    } catch (e) { /* best effort */ }
+    return false;
+  }
+  // The video's player: its ancestors while they stay about the video's size
+  // (Facebook and most players lay their controls over the video in there).
+  function playerHull(video) {
+    let hull = video;
+    try {
+      const vr = video.getBoundingClientRect(), area = Math.max(1, vr.width * vr.height);
+      for (let n = video.parentElement; n && n !== document.body; n = n.parentElement) {
+        const r = n.getBoundingClientRect();
+        if (r.width * r.height > area * 1.6) break;
+        hull = n;
+      }
+    } catch (e) { /* the video alone */ }
+    return hull;
+  }
+  // Is the video itself hidden under something that is not its player: a
+  // post dialog opened over the feed, a large modal, a lightbox? Then its bar
+  // would float over that layer (a Facebook post's comments). Checked just
+  // inside the video's top-right corner, where the bar points.
+  function videoOccluded(video, self) {
+    try {
+      const r = visibleRect(video);
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const x = Math.min(vw - 2, Math.max(1, r.right - 14)), y = Math.min(vh - 2, Math.max(1, r.top + 14));
+      const hull = playerHull(video);
+      for (const el of document.elementsFromPoint(x, y)) {
+        if (el === self || (el.closest && el.closest("[data-dc-bar],[data-dc-panel]"))) continue;
+        if (el === video || el.contains(video) || hull.contains(el)) return false;
+        // Only a separate floating layer hides the video: the nearest fixed
+        // or dialog ancestor of what is on top, when that layer does not
+        // hold this video. Overlays in the video's own layer (Facebook draws
+        // wide ones over a post dialog's video) never count.
+        for (let n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+          const role = n.getAttribute && n.getAttribute("role");
+          const layer = role === "dialog" || (n.getAttribute && n.getAttribute("aria-modal") === "true")
+            || n.tagName === "DIALOG" || getComputedStyle(n).position === "fixed";
+          if (layer) return !n.contains(video);
         }
         return false;
       }

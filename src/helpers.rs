@@ -62,7 +62,7 @@ fn check_tool(path: &Path, name: &str) -> bool {
     }
     let mut c = std::process::Command::new(path);
     c.arg("-version");
-    crate::platform::version_output(c)
+    crate::platform::first_run_output(c)
         .map(|o| {
             o.status.success()
                 && String::from_utf8_lossy(&o.stdout).starts_with(&format!("{name} version "))

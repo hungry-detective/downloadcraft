@@ -112,11 +112,12 @@ pub const DARK_PAL: Palette = Palette {
     // A step brighter than `bg`, as light mode's white cards are on its
     // grey: the sidebar and the list read as panels on the window.
     central_bg: egui::Color32::from_rgb(25, 26, 35),
-    card_bd: egui::Color32::from_rgb(35, 36, 48),
+    card_bd: egui::Color32::from_rgb(46, 48, 64),
     primary: egui::Color32::from_rgb(124, 92, 252),
     secondary: egui::Color32::from_rgb(184, 93, 255),
-    txt: egui::Color32::from_rgb(230, 230, 240),
-    dim: egui::Color32::from_rgb(140, 142, 160),
+    txt: egui::Color32::from_rgb(238, 238, 246),
+    // Secondary text at 7:1 on the panels (was 140,142,160 — about 5:1).
+    dim: egui::Color32::from_rgb(168, 171, 190),
     success: egui::Color32::from_rgb(76, 217, 100),
     warning: egui::Color32::from_rgb(255, 159, 10),
     error: egui::Color32::from_rgb(255, 69, 58),
@@ -160,11 +161,12 @@ pub const LIGHT_PAL: Palette = Palette {
     surface_lt: egui::Color32::from_rgb(0xE6, 0xE9, 0xF2),
     header_bg: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
     central_bg: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
-    card_bd: egui::Color32::from_rgb(0xD5, 0xD9, 0xE6),
+    card_bd: egui::Color32::from_rgb(0xC8, 0xCD, 0xDC),
     primary: egui::Color32::from_rgb(124, 92, 252),
     secondary: egui::Color32::from_rgb(154, 62, 226),
     txt: egui::Color32::from_rgb(0x20, 0x24, 0x33),
-    dim: egui::Color32::from_rgb(0x5F, 0x67, 0x78),
+    // Secondary text at 7:1 on white (was 5F6778, about 5.6:1).
+    dim: egui::Color32::from_rgb(0x4A, 0x51, 0x60),
     success: egui::Color32::from_rgb(0x1A, 0xA9, 0x4B),
     warning: egui::Color32::from_rgb(0xB4, 0x6A, 0x05),
     error: egui::Color32::from_rgb(0xD9, 0x2B, 0x1E),
@@ -1608,6 +1610,105 @@ pub(crate) fn line_icon(p: &egui::Painter, center: egui::Pos2, size: f32, key: &
             circle(8.0, 8.0, 6.2);
             line(&[(8.0, 4.8), (8.0, 8.0), (10.4, 9.6)]);
         }
+        // ---- Settings rail (same strokes, so the two windows match) ----
+        "Appearance" => {
+            // A palette: rounded blob with a thumb hole and three paint dots.
+            closed(&[(8.0, 1.8), (12.6, 3.4), (14.4, 7.6), (12.8, 11.2), (10.2, 11.2), (9.2, 12.6), (9.6, 14.2), (6.6, 14.3), (2.8, 12.0), (1.6, 7.8), (3.4, 3.6)]);
+            circle(5.0, 7.0, 1.0);
+            circle(8.0, 4.6, 1.0);
+            circle(11.2, 6.4, 1.0);
+        }
+        "Engine" => {
+            closed(&[(9.5, 1.5), (3.5, 9.0), (7.8, 9.0), (6.5, 14.5), (12.5, 6.8), (8.2, 6.8)]);
+        }
+        "Plugins" => {
+            // A puzzle piece: one outline with a knob on top and on the right.
+            let mut pts: Vec<(f32, f32)> = vec![(2.0, 5.0), (5.6, 5.0)];
+            let knob = |pts: &mut Vec<(f32, f32)>, cx: f32, cy: f32, a0: f32, a1: f32| {
+                for i in 0..=10 {
+                    let a = (a0 + (a1 - a0) * i as f32 / 10.0).to_radians();
+                    pts.push((cx + 1.75 * a.cos(), cy + 1.75 * a.sin()));
+                }
+            };
+            knob(&mut pts, 7.35, 4.2, 150.0, 390.0);
+            pts.extend([(9.1, 5.0), (12.2, 5.0), (12.2, 7.4)]);
+            knob(&mut pts, 13.0, 9.15, 240.0, 480.0);
+            pts.extend([(12.2, 10.9), (12.2, 14.0), (2.0, 14.0)]);
+            closed(&pts);
+        }
+        // ---- Plugins page cards ----
+        "ytdlp" => {
+            // A video with a download arrow under it.
+            rrect(1.5, 1.8, 14.5, 10.2, 2.0);
+            closed(&[(6.6, 4.0), (10.2, 6.0), (6.6, 8.0)]);
+            line(&[(8.0, 11.4), (8.0, 15.0)]);
+            line(&[(6.2, 13.3), (8.0, 15.0), (9.8, 13.3)]);
+        }
+        "ffmpeg" => {
+            // A film strip.
+            rrect(1.5, 2.5, 14.5, 13.5, 2.0);
+            line(&[(4.8, 2.5), (4.8, 13.5)]);
+            line(&[(11.2, 2.5), (11.2, 13.5)]);
+            line(&[(1.5, 8.0), (4.8, 8.0)]);
+            line(&[(11.2, 8.0), (14.5, 8.0)]);
+            line(&[(1.5, 5.2), (4.8, 5.2)]);
+            line(&[(11.2, 5.2), (14.5, 5.2)]);
+            line(&[(1.5, 10.8), (4.8, 10.8)]);
+            line(&[(11.2, 10.8), (14.5, 10.8)]);
+        }
+        "Chromium" => {
+            // Chrome / Edge / Brave / Opera: the ring, the hub and three spokes.
+            circle(8.0, 8.0, 6.3);
+            circle(8.0, 8.0, 2.5);
+            for a in [-90.0f32, 30.0, 150.0] {
+                let r = a.to_radians();
+                let (sx, sy) = (8.0 + 2.5 * r.cos(), 8.0 + 2.5 * r.sin());
+                let d = (a + 90.0).to_radians();
+                line(&[(sx, sy), (sx + 5.4 * d.cos(), sy + 5.4 * d.sin())]);
+            }
+        }
+        "Firefox" => {
+            // The fox curled round the globe: a ring open at the upper left,
+            // where its ear rises out of it, and its tail across the middle.
+            // A fox's head: two pointed ears, the face narrowing to the
+            // snout, two eyes. The logo's own swirl does not survive 16 px.
+            closed(&[(2.0, 2.2), (5.6, 5.0), (10.4, 5.0), (14.0, 2.2), (13.6, 8.4), (8.0, 14.2), (2.4, 8.4)]);
+            p.circle_filled(pt(5.9, 8.2), 0.95 * k, color);
+            p.circle_filled(pt(10.1, 8.2), 0.95 * k, color);
+            line(&[(6.8, 11.0), (8.0, 11.9), (9.2, 11.0)]);
+        }
+        "Browser" => {
+            circle(8.0, 8.0, 6.3);
+            line(&[(1.8, 8.0), (14.2, 8.0)]);
+            line(&[(8.0, 1.7), (5.6, 5.0), (5.2, 8.0), (5.6, 11.0), (8.0, 14.3)]);
+            line(&[(8.0, 1.7), (10.4, 5.0), (10.8, 8.0), (10.4, 11.0), (8.0, 14.3)]);
+        }
+        "Rules" => {
+            line(&[(2.0, 4.0), (14.0, 4.0)]);
+            line(&[(2.0, 8.0), (14.0, 8.0)]);
+            line(&[(2.0, 12.0), (14.0, 12.0)]);
+            p.circle_filled(pt(5.0, 4.0), 1.7 * k, color);
+            p.circle_filled(pt(10.5, 8.0), 1.7 * k, color);
+            p.circle_filled(pt(7.0, 12.0), 1.7 * k, color);
+        }
+        "Updates" => {
+            line(&[(13.2, 6.0), (12.0, 3.8), (9.6, 2.3), (6.6, 2.2), (3.8, 3.8), (2.3, 6.6), (2.4, 9.6)]);
+            line(&[(13.2, 2.4), (13.2, 6.0), (9.8, 6.0)]);
+            line(&[(2.8, 10.0), (4.0, 12.2), (6.4, 13.7), (9.4, 13.8), (12.2, 12.2), (13.7, 9.4), (13.6, 6.4)]);
+            line(&[(2.8, 13.6), (2.8, 10.0), (6.2, 10.0)]);
+        }
+        "Proxy" => {
+            // Two linked boxes: your machine and the relay.
+            rrect(1.5, 2.0, 7.0, 6.5, 1.2);
+            rrect(9.0, 9.5, 14.5, 14.0, 1.2);
+            line(&[(4.25, 6.5), (4.25, 11.75), (9.0, 11.75)]);
+            line(&[(7.0, 4.25), (11.75, 4.25), (11.75, 9.5)]);
+        }
+        "Sounds" => {
+            closed(&[(2.0, 6.0), (5.0, 6.0), (9.0, 2.5), (9.0, 13.5), (5.0, 10.0), (2.0, 10.0)]);
+            line(&[(11.2, 5.6), (12.0, 7.0), (12.0, 9.0), (11.2, 10.4)]);
+            line(&[(13.0, 3.6), (14.3, 6.0), (14.3, 10.0), (13.0, 12.4)]);
+        }
         _ => page(),
     }
 }
@@ -2073,6 +2174,15 @@ enum ZipMsg {
     Done(String),
 }
 
+/// A download the Add dialog runs in the background while it is open, in a
+/// private temporary folder; Download continues it as the real file.
+struct AddPreStart {
+    url: String,
+    shared: Arc<SharedState>,
+    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+    dest: std::path::PathBuf,
+}
+
 pub struct CraftApp {
     rt: Arc<tokio::runtime::Runtime>,
     downloads: Vec<DownloadItem>,
@@ -2087,6 +2197,12 @@ pub struct CraftApp {
     show_queues: bool,
     show_about: bool,
     add_url: String,
+    /// The name the dialog filled in by itself (from the link or the
+    /// server). While the name field still holds it, a new link renames it;
+    /// once the user types their own, it stays.
+    add_file_auto: String,
+    /// The download the Add dialog started while it is open (IDM's way).
+    add_pre: Option<AddPreStart>,
     add_dir: String,
     add_file: String,
     add_conns: usize,
@@ -2172,6 +2288,11 @@ pub struct CraftApp {
     extract_delete: bool,
     category_folders: bool,
     close_to_tray: bool,
+    /// The window kept the OS caption (`platform::system_title_bar`, read
+    /// once at launch): the OS owns drag, resize and the window buttons.
+    os_caption: bool,
+    /// Interface size (Settings → Appearance), as an egui zoom factor.
+    ui_scale: f32,
     /// Start with Windows (on by default); the Run entry follows this copy.
     start_with_windows: bool,
     /// Launched at sign-in: go to the tray as soon as the window exists.
@@ -2332,6 +2453,8 @@ impl CraftApp {
             show_queues: false,
             show_about: false,
             add_url: String::new(),
+            add_file_auto: String::new(),
+            add_pre: None,
             add_dir: dl_dir,
             add_file: String::new(),
             add_conns: 8,
@@ -2400,6 +2523,8 @@ impl CraftApp {
             // Closing the window tucks the app into the tray (IDM-style); the
             // tray's Exit is how you quit. The Tasks menu switches it off.
             close_to_tray: cfg!(windows),
+            os_caption: crate::platform::system_title_bar(),
+            ui_scale: 1.0,
             start_with_windows: cfg!(windows),
             start_hidden: crate::autostart::is_startup_launch(&std::env::args().collect::<Vec<_>>()),
             startup_frames: 0,
@@ -2498,7 +2623,7 @@ impl CraftApp {
         );
         // Zero-config browser integration: the native host always points
         // at this binary (silent unless something needed fixing).
-        for b in ["chrome", "edge", "brave", "opera", "vivaldi", "firefox"] {
+        for b in crate::platform::HOST_BROWSERS {
             match ensure_native_host(b) {
                 Ok(true) => app.push_log(format!("Browser host ready for {b}.")),
                 Err(e) => app.push_log(format!("Browser host ({b}) unavailable: {e}")),
@@ -2670,19 +2795,22 @@ impl CraftApp {
         }
     }
 
-    /// Pop a standalone IDM-style progress window for one download.
-    fn spawn_progress(id: u64) {
-        let Ok(exe) = crate::platform::launch_path() else {
-            return;
-        };
-        let mut cmd = std::process::Command::new(exe);
-        cmd.arg("--progress").arg(id.to_string());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x00000008);
-        }
-        let _ = cmd.spawn();
+    /// Pop a standalone IDM-style progress window for one download. It is
+    /// this program started again; when that fails (the executable was moved
+    /// or replaced while running) the reason goes to the log instead of the
+    /// window silently never appearing.
+    fn spawn_progress(id: u64) -> std::io::Result<()> {
+        let started = crate::platform::launch_path().and_then(|exe| {
+            let mut cmd = std::process::Command::new(exe);
+            cmd.arg("--progress").arg(id.to_string());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x00000008);
+            }
+            cmd.spawn()
+        });
+        started.map(|_| ())
     }
 
     /// Pop the standalone "Download complete" dialog for one finished download.
@@ -2841,6 +2969,10 @@ impl CraftApp {
         if let Some(path) = Self::ui_state_path() {
             if let Ok(data) = std::fs::read_to_string(path) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                    self.ui_scale = v
+                        .get("ui_scale")
+                        .and_then(|x| x.as_u64())
+                        .map_or(1.0, |pct| (pct.clamp(80, 175) as f32) / 100.0);
                     if let Some(arr) = v.get("columns").and_then(|c| c.as_array()) {
                         let mut order = Vec::new();
                         for item in arr {
@@ -3248,7 +3380,7 @@ impl CraftApp {
                 self.push_log(format!("Moved {} row(s) to queue {}.", ids.len(), if name.is_empty() { "Main" } else { &name }));
             }
             RowAct::ZipPick => self.open_zip_pick(id),
-            RowAct::ShowProgress => Self::spawn_progress(id),
+            RowAct::ShowProgress => { let _ = Self::spawn_progress(id); }
             RowAct::Extract => {
                 if let Some(path) = self.downloads.iter().find(|d| d.id == id).map(|d| d.dest_path()) {
                     self.extract_archive(&path, true);
@@ -3774,7 +3906,7 @@ impl CraftApp {
     /// the straight edges, and only the first matching zone is acted on.
     fn handle_window_edges(&mut self, ctx: &egui::Context) {
         use egui::viewport::ResizeDirection as Dir;
-        if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+        if self.os_caption || ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
             return;
         }
         let Some(q) = self.man.pos() else {
@@ -4332,7 +4464,9 @@ impl CraftApp {
         // Resume, Start Queue, retry-all). The window claims a per-download
         // slot, so a start while one is already open never stacks duplicates,
         // while a window the user closed comes straight back on Retry.
-        Self::spawn_progress(id);
+        if let Err(e) = Self::spawn_progress(id) {
+            self.push_log(format!("Could not open the progress window for #{id}: {e}"));
+        }
         // The live limit is the task's only cap: make it current first.
         self.refresh_speed_limit();
         let item = self.downloads[idx].clone();
@@ -4378,6 +4512,7 @@ impl CraftApp {
             mirrors: item.mirrors.clone(),
             http2: false,
             any_ip: false,
+            impersonate: false,
             digest: Default::default(),
         };
         let shared2 = shared.clone();
@@ -4563,7 +4698,7 @@ impl CraftApp {
             }
             // The window may have been closed while the transfer sat paused:
             // reopening is cheap and a live one is left alone by its slot.
-            Self::spawn_progress(id);
+            let _ = Self::spawn_progress(id);
             self.push_log(format!("Resumed #{id}"));
             self.save_queue();
         } else if let Some(d) = self.downloads.iter().find(|d| d.id == id) {
@@ -4881,6 +5016,7 @@ impl CraftApp {
             self.resume(id);
         }
         self.fill_next();
+        crate::platform::play_event("queue_start");
         self.push_log("Queue started.");
     }
 
@@ -5156,9 +5292,7 @@ impl CraftApp {
                             d.total_bytes = None;
                         }
                         if !repaired {
-                            if self.sounds {
-                                crate::platform::play_sound(false);
-                            }
+                            crate::platform::play_event("failed");
                             notify(
                                 "Download Craft — download failed",
                                 &format!("#{id}: {reason}"),
@@ -5214,9 +5348,7 @@ impl CraftApp {
         notify("Download Craft — download finished", name);
         crate::model::record_finished_bytes(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
         self.stats_at = Instant::now().checked_sub(std::time::Duration::from_secs(60)).unwrap_or_else(Instant::now);
-        if self.sounds {
-            crate::platform::play_sound(true);
-        }
+        crate::platform::play_event("complete");
         if !self.antivirus_cmd.trim().is_empty() {
             match crate::platform::antivirus_command(&self.antivirus_cmd,path) {
                 Ok(mut cmd) => {
@@ -5373,6 +5505,7 @@ impl CraftApp {
             }
         }
         notify("Download Craft — queue finished", "All downloads completed.");
+        crate::platform::play_event("queue_done");
         self.save_queue();
     }
 
@@ -5799,6 +5932,11 @@ pub(crate) fn install_native_host(browser: &str) -> Result<String, String> {
         format!("@echo off\r\n\"{}\" --native-host %*\r\n", exe.display()),
     )
     .map_err(|e| e.to_string())?;
+    // cmd reads a .bat in the OEM code page, so a path with "č" or "ř"
+    // (often the user name) came out garbled and the host never started
+    // (issue #5). Such a path is given to the browser as the program itself;
+    // `native_host::launched_directly` recognises that launch.
+    let host = if exe.to_string_lossy().is_ascii() { bat.clone() } else { exe.clone() };
 
     // Native host name (must match the browser extension's HOST constant).
     const HOST_NAME: &str = "com.download_craft";
@@ -5807,14 +5945,14 @@ pub(crate) fn install_native_host(browser: &str) -> Result<String, String> {
         "firefox" => serde_json::json!({
             "name": HOST_NAME,
             "description": "Download Craft native host",
-            "path": bat.to_string_lossy(),
+            "path": host.to_string_lossy(),
             "type": "stdio",
             "allowed_extensions": ["send-to-download-craft@example"]
         }),
         _ => serde_json::json!({
             "name": HOST_NAME,
             "description": "Download Craft native host",
-            "path": bat.to_string_lossy(),
+            "path": host.to_string_lossy(),
             "type": "stdio",
             "allowed_origins": std::iter::once(EXTENSION_ID)
                 .chain(STORE_EXTENSION_IDS.iter().copied())
@@ -5852,18 +5990,36 @@ pub(crate) fn install_native_host(browser: &str) -> Result<String,String> { crat
 /// registration exists and its manifest file is still on disk.
 #[cfg(windows)]
 pub(crate) fn native_host_status(browser: &str) -> bool {
-    let mut rc = std::process::Command::new("reg");
-    rc.args(["query", native_host_key(browser), "/ve"]);
-    quiet(&mut rc);
-    let Ok(out) = rc.output() else { return false };
-    if !out.status.success() {
-        return false;
+    registry_default(native_host_key(browser)).is_some_and(|p| std::path::Path::new(&p).is_file())
+}
+
+/// The default value of an `HKCU\…` key, read as Unicode. `reg query`
+/// prints in the OEM code page, which garbled non-ASCII manifest paths.
+#[cfg(windows)]
+fn registry_default(key: &str) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    let sub = key.strip_prefix(r"HKCU\")?;
+    let wide: Vec<u16> = sub.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buf = vec![0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    // SAFETY: `wide` is NUL-terminated and `buf`/`len` describe a writable
+    // buffer; a null value name reads the key's default value.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            wide.as_ptr(),
+            std::ptr::null(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return None;
     }
-    // "(Default)    REG_SZ    C:\…\chrome.json"
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find_map(|l| l.split("REG_SZ").nth(1).map(|p| p.trim().to_string()))
-        .is_some_and(|p| std::path::Path::new(&p).is_file())
+    let chars = (len as usize / 2).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..chars]).trim_end_matches('\0').to_string())
 }
 
 #[cfg(not(windows))]
@@ -5910,7 +6066,9 @@ fn ensure_native_host(browser: &str) -> Result<bool, String> {
     let exe_s = exe.to_string_lossy().into_owned();
     let manifest_path = base.join(format!("{browser}.json"));
     let manifest_s = manifest_path.to_string_lossy().into_owned();
-    // Fresh = manifest exists and its launcher targets this exact binary.
+    // Fresh = manifest exists and names this exact binary, in the form
+    // `install_native_host` picks: directly, or through its launcher.
+    let direct = !exe_s.is_ascii();
     let fresh = std::fs::read_to_string(&manifest_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -5919,23 +6077,17 @@ fn ensure_native_host(browser: &str) -> Result<bool, String> {
                 .and_then(|p| p.as_str())
                 .map(|s| s.to_string())
         })
-        .map(|bat| {
-            std::fs::read_to_string(&bat)
-                .map(|c| c.contains(exe_s.as_str()))
-                .unwrap_or(false)
+        .map(|host| {
+            if direct {
+                host == exe_s
+            } else {
+                std::fs::read_to_string(&host)
+                    .map(|c| c.contains(exe_s.as_str()))
+                    .unwrap_or(false)
+            }
         })
         .unwrap_or(false);
-    let key = native_host_key(browser);
-    let mut rc = std::process::Command::new("reg");
-    rc.args(["query", key, "/ve"]);
-    quiet(&mut rc);
-    let registered = rc
-        .output()
-        .map(|o| {
-            o.status.success()
-                && String::from_utf8_lossy(&o.stdout).contains(manifest_s.as_str())
-        })
-        .unwrap_or(false);
+    let registered = registry_default(native_host_key(browser)).is_some_and(|v| v == manifest_s);
     if fresh && registered {
         return Ok(false);
     }
@@ -6145,6 +6297,11 @@ impl eframe::App for CraftApp {
         // Manual pointer routing: snapshot input, then match layout rects
         // recorded below (process_hits runs after all layout, topmost first).
         self.man.begin(ctx);
+        // Interface size: text, icons and spacing grow together, so nothing
+        // laid out by hand drifts from its hit area.
+        if (ctx.zoom_factor() - self.ui_scale).abs() > 0.001 {
+            ctx.set_zoom_factor(self.ui_scale);
+        }
         // Borderless window: the edges resize it (see `handle_window_edges`).
         self.handle_window_edges(ctx);
         self.hits.clear();
@@ -6453,18 +6610,24 @@ impl eframe::App for CraftApp {
 
                 // ---- right edge, built inwards from the window buttons:
                 // controls · update chip · search (`.win-controls` order) ----
-                let ctrl_l = bar.right() - (28.0 * 3.0 + 2.0);
-                for (i, (icon, kind)) in [
-                    (DmIcon::Minimize, 0u8),
-                    (
-                        if maximized { DmIcon::Restore } else { DmIcon::Maximize },
-                        1,
-                    ),
-                    (DmIcon::Close, 2),
-                ]
-                .iter()
-                .enumerate()
-                {
+                let ctrl_l = if self.os_caption {
+                    bar.right()
+                } else {
+                    bar.right() - (28.0 * 3.0 + 2.0)
+                };
+                let buttons: &[(DmIcon, u8)] = if self.os_caption {
+                    &[]
+                } else {
+                    &[
+                        (DmIcon::Minimize, 0u8),
+                        (
+                            if maximized { DmIcon::Restore } else { DmIcon::Maximize },
+                            1,
+                        ),
+                        (DmIcon::Close, 2),
+                    ]
+                };
+                for (i, (icon, kind)) in buttons.iter().enumerate() {
                     let r = egui::Rect::from_min_size(
                         egui::pos2(ctrl_l + i as f32 * 29.0, cy - 13.0),
                         egui::vec2(28.0, 26.0),
@@ -6577,7 +6740,9 @@ impl eframe::App for CraftApp {
                 // the box with the cursor in it. It stays open while it has
                 // the cursor or holds a search, and closes when you click
                 // elsewhere with it empty. ----
-                const SEARCH_W: f32 = 176.0;
+                // As wide as the free stretch of the bar allows (issue #8),
+                // between the old 176 px and 320 px.
+                let search_full = (right - x - 24.0).clamp(176.0, 320.0);
                 let search_id = egui::Id::new("search");
                 let focused = ui.memory(|m| m.has_focus(search_id));
                 let open_w = ctx.data(|d| d.get_temp::<f32>(egui::Id::new("search_w"))).unwrap_or(28.0);
@@ -6595,7 +6760,7 @@ impl eframe::App for CraftApp {
                 ctx.data_mut(|d| d.insert_temp(req_id, requested));
                 let open = requested || focused || !self.search.is_empty();
                 let t = ctx.animate_bool_with_time(egui::Id::new("search_open"), open, 0.18);
-                let w = 28.0 + t * (SEARCH_W - 28.0);
+                let w = 28.0 + t * (search_full - 28.0);
                 ctx.data_mut(|d| d.insert_temp(egui::Id::new("search_w"), w));
                 if requested && !focused && t > 0.6 {
                     ui.memory_mut(|m| m.request_focus(search_id));
@@ -6661,7 +6826,7 @@ impl eframe::App for CraftApp {
                     .man
                     .pos()
                     .map_or(false, |q| live.iter().any(|r| r.contains(q)));
-                if !over_live {
+                if !over_live && !self.os_caption {
                     if let Some(q) = self.man.pos() {
                         if self.man.press_started_in(&bar) {
                             let now = std::time::Instant::now();
@@ -7444,6 +7609,11 @@ impl eframe::App for CraftApp {
             }
         }
         // ================= dialogs =================
+        if !self.show_add && self.add_pre.is_some() {
+            // Cancelled (or closed): its background download goes with it.
+            self.stop_add_prestart(None);
+            self.add_file_auto.clear();
+        }
         if self.show_add {
             if self.add_focus_req {
                 // Focus lands without any click (hit-test independent).
@@ -7466,6 +7636,13 @@ impl eframe::App for CraftApp {
                 && !self.probing
             {
                 self.probe_done_for = self.add_url.trim().to_string();
+                // A new link: the old one's background download goes, and a
+                // name the dialog chose itself follows the link.
+                self.stop_add_prestart(None);
+                if self.add_file.trim().is_empty() || self.add_file == self.add_file_auto {
+                    self.add_file = filename_from_url(self.add_url.trim());
+                    self.add_file_auto = self.add_file.clone();
+                }
                 self.start_probe(self.add_url.trim().to_string());
             }
             // collect probe result
@@ -7480,14 +7657,16 @@ impl eframe::App for CraftApp {
                 self.probe_size = sz;
                 if let Some(n) = nm {
                     self.probe_name = Some(n.clone());
-                    if self.add_file.trim().is_empty() {
+                    if self.add_file.trim().is_empty() || self.add_file == self.add_file_auto {
                         self.add_file = crate::model::apply_rename_template(
                             &self.rename_template,
                             &n,
                             &self.add_url,
                         );
+                        self.add_file_auto = self.add_file.clone();
                     }
                 }
+                self.maybe_add_prestart();
             }
             let psize = self.probe_size;
             let pbusy = self.probing;
@@ -9556,6 +9735,27 @@ impl CraftApp {
                 ));
             }
         }
+        // What the dialog already downloaded continues as this file, so the
+        // progress window opens at those bytes instead of starting over.
+        let mut finished_early = false;
+        let dest = item.dest_path();
+        if self.add_pre.as_ref().is_some_and(|p| p.url == item.url)
+            && !dest.exists()
+            && !crate::engine::has_partial(&dest)
+        {
+            let got = self.add_pre.as_ref().map_or(0, |p| p.shared.downloaded.load(Ordering::SeqCst));
+            if self.stop_add_prestart(Some(&dest)) {
+                let len = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                item.total_bytes = Some(len);
+                item.downloaded_bytes = len;
+                item.status = Status::Completed;
+                finished_early = true;
+            } else {
+                item.downloaded_bytes = got;
+            }
+        } else {
+            self.stop_add_prestart(None);
+        }
         match existing {
             Some(pos) => {
                 self.downloads[pos] = item;
@@ -9574,13 +9774,98 @@ impl CraftApp {
         self.add_focus_req = false;
         self.add_url.clear();
         self.add_file.clear();
+        self.add_file_auto.clear();
         self.add_checksum.clear();
         self.add_quality.clear();
         self.clear_add_credentials();
-        if download {
+        if finished_early {
+            self.push_log(format!("#{id} finished while the dialog was open."));
+        } else if download {
             self.queue_running = true;
             self.start(id);
         }
+    }
+
+    /// Start downloading in the background while the Add dialog is open: a
+    /// plain file whose size is known (not a page, a stream or a quality
+    /// choice: those the engine resolves itself). Once per link.
+    fn maybe_add_prestart(&mut self) {
+        let url = self.add_url.trim().to_string();
+        if self.add_pre.is_some() || self.probe_size.unwrap_or(0) == 0 || !is_download_url(&url) {
+            return;
+        }
+        let plain = self.add_quality.trim().is_empty()
+            && self.add_mirrors.is_empty()
+            && !crate::engine::is_stream_manifest(&url, None, "")
+            && !crate::engine::is_youtube_page(&url)
+            && self.add_browser.as_ref().map_or(true, |b| !b.is_post());
+        if !plain {
+            return;
+        }
+        let name = crate::engine::sanitize_filename(if self.add_file.trim().is_empty() { "download" } else { self.add_file.trim() });
+        let dir = std::env::temp_dir().join("download-craft-pre").join(format!(
+            "main-{}-{}",
+            std::process::id(),
+            chrono::Local::now().timestamp_millis()
+        ));
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let dest = dir.join(name);
+        let opts = EngineOpts {
+            user_agent: if self.user_agent.trim().is_empty() {
+                format!("download_craft/{}", crate::model::APP_VERSION)
+            } else {
+                self.user_agent.clone()
+            },
+            timeout_secs: self.timeout_secs,
+            proxy_url: self.proxy_url.clone(),
+            referer: self.add_referer.clone(),
+            cookie: self.add_cookie.clone(),
+            username: self.add_user.clone(),
+            password: self.add_pass.clone(),
+            browser: self.add_browser.clone(),
+            allow_rename: false,
+            ..Default::default()
+        };
+        let shared = Arc::new(SharedState::new());
+        if let Some(t) = self.probe_size {
+            shared.total.store(t, Ordering::SeqCst);
+            shared.has_total.store(true, Ordering::SeqCst);
+        }
+        let (s2, d2, u2) = (shared.clone(), dest.clone(), url.clone());
+        let conns = self.add_conns.max(1);
+        let handle = self.rt.spawn(async move { crate::engine::download(u2, d2, conns, opts, s2).await });
+        self.add_pre = Some(AddPreStart { url, shared, handle, dest });
+    }
+
+    /// Stop the Add dialog's background download. `keep_as`: continue it as
+    /// this file (data moved there; a file that already finished is moved
+    /// whole, and the return says so). Without it everything is deleted.
+    fn stop_add_prestart(&mut self, keep_as: Option<&std::path::Path>) -> bool {
+        let Some(pre) = self.add_pre.take() else { return false };
+        pre.shared.cancelled.store(true, Ordering::SeqCst);
+        let finished = pre.handle.is_finished() && !crate::engine::has_partial(&pre.dest) && pre.dest.is_file();
+        pre.handle.abort();
+        // Let the transfer write its journal and let go of the files.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let mut whole = false;
+        if let Some(to) = keep_as {
+            if let Some(dir) = to.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if finished && !to.exists() {
+                whole = std::fs::rename(&pre.dest, to).is_ok()
+                    || (std::fs::copy(&pre.dest, to).is_ok() && std::fs::remove_file(&pre.dest).is_ok());
+            } else if !finished {
+                crate::engine::move_partial(&pre.dest, to);
+            }
+        }
+        crate::engine::remove_partial(&pre.dest);
+        if let Some(dir) = pre.dest.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        whole
     }
 
     /// Candidate save folders for the path field's caret menu: the standard

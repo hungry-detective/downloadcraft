@@ -173,6 +173,20 @@ pub fn open_links_window(page: &str, title: &str, cookie: &str, links: &[PageLin
     Ok(())
 }
 
+/// Started by the browser straight from the manifest, without the launcher
+/// script (`--native-host`). Chromium passes the caller's origin first,
+/// Firefox the manifest path and then the extension's id. Used when the
+/// program sits under a non-ASCII path, which a `.bat` cannot name (issue #5).
+pub fn launched_directly(args: &[String]) -> bool {
+    let ours = |a: &String| {
+        a.strip_prefix("chrome-extension://").is_some_and(|rest| {
+            let id = rest.trim_end_matches('/');
+            id == crate::app::EXTENSION_ID || crate::app::STORE_EXTENSION_IDS.contains(&id)
+        }) || a == "send-to-download-craft@example"
+    };
+    args.iter().skip(1).take(2).any(ours)
+}
+
 /// Spawn a window that outlives this short-lived host.
 fn spawn_detached(mut cmd: std::process::Command) {
     // Never hand our stdio to the window: an inherited stdout keeps the
@@ -198,6 +212,13 @@ fn spawn_detached(mut cmd: std::process::Command) {
             return;
         }
         cmd.creation_flags(DETACHED_PROCESS);
+    }
+    // Linux/macOS: out of the host's process group, which the browser may
+    // signal as a whole when it closes the host.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
     }
     let _ = cmd.spawn();
 }
@@ -732,6 +753,14 @@ fn page_fetch_chunk(msg: &Incoming) -> Result<(), String> {
     Ok(())
 }
 
+/// Just the name of a suggested filename. Browsers report a download's whole
+/// save path (Linux: "/home/me/Downloads/x.zip"), and cleaning that as one
+/// name gave "_home_me_Downloads_x.zip" (issue #6).
+fn file_part(name: &str) -> Option<String> {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    (!last.is_empty()).then(|| last.to_string())
+}
+
 /// Keep only headers the engine may replay, with sane sizes. The extension
 /// already filters; this is the trust boundary, so filter again.
 fn replayable_headers(
@@ -775,7 +804,7 @@ fn queue_download(msg: &Incoming) -> Result<bool, String> {
         .filter(|s| !s.trim().is_empty());
     let fresh = InboxItem {
         url: url.clone(),
-        filename: msg.filename.clone(),
+        filename: msg.filename.as_deref().and_then(file_part),
         received_at: chrono::Local::now().to_rfc3339(),
         page_url: msg.page_url.clone(),
         referer,
@@ -824,7 +853,7 @@ fn spawn_confirm(msg: &Incoming) {
     };
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--confirm-download").arg("--url").arg(&url);
-    if let Some(f) = msg.filename.clone().filter(|s| !s.trim().is_empty()) {
+    if let Some(f) = msg.filename.as_deref().and_then(file_part) {
         cmd.arg("--filename").arg(f);
     }
     // The engine reads this as both the Referer and "the page the media came
@@ -1031,6 +1060,23 @@ mod media_tests {
         assert!(replayable_headers(None).is_none());
         let none = std::collections::BTreeMap::from([("cookie".to_string(), "a=b".to_string())]);
         assert!(replayable_headers(Some(&none)).is_none());
+    }
+
+    #[test]
+    fn browser_launches_without_the_flag_are_recognised() {
+        let ext = format!("chrome-extension://{}/", crate::app::EXTENSION_ID);
+        assert!(launched_directly(&["dc.exe".into(), ext, "--parent-window=0".into()]));
+        assert!(launched_directly(&["dc.exe".into(), r"C:\m.json".into(), "send-to-download-craft@example".into()]));
+        assert!(!launched_directly(&["dc.exe".into(), "chrome-extension://someoneelse/".into()]));
+        assert!(!launched_directly(&["dc.exe".into(), "--settings".into()]));
+    }
+
+    #[test]
+    fn suggested_paths_keep_only_the_file_name() {
+        assert_eq!(file_part("/home/me/Downloads/a.zip").as_deref(), Some("a.zip"));
+        assert_eq!(file_part(r"C:\Users\me\Downloads\b.exe").as_deref(), Some("b.exe"));
+        assert_eq!(file_part("plain.txt").as_deref(), Some("plain.txt"));
+        assert_eq!(file_part("/home/me/"), None);
     }
 
     #[test]

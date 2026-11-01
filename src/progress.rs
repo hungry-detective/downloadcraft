@@ -579,8 +579,8 @@ pub fn run() -> eframe::Result<()> {
         .with_title(title)
         .with_inner_size([PG_W, PG_MIN_H])
         .with_resizable(false)
-        .with_decorations(false)
-        .with_transparent(true)
+        .with_decorations(crate::platform::system_title_bar())
+        .with_transparent(!crate::platform::system_title_bar())
         .with_always_on_top();
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));

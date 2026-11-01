@@ -79,7 +79,11 @@ License: MIT AND OFL-1.1
 URL: https://github.com/hungry-detective/downloadcraft
 BuildArch: x86_64
 AutoReqProv: no
-Requires: glibc >= 2.28, libgcc, libX11, libxcb, libxkbcommon, mesa-libGL, wayland-libs, xdg-utils
+Requires: glibc >= 2.28, xdg-utils
+# Library names, not package names: "wayland-libs" exists on no Fedora, so dnf
+# refused the package there. These resolve on Fedora, RHEL and openSUSE alike.
+Requires: libgcc_s.so.1()(64bit), libX11.so.6()(64bit), libxcb.so.1()(64bit), libXcursor.so.1()(64bit), libXi.so.6()(64bit), libXrandr.so.2()(64bit)
+Requires: libxkbcommon.so.0()(64bit), libxkbcommon-x11.so.0()(64bit), libwayland-client.so.0()(64bit), libwayland-egl.so.1()(64bit), libGL.so.1()(64bit), libEGL.so.1()(64bit)
 %global debug_package %{{nil}}
 %global _build_id_links none
 %global __os_install_post %{{nil}}

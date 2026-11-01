@@ -250,6 +250,43 @@ impl FontState {
 /// which is what the standalone dialogs want (their whole surface is the
 /// concept). The manager window passes `false`, so only the named families are
 /// added and its own typography stays untouched.
+/// Interface fonts offered in Settings → Appearance: (name, regular file,
+/// semibold file), all shipped with Windows. Any other .ttf can be picked.
+pub const UI_FONTS: &[(&str, &str, &str)] = &[
+    ("Segoe UI", "segoeui.ttf", "seguisb.ttf"),
+    ("Arial", "arial.ttf", "arialbd.ttf"),
+    ("Calibri", "calibri.ttf", "calibrib.ttf"),
+    ("Tahoma", "tahoma.ttf", "tahomabd.ttf"),
+    ("Verdana", "verdana.ttf", "verdanab.ttf"),
+    ("Trebuchet MS", "trebuc.ttf", "trebucbd.ttf"),
+];
+
+fn default_font_files() -> (&'static str, &'static str) {
+    if cfg!(windows) {
+        ("segoeui.ttf", "seguisb.ttf")
+    } else if cfg!(target_os = "macos") {
+        ("Helvetica.ttc", "Helvetica.ttc")
+    } else {
+        ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
+    }
+}
+
+/// The regular and semibold files for the `ui_font` preference: a name from
+/// `UI_FONTS`, or a font file's path (used for both weights). Empty = the
+/// default. Read once at start, like the rest of the typography.
+fn ui_font_files() -> (String, String) {
+    let pick = crate::model::ui_pref_str("ui_font", "");
+    let pick = pick.trim();
+    if let Some((_, r, b)) = UI_FONTS.iter().find(|f| f.0.eq_ignore_ascii_case(pick)) {
+        return (r.to_string(), b.to_string());
+    }
+    if !pick.is_empty() && std::path::Path::new(pick).is_file() {
+        return (pick.to_string(), pick.to_string());
+    }
+    let (r, b) = default_font_files();
+    (r.to_string(), b.to_string())
+}
+
 pub fn install(cc: &eframe::CreationContext<'_>, primary: bool) {
     let mut defs = egui::FontDefinitions::default();
     let base_families = defs.families.clone();
@@ -259,8 +296,17 @@ pub fn install(cc: &eframe::CreationContext<'_>, primary: bool) {
             "../assets/fonts/MaterialIcons-Regular.ttf"
         ))),
     );
-    let has_reg = load_system(&mut defs, "segoe", if cfg!(windows) { "segoeui.ttf" } else if cfg!(target_os="macos") { "Helvetica.ttc" } else { "DejaVuSans.ttf" }, 0);
-    let has_semi = load_system(&mut defs, "segoe_semi", if cfg!(windows) { "seguisb.ttf" } else if cfg!(target_os="macos") { "Helvetica.ttc" } else { "DejaVuSans-Bold.ttf" }, 0);
+    let (reg_file, semi_file) = ui_font_files();
+    let mut has_reg = load_system(&mut defs, "segoe", &reg_file, 0);
+    let mut has_semi = load_system(&mut defs, "segoe_semi", &semi_file, 0);
+    // A picked font that is missing or unreadable: back to the default.
+    let (def_reg, def_semi) = default_font_files();
+    if !has_reg {
+        has_reg = load_system(&mut defs, "segoe", def_reg, 0);
+    }
+    if !has_semi {
+        has_semi = load_system(&mut defs, "segoe_semi", def_semi, 0);
+    }
     defs.font_data.insert("bundled-bengali".into(), std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/NotoSansBengali.ttf"))));
     // Segoe UI leads the fallbacks: it covers Greek, Cyrillic, Arabic,
     // Hebrew and the wider Latin ranges.

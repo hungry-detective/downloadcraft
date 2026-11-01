@@ -174,8 +174,8 @@ pub fn run() -> eframe::Result<()> {
         .with_title("About Download Craft")
         .with_inner_size([AW, AH])
         .with_resizable(false)
-        .with_decorations(false)
-        .with_transparent(true);
+        .with_decorations(crate::platform::system_title_bar())
+        .with_transparent(!crate::platform::system_title_bar());
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }

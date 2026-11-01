@@ -1,6 +1,6 @@
 [package]
 name = "download_craft"
-version = "0.9.12"
+version = "0.9.13"
 edition = "2021"
 description = "Download Craft — a lightweight, offline-first download manager (egui GUI + CLI)"
 license = "MIT"
@@ -20,7 +20,7 @@ downloadcraft-engine = { path = "crates/downloadcraft-engine", version = "0.1.0"
 eframe = "0.32"
 egui = "0.32"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "json", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "json", "http2", "socks"] }
 md-5 = "0.10"
 # FTPS: the same TLS stack reqwest already uses (ring, native roots).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
@@ -53,7 +53,7 @@ unrar = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.20"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Registry"] }
 
 [target.'cfg(unix)'.dependencies]
 shlex = "2"

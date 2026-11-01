@@ -66,7 +66,7 @@ fn main() -> eframe::Result<()> {
     // Native-messaging host mode for the browser extension:
     // launched by Chrome/Edge/Firefox, speaks length-prefixed JSON on stdio.
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--native-host") {
+    if args.iter().any(|a| a == "--native-host") || native_host::launched_directly(&args) {
         return native_host::run();
     }
     // IDM-style standalone "Download File Info" dialog (one OS window per
@@ -147,10 +147,11 @@ fn main() -> eframe::Result<()> {
     // No OS caption: the app paints its own title bar (brand, menus, search,
     // update chip, window buttons — `main_window_titlebar.html`). Drag, resize,
     // snap and double-click still go through the OS (`StartDrag` / `BeginResize`).
+    // Systems that cannot host that keep the OS caption (`system_title_bar`).
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([920.0, 500.0])
         .with_min_inner_size([840.0, 480.0])
-        .with_decorations(false);
+        .with_decorations(crate::platform::system_title_bar());
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }

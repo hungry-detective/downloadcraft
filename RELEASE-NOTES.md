@@ -1,77 +1,86 @@
-# Download Craft 0.9.12
+# Download Craft 0.9.13
 
 ## What's new
 
-**Setting up**
-- **Get ready**: a small window lists what Download Craft needs — the browser connection, the
-  browser extension, yt-dlp, FFmpeg and Deno — with what each is for and whether it is ready. Each has
-  its own Install / Set up button, and **Fix everything** does them all. The extension row shows the
-  three steps to add it, with **Open folder** and **Copy path**. The window opens at start-up only when
-  something is missing (it fixes what it can by itself) and any time from **Help → Get ready…**.
-
 **Downloads**
-- **A head start, as in IDM**: while the Download File Info window is open, a plain file already
-  downloads in the background. Press Download and it continues under the name and folder you chose,
-  so the progress window opens partway through. Cancel deletes what was fetched. (Video pages and
-  streams still start when you press Download.)
-- **"Download Craft isn't running"** now shows as soon as the Download File Info window opens, and
-  goes away by itself once the app starts. A file already in the list starts and the window closes.
-- **Drag finished downloads out of the list** onto a folder, the desktop, a chat or a mail; select
-  several to drag them together.
-- Opening the browser no longer captures downloads from its last session again.
+- **Sites behind Cloudflare**: when a site's bot shield refuses the app but not the browser (the
+  TLS fingerprint differs), Download Craft retries as a browser would, through yt-dlp's built-in
+  browser impersonation, keeping the cookies, Referer and headers. Works for HLS streams and plain files.
+- **Add download head start**: the main window's Add download dialog now starts a plain file in the
+  background as soon as its size is known, like the browser's Download File Info window. Press
+  Download and the progress window opens partway through; Cancel deletes what was fetched.
+- **The file name follows the link**: paste a different link into Add download and the name changes
+  with it (then to the server's own name). A name you typed yourself stays.
+- **yt-dlp install fixed**: a freshly downloaded yt-dlp is given up to two minutes to answer its
+  first start (antivirus scans and unpacking took longer than the old 5 seconds on slower PCs and
+  failed the install). The same for FFmpeg and Deno. An older copy that is still running is moved
+  aside instead of failing the update.
+- Linux: downloads no longer get the whole save path as their name (`_home_you_Downloads_file.ext`) (#6).
 
-**Windows**
-- **About & Updates** is its own small window: up to date, update available (with highlights from the
-  release notes), installing (each step), ready to restart. An **Update automatically** switch decides
-  whether new versions install by themselves. It also lists your helpers and links to GitHub,
-  release notes, issues and licenses.
-- **Progress window**: a bolder progress bar; the Speed tab has one row for the speed limit with a
-  **KB/s / MB/s** choice (the unit used to be unstated) and a clearer graph with the current and peak
-  speed.
-- **Download all links**: search, type chips and "Hide web pages" in one aligned row that wraps only
-  when it must, so more files fit; the main list's outline file icons; dragging a column moves the
-  ones after it, and nothing runs outside the table; the status line spans the window.
-- **Download complete** uses the app's dark colours.
-- An update also removes files the new version no longer has (an old Firefox .xpi, for example).
+**Settings**
+- **Proxy / Socks page**: no proxy, system settings, an automatic configuration script (PAC), or a
+  manual HTTP or SOCKS5 proxy with login and http/https choice; **Get system proxy** fills it in. A
+  switch decides whether downloads caught from the browser use the browser's proxy.
+- **Sounds page**: download complete, download failed, queue started and queue finished, each on or
+  off, with your own .wav file or the system sound, and a Play button.
+- **Appearance**: **Interface size** (90–175%), a **Font** choice (Segoe UI, Arial, Calibri,
+  Tahoma, Verdana, Trebuchet MS or any .ttf/.otf file), clearer contrast in both themes, and a wider
+  search box (#8).
+- The Settings pages, plugins and browser cards use the same outline icons as the main window's
+  sidebar, so they read well in dark and light mode.
+- **Use the Windows title bar** (Settings → Window): for custom or stripped Windows builds where
+  buttons reacted above the pointer. Turned on by itself when the system cannot draw borderless
+  windows.
 
-**Look**
-- Dark mode: the sidebar and the list are a step brighter than the window, as in light mode; the
-  title bar keeps the window's colour.
-- The Name column has an icon like the others; **Settings → Appearance → Hide column icons** shows the
-  titles alone, at once.
-- Search opens when you click the magnifier (pointing at it no longer opens it).
+**Browser connection**
+- The browser connection works when your Windows user name has letters like č, š or ř (#5).
+- Download File Info starts Download Craft when it is not running and hands the download over once it
+  is up (#7).
+- Browsers are linked by themselves: opening Browser Integration links any browser that is not yet
+  linked, so loading the extension is all you do. Chromium on Linux is linked too.
 
 **Browser extension**
-- The video button says just **Download**; its menu opens with the quality you use most selected.
-- It stays inside the player when you point at it, is a little shorter, and hides while a site's
-  pinned header (Facebook's top bar) covers it, as IDM's does.
+- **Downloads made inside the browser** carry the page's Referer, Origin and the player's login
+  headers, which protected video servers check.
+- **The video button sits on the player's top edge**, outside the picture, as IDM's does. It moves
+  out of a pinned header's way instead of hiding, and hides when a pop-up (a Facebook post window)
+  covers the video.
+- **Facebook**: the menu's picture and title come from the video you clicked, not another one on the
+  page (a frame of the video itself when it has no poster).
+- No more stray console errors on sites with a Cloudflare/hCaptcha/reCAPTCHA check: the extension
+  stays out of those frames.
+- Brave: the browser replaying its old downloads can no longer flood the app; a burst of captures
+  pauses capture for a minute.
 
-## Updating from 0.9.11
+**Linux**
+- The Fedora/RPM package installs again (it asked for a package name Fedora does not have).
+
+## Updating from 0.9.12
 
 Use **Update now** in the app: it downloads this release, checks it and restarts. Then reload the browser
 extension (chrome://extensions → reload) with the files from this release.
 
 ## Install
 
-**Windows 10/11.** Extract `DownloadCraft-0.9.12-windows-x64-portable.zip` and run `download_craft.exe` —
+**Windows 10/11.** Extract `DownloadCraft-0.9.13-windows-x64-portable.zip` and run `download_craft.exe` —
 nothing to install. Your queue and settings in `%APPDATA%\download_craft` carry over.
 
-**macOS 12+.** Unzip `DownloadCraft-0.9.12-macos-Universal.zip` and move `Download Craft.app` into
+**macOS 12+.** Unzip `DownloadCraft-0.9.13-macos-Universal.zip` and move `Download Craft.app` into
 Applications. This development build is not notarized: right-click → Open the first time.
 
 **Linux (x86-64, glibc 2.28+).**
-- Ubuntu, Debian, Mint, Pop!_OS: `sudo apt install ./downloadcraft_0.9.12_amd64.deb`
-- Fedora: `sudo dnf install ./downloadcraft-0.9.12-1.x86_64.rpm`
-- Other distributions: `DownloadCraft-0.9.12-x86_64.AppImage` (mark it executable; without FUSE run it
+- Ubuntu, Debian, Mint, Pop!_OS: `sudo apt install ./downloadcraft_0.9.13_amd64.deb`
+- Fedora: `sudo dnf install ./downloadcraft-0.9.13-1.x86_64.rpm`
+- Other distributions: `DownloadCraft-0.9.13-x86_64.AppImage` (mark it executable; without FUSE run it
   with `--appimage-extract-and-run`).
 
-**Browser extension (0.9.12).**
-- Chrome / Edge / Brave: extract `DownloadCraft-Chrome-0.9.12.zip`, open `chrome://extensions`, enable
+**Browser extension (0.9.13).**
+- Chrome / Edge / Brave: extract `DownloadCraft-Chrome-0.9.13.zip`, open `chrome://extensions`, enable
   Developer mode, **Load unpacked** → the `browser-extension` folder. Already installed? Press reload on
   the extension and refresh open tabs.
 - Firefox: `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** →
-  `DownloadCraft-Firefox-0.9.12.xpi` (unsigned).
-- Then in the app: Settings → Browser Integration → **Install** for your browser.
+  `DownloadCraft-Firefox-0.9.13.xpi` (unsigned).
+- Start Download Craft once: it links itself to your browsers.
 
 ## Media helpers
 

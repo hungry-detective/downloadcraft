@@ -11,7 +11,7 @@ let lastFallbackError = "";
 // Must match manifest version + content.js EXT_VER. Tabs running an older
 // content script are rejected with a "reload the tab" error instead of
 // failing mysteriously (their extension APIs are gone after a reload).
-const EXT_VER = "0.9.12";
+const EXT_VER = "0.9.13";
 
 // Promise-style calls (the `await api.*` ones below) go through this handle so
 // one file serves both engines: Firefox exposes the promise-returning
@@ -289,6 +289,10 @@ async function sendToHost(url, filename, extra) {
     if (ctx._cookie && !pageOnly && (!cookie || (extra && extra.fromRequest))) cookie = ctx._cookie;
     const sentReferer = ctx._referer;
     delete ctx._cookie; delete ctx._referer; delete ctx._post;
+    // The browser's own download item names its full save path
+    // ("/home/me/Downloads/x.zip"): only the name travels, or the app's
+    // filename cleaning turned the folders into "_home_me_Downloads_x.zip".
+    if (filename) filename = String(filename).split(/[\\/]/).pop() || null;
     rememberCapture(url, filename, extra);
     const res = await hostSend({
       type: "download",
@@ -1110,6 +1114,11 @@ async function performBrowserCapture(item) {
   // every browser start, however often it was cancelled.
   const started = Date.parse(item.startTime || "");
   if (Number.isFinite(started) && Date.now() - started > 30000) return;
+  // Brave also replays history entries with no start time, or as finished /
+  // interrupted items: only a live transfer is a fresh click.
+  if (!Number.isFinite(started) && item.state && item.state !== "in_progress") return;
+  if (item.state === "complete" || item.endTime || item.paused) return;
+  if (captureBurst()) return;
   // The user chose "Download in browser" for this one: never hand it back.
   if (item.byExtensionId && item.byExtensionId === chrome.runtime.id) return;
   // Clicked with the "keep in browser" key held.
@@ -1191,6 +1200,28 @@ try {
       {urls:["http://*/*", "https://*/*"]});
   }
 } catch (e) { /* unsupported API; normal direct-link capture still works */ }
+
+// Flood breaker: a person starts a few downloads at a time, never dozens in
+// seconds. When the browser replays its whole download history (seen in
+// Brave), every entry would pop the app and the browser had to be killed;
+// past the limit automatic capture rests for a minute and the downloads stay
+// in the browser.
+const BURST_WINDOW_MS = 10000;
+const BURST_MAX = 6;
+const BURST_REST_MS = 60000;
+let burstTimes = [];
+let burstUntil = 0;
+function captureBurst() {
+  const now = Date.now();
+  if (now < burstUntil) return true;
+  burstTimes = burstTimes.filter((t) => now - t < BURST_WINDOW_MS);
+  burstTimes.push(now);
+  if (burstTimes.length <= BURST_MAX) return false;
+  burstUntil = now + BURST_REST_MS;
+  burstTimes = [];
+  console.warn("[download-craft] too many browser downloads at once; capture paused for a minute");
+  return true;
+}
 
 const browserCaptures = new Map();
 function captureBrowserDownload(item) {
@@ -1304,7 +1335,48 @@ function bdlPublic(j) {
 async function bdlHistory() {
   try { return (await api.storage.local.get({ bdlHistory: [] })).bdlHistory || []; } catch (e) { return []; }
 }
+// The page's own request headers for a job fetched here (Tentek/VDH's way):
+// a fetch from the extension carries neither the page's Referer nor its
+// Origin, and those are exactly what protected CDNs check. Session rules
+// set them, plus the Authorization / x-* headers the player sent, on this
+// extension's own requests while the job runs.
+async function bdlHeaderRules(j, url) {
+  const dnr = chrome.declarativeNetRequest;
+  if (!dnr || typeof dnr.updateSessionRules !== "function") return;
+  const auth = mediaAuth.get(url) || {};
+  const page = auth.referer || j.page || "";
+  const set = [];
+  const add = (header, value) => {
+    if (typeof value === "string" && value && value.length < 4096 && !/[\r\n]/.test(value)) {
+      set.push({ header, operation: "set", value });
+    }
+  };
+  if (/^https?:\/\//i.test(page)) {
+    add("Referer", page);
+    try { add("Origin", (auth.headers && auth.headers.origin) || new URL(page).origin); } catch (e) {}
+  }
+  for (const [k, v] of Object.entries(auth.headers || {})) {
+    if (/^(authorization|x-[a-z0-9-]+)$/i.test(k) && k.toLowerCase() !== "x-client-data") add(k, v);
+  }
+  if (!set.length) return;
+  const id = 900000 + (Math.floor(Math.random() * 90000));
+  try {
+    await dnr.updateSessionRules({ addRules: [{
+      id, priority: 1,
+      action: { type: "modifyHeaders", requestHeaders: set },
+      condition: { initiatorDomains: [new URL(chrome.runtime.getURL("")).host], resourceTypes: ["xmlhttprequest", "media", "other"] },
+    }] });
+    j.ruleId = id;
+  } catch (e) { /* the job still runs, with the browser's own headers */ }
+}
+async function bdlDropRules(j) {
+  if (!j.ruleId || !chrome.declarativeNetRequest) return;
+  try { await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [j.ruleId] }); } catch (e) {}
+  j.ruleId = 0;
+}
+
 async function bdlFinish(j, state, extra) {
+  await bdlDropRules(j);
   Object.assign(j, extra || {}, { state, endedAt: Date.now() });
   const hist = await bdlHistory();
   hist.unshift(bdlPublic(j));
@@ -1379,6 +1451,7 @@ async function startBrowserDownload(msg) {
     }
   }
   const job = { id, kind, url, pairUrl, quality: msg.quality || "" };
+  await bdlHeaderRules(j, url);
   try {
     if (await ensureOffscreen()) {
       await api.runtime.sendMessage({ target: "offscreen", type: "bdl-start", job });

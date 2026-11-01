@@ -149,6 +149,9 @@ fn save_remember_category(value: bool) {
 }
 
 const NOT_RUNNING: &str = "Download Craft isn't running — open it, then click Download again.";
+const STARTING: &str = "Starting Download Craft…";
+/// How long Download waits for the app it started before giving up.
+const START_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// True when the main window is already running (fresh heartbeat).
 /// Replaces process-name counting (two dialogs used to look "live").
@@ -168,6 +171,16 @@ fn launch_main_app() {
         // DETACHED_PROCESS so the GUI outlives this dialog.
         cmd.creation_flags(0x00000008);
     }
+    // Its own process group on Linux/macOS: the browser tears down the
+    // native host's group, which must not take the app with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     let _ = cmd.spawn();
 }
 
@@ -223,6 +236,9 @@ struct ConfirmApp {
     centered: bool,
     show_adv: bool,
     done: bool,
+    /// Download was pressed while the app was closed: it was started at this
+    /// moment and the download is handed over once it is live (issue #7).
+    waiting_app: Option<std::time::Instant>,
     exited: bool,
     notice: String,
     /// State for controls the concept does not show (dropdown + extras).
@@ -681,14 +697,19 @@ impl ConfirmApp {
     /// (IDM "Start Download") vs merely queueing ("Download Later").
     fn commit(&mut self, start: bool) {
         // Download needs the main app, which owns the engine. When it is not
-        // running, say so and queue nothing: a queued-and-woken row used to
-        // sit silently and then start, with every other one like it, the next
-        // time the app opened. The dialog stays open, so Download works once
-        // the app is started.
+        // running, start it and queue nothing until it answers: a
+        // queued-and-woken row used to sit silently and then start, with
+        // every other one like it, the next time the app opened. `update`
+        // commits once the app's heartbeat is live, or says it did not come.
         if start && !main_app_running() {
-            self.notice = crate::i18n::t(NOT_RUNNING).to_string();
+            if self.waiting_app.is_none() {
+                self.waiting_app = Some(std::time::Instant::now());
+                self.notice = crate::i18n::t(STARTING).to_string();
+                std::thread::spawn(launch_main_app);
+            }
             return;
         }
+        self.waiting_app = None;
         if self.filename.trim().is_empty() {
             self.filename = filename_from_url(&self.url);
         }
@@ -719,6 +740,8 @@ impl ConfirmApp {
         // finished meanwhile, the file is listed as finished.
         if self.pre.is_some() && !item.dest_path().exists() && !engine::has_partial(&item.dest_path()) {
             let dest = item.dest_path();
+            // The progress window opens at what is already here, not at 0.
+            item.downloaded_bytes = self.pre.as_ref().map_or(0, |p| p.shared.downloaded.load(std::sync::atomic::Ordering::SeqCst));
             if self.stop_prestart(Some(&dest)) {
                 let len = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
                 item.total_bytes = Some(len);
@@ -933,6 +956,7 @@ pub fn run() -> eframe::Result<()> {
         centered: false,
         show_adv: false,
         done: false,
+        waiting_app: None,
         exited: false,
         notice: initial_notice,
         cat_open: false,
@@ -954,8 +978,8 @@ pub fn run() -> eframe::Result<()> {
         .with_title("Add download")
         .with_inner_size([DM_W, DM_H])
         .with_resizable(false)
-        .with_decorations(false)
-        .with_transparent(true)
+        .with_decorations(crate::platform::system_title_bar())
+        .with_transparent(!crate::platform::system_title_bar())
         .with_always_on_top();
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -997,13 +1021,24 @@ impl eframe::App for ConfirmApp {
             ctx.data_mut(|d| d.insert_temp(egui::Id::new("run-check"), now));
             let note = crate::i18n::t(NOT_RUNNING).to_string();
             let running = main_app_running();
-            if !running && self.notice.is_empty() {
+            if !running && self.notice.is_empty() && self.waiting_app.is_none() {
                 self.notice = note;
             } else if running && self.notice == note {
                 self.notice.clear();
             }
         }
         ctx.request_repaint_after(std::time::Duration::from_secs(2));
+        if let Some(since) = self.waiting_app {
+            if main_app_running() {
+                self.notice.clear();
+                self.commit(true);
+            } else if since.elapsed() > START_WAIT {
+                self.waiting_app = None;
+                self.notice = crate::i18n::t(NOT_RUNNING).to_string();
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(300));
+            }
+        }
         if self.done || ctx.input(|i| i.viewport().close_requested()) {
             self.stop_prestart(None);
             self.done = true;

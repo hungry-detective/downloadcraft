@@ -221,6 +221,9 @@ pub struct EngineOpts {
     /// client_builder). The fallback chain turns it on for a host that has
     /// no working IPv4 path or failed its name lookup.
     pub any_ip: bool,
+    /// yt-dlp presents a browser's TLS fingerprint (`--impersonate`, its
+    /// bundled curl_cffi): set for the Cloudflare retry in `fallback_chain`.
+    pub impersonate: bool,
     /// HTTP Digest login learned from the server's challenge (shared by
     /// every clone of these options).
     pub digest: Arc<std::sync::Mutex<Option<DigestAuth>>>,
@@ -407,6 +410,7 @@ impl Default for EngineOpts {
             mirrors: Vec::new(),
             http2: false,
             any_ip: false,
+            impersonate: false,
             digest: Default::default(),
         }
     }
@@ -523,7 +527,7 @@ impl EngineOpts {
         }
         let u = reqwest::Url::parse(url).ok()?;
         let host = u.host_str()?.to_string();
-        if host.parse::<std::net::IpAddr>().is_ok() || !self.proxy_url.trim().is_empty() {
+        if host.parse::<std::net::IpAddr>().is_ok() || proxy_choice(&self.proxy_url) != ProxyChoice::System {
             return None;
         }
         let port = u.port_or_known_default()?;
@@ -585,13 +589,36 @@ impl EngineOpts {
         if !self.http2 {
             b = b.http1_only();
         }
-        if !self.proxy_url.trim().is_empty() {
-            b = b.proxy(reqwest::Proxy::all(self.proxy_url.trim())?);
-        } else if crate::sysproxy::auto_configured() {
-            // Windows uses a PAC script / auto-detect: ask it per host.
-            b = b.proxy(reqwest::Proxy::custom(|u| {
-                crate::sysproxy::proxy_for(u.as_str()).and_then(|p| reqwest::Url::parse(&p).ok())
-            }));
+        match proxy_choice(&self.proxy_url) {
+            ProxyChoice::Direct => b = b.no_proxy(),
+            ProxyChoice::Pac(script) => {
+                b = b.no_proxy().proxy(reqwest::Proxy::custom(move |u| {
+                    crate::sysproxy::pac_proxy_for(&script, u.as_str()).and_then(|p| reqwest::Url::parse(&p).ok())
+                }));
+            }
+            ProxyChoice::Manual(url) => {
+                // Settings → Proxy can limit its own proxy to http or https
+                // pages; a browser's proxy (same field) covers everything.
+                let mine = crate::model::ui_pref_str("proxy_url", "").trim() == url;
+                let only = crate::model::ui_pref_str("proxy_protocols", "http,https");
+                let has = |k: &str| only.split(',').any(|p| p.trim() == k);
+                let (http, https) = (has("http"), has("https"));
+                b = b.no_proxy();
+                b = match (mine, http, https) {
+                    (true, true, false) => b.proxy(reqwest::Proxy::http(&url)?),
+                    (true, false, true) => b.proxy(reqwest::Proxy::https(&url)?),
+                    (true, false, false) => b,
+                    _ => b.proxy(reqwest::Proxy::all(&url)?),
+                };
+            }
+            ProxyChoice::System => {
+                if crate::sysproxy::auto_configured() {
+                    // Windows uses a PAC script / auto-detect: ask it per host.
+                    b = b.proxy(reqwest::Proxy::custom(|u| {
+                        crate::sysproxy::proxy_for(u.as_str()).and_then(|p| reqwest::Url::parse(&p).ok())
+                    }));
+                }
+            }
         }
         Ok(b)
     }
@@ -599,12 +626,14 @@ impl EngineOpts {
     /// The proxy a download of `url` goes through: the one set in Settings,
     /// else what the system's PAC script picks (for tools like yt-dlp that
     /// do not read it themselves).
+    /// An empty string means "connect directly" (yt-dlp's `--proxy ""`).
     pub fn effective_proxy(&self, url: &str) -> Option<String> {
-        let set = self.proxy_url.trim();
-        if !set.is_empty() {
-            return Some(set.to_string());
+        match proxy_choice(&self.proxy_url) {
+            ProxyChoice::Direct => Some(String::new()),
+            ProxyChoice::Pac(script) => Some(crate::sysproxy::pac_proxy_for(&script, url).unwrap_or_default()),
+            ProxyChoice::Manual(u) => Some(u),
+            ProxyChoice::System => crate::sysproxy::proxy_for(url),
         }
-        crate::sysproxy::proxy_for(url)
     }
 
     pub(crate) fn get(&self, client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
@@ -1283,7 +1312,7 @@ pub fn normalize_media_url(url: &str) -> String {
     u.to_string()
 }
 
-fn is_youtube_page(url: &str) -> bool {
+pub(crate) fn is_youtube_page(url: &str) -> bool {
     url.contains("youtube.com") || url.contains("youtu.be")
 }
 
@@ -4108,6 +4137,17 @@ pub async fn download(
     Ok(())
 }
 
+/// Whether `url` answers from behind Cloudflare's bot shield (or another CDN
+/// that marks its challenge): what makes a TLS-fingerprint retry worth it.
+async fn bot_shielded(client: &reqwest::Client, opts: &EngineOpts, url: &str) -> bool {
+    let Ok(resp) = opts.get(client, url).header(reqwest::header::RANGE, "bytes=0-0").send().await else {
+        return false;
+    };
+    let h = resp.headers();
+    let server = h.get(reqwest::header::SERVER).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    h.contains_key("cf-ray") || h.contains_key("cf-mitigated") || server.contains("cloudflare") || server.contains("ddos-guard")
+}
+
 /// Safety net after the main path failed, in order:
 /// 1. YouTube: yt-dlp, when it has not run yet (the native engine went
 ///    first) - and once more with the page's visitor id after a bot check;
@@ -4162,6 +4202,31 @@ async fn fallback_chain(
                 o2.ytdlp_visitor_data = visitor;
                 reset_counters(shared);
                 match download_with_ytdlp(&exe, &page, &actual, connections, &o2, shared).await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => err = e,
+                }
+            }
+        }
+    }
+    // Cloudflare (and similar bot shields) refusing the app but not the
+    // browser: the request is the same, the TLS handshake is not, and that
+    // fingerprint is what it checks. yt-dlp's bundled curl_cffi presents
+    // Chrome's handshake, with the captured cookies, Referer and headers.
+    // Works for HLS playlists and plain files alike.
+    let low = format!("{err:#}").to_ascii_lowercase();
+    if !shared.ytdlp_tried.load(Ordering::SeqCst)
+        && (low.contains("403") || low.contains("429") || low.contains("503") || low.contains("challenge"))
+        && url.starts_with("http")
+    {
+        let client = opts.build_client()?;
+        if bot_shielded(&client, opts, url).await {
+            if let Ok(exe) = ensure_ytdlp(&client).await {
+                job_log(&opts.log_key, "refused by a bot shield (Cloudflare): retrying with a browser's TLS fingerprint");
+                shared.set_note("the site's bot shield refused the app - retried as a browser (TLS fingerprint)");
+                let mut o2 = opts.clone();
+                o2.impersonate = true;
+                reset_counters(shared);
+                match download_with_ytdlp(&exe, url, &actual, connections, &o2, shared).await {
                     Ok(()) => return Ok(()),
                     Err(e) => err = e,
                 }
@@ -4327,7 +4392,9 @@ async fn download_inner(
         if let Some(ua) = b.headers.get("user-agent").filter(|u| !u.trim().is_empty()) {
             opts.user_agent = ua.clone();
         }
-        if opts.proxy_url.trim().is_empty() && !b.proxy.is_empty() {
+        if opts.proxy_url.trim().is_empty() && !b.proxy.is_empty()
+            && crate::model::ui_pref_bool("proxy_from_browser", true)
+        {
             opts.proxy_url = b.proxy.clone();
         }
         if b.is_post() {
@@ -5205,6 +5272,34 @@ pub async fn ffmpeg_mux(
     Ok(())
 }
 
+/// What the proxy field asks for. Settings → Proxy writes one value that
+/// every window passes along: empty = the system's settings, `direct`, a PAC
+/// script as `pac:<url>`, or a proxy URL (http://, https://, socks5://,
+/// socks5h://, with user:password@ when it needs a login).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProxyChoice {
+    System,
+    Direct,
+    Pac(String),
+    Manual(String),
+}
+
+pub(crate) fn proxy_choice(field: &str) -> ProxyChoice {
+    let f = field.trim();
+    if f.is_empty() {
+        ProxyChoice::System
+    } else if f.eq_ignore_ascii_case("direct") {
+        ProxyChoice::Direct
+    } else if let Some(script) = f.strip_prefix("pac:") {
+        ProxyChoice::Pac(script.trim().to_string())
+    } else if f.contains("://") {
+        ProxyChoice::Manual(f.to_string())
+    } else {
+        // "host:port" as typed in older versions.
+        ProxyChoice::Manual(format!("http://{f}"))
+    }
+}
+
 /// yt-dlp release asset, fetched only when a YouTube download needs one and
 /// no copy is on PATH.
 const YTDLP_URL: &str = if cfg!(windows) {
@@ -5459,7 +5554,7 @@ pub fn deno_install_blocking() -> Result<std::path::PathBuf> {
     // Must answer like a supported Deno, or it is not kept.
     let mut cmd = std::process::Command::new(&dst);
     cmd.arg("--version");
-    let ok = crate::platform::version_output(cmd)
+    let ok = crate::platform::first_run_output(cmd)
         .map(|o| runtime_version_supported("deno", &String::from_utf8_lossy(&o.stdout)))
         .unwrap_or(false);
     if !ok {
@@ -5658,12 +5753,34 @@ async fn fetch_ytdlp(client: &reqwest::Client, dst: &std::path::Path) -> Result<
     tokio::fs::write(&tmp, &bytes).await?;
     #[cfg(unix)]
     {use std::os::unix::fs::PermissionsExt;tokio::fs::set_permissions(&tmp,std::fs::Permissions::from_mode(0o700)).await?;}
-    if ytdlp_version(&tmp).is_none() {
+    let probe = tmp.clone();
+    let answered = tokio::task::spawn_blocking(move || ytdlp_first_version(&probe)).await.unwrap_or(None);
+    if answered.is_none() {
         let _=tokio::fs::remove_file(&tmp).await;
-        return Err(anyhow!("Downloaded yt-dlp did not pass its version check; previous copy retained"));
+        return Err(anyhow!("Downloaded yt-dlp did not start (blocked by antivirus, or this Windows is too old for it); previous copy retained"));
     }
-    tokio::fs::rename(&tmp, dst).await?;
+    if let Err(e) = tokio::fs::rename(&tmp, dst).await {
+        // Windows will not replace an executable that is running (a video
+        // download using the old copy): move that one aside first.
+        let old = dst.with_extension("old");
+        let _ = tokio::fs::remove_file(&old).await;
+        if tokio::fs::rename(dst, &old).await.is_err() || tokio::fs::rename(&tmp, dst).await.is_err() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(anyhow!("could not replace {} ({e}); close running downloads and try again", dst.display()));
+        }
+        let _ = tokio::fs::remove_file(&old).await;
+    }
     Ok(())
+}
+
+/// `--version` of a copy that was just downloaded, with the long first-run
+/// allowance (`platform::first_run_output`).
+fn ytdlp_first_version(exe: &std::path::Path) -> Option<String> {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--version");
+    let out = crate::platform::first_run_output(cmd)?;
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !v.is_empty()).then_some(v)
 }
 
 /// What Settings shows about the YouTube helper, and the copy it would run.
@@ -6841,6 +6958,9 @@ async fn download_with_ytdlp(
     }
     if let Some(p) = opts.effective_proxy(url) {
         cmd.arg("--proxy").arg(p);
+    }
+    if opts.impersonate {
+        cmd.arg("--impersonate").arg("chrome");
     }
     if opts.overwrite_existing {
         cmd.arg("--force-overwrites");

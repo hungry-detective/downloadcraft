@@ -17,13 +17,18 @@ use egui::{Align2, Color32, FontId, Rect, Response, Sense, Stroke, StrokeKind, U
 
 /// Rail entries: Material Icons glyph + label. The concept's YouTube pane is
 /// the helper ("plugin") page, so it is labelled Plugins.
+/// The first field is the `app::line_icon` key: the same outline strokes as
+/// the main window's sidebar, so both follow the theme the same way. A
+/// single icon-font glyph (Appearance's ring) is drawn from the font as before.
 const PANES: &[(&str, &str)] = &[
-    ("\u{e3dc}", "Appearance"),         // filter_center_focus
-    ("\u{ea0b}", "Download Engine"),    // bolt
-    ("\u{e9b0}", "Plugins"),            // grid_view
-    ("\u{e80b}", "Browser Integration"), // public
-    ("\u{e871}", "Categories & Rules"), // dashboard
-    ("\u{e863}", "Updates"),            // autorenew
+    ("\u{e3dc}", "Appearance"), // filter_center_focus
+    ("Engine", "Download Engine"),
+    ("Plugins", "Plugins"),
+    ("Browser", "Browser Integration"),
+    ("Proxy", "Proxy / Socks"),
+    ("Rules", "Categories & Rules"),
+    ("Sounds", "Sounds"),
+    ("Updates", "Updates"),
 ];
 
 /// Rail index of the Plugins pane (the helper's status is probed when it is
@@ -39,6 +44,8 @@ struct Settings {
     language: String,
     close_to_tray: bool,
     start_with_windows: bool,
+    /// Keep the OS title bar (`platform::system_title_bar`).
+    system_title_bar: bool,
     /// Extract finished archives, which kinds, where, and delete after.
     extract_auto: bool,
     extract_types: String,
@@ -48,6 +55,25 @@ struct Settings {
     show_complete: bool,
     /// The list's column titles without their icons.
     hide_col_icons: bool,
+    /// Main window zoom, in percent (`ui_scale` in ui.json).
+    ui_scale: u32,
+    /// Interface font: a name from `fonts::UI_FONTS`, a .ttf path, or empty
+    /// for the default (`ui_font` in ui.json).
+    ui_font: String,
+    // Proxy page: "none" | "system" | "pac" | "manual". Saved as the one
+    // `proxy_url` value the engine reads (see `engine::proxy_choice`).
+    proxy_mode: String,
+    proxy_pac: String,
+    proxy_kind: String,
+    proxy_host: String,
+    proxy_port: String,
+    proxy_user: String,
+    proxy_pass: String,
+    proxy_http: bool,
+    proxy_https: bool,
+    proxy_from_browser: bool,
+    /// Sounds page: (event key, on, wav file; empty = the system sound).
+    sounds_ev: Vec<(&'static str, bool, String)>,
     // Engine
     save_dir: String,
     category_folders: bool,
@@ -119,6 +145,20 @@ impl Default for Settings {
             theme: "dark".to_string(),
             language: "en".to_string(),
             close_to_tray: cfg!(windows),
+            system_title_bar: crate::platform::frame_unsupported(),
+            ui_scale: 100,
+            ui_font: String::new(),
+            proxy_mode: "system".into(),
+            proxy_pac: String::new(),
+            proxy_kind: "http".into(),
+            proxy_host: String::new(),
+            proxy_port: String::new(),
+            proxy_user: String::new(),
+            proxy_pass: String::new(),
+            proxy_http: true,
+            proxy_https: true,
+            proxy_from_browser: true,
+            sounds_ev: SOUND_EVENTS.iter().map(|(k, _, on)| (*k, *on, String::new())).collect(),
             start_with_windows: cfg!(windows),
             extract_auto: false,
             extract_types: "zip rar 7z".to_string(),
@@ -201,6 +241,24 @@ fn load() -> Settings {
     if let Some(p) = g("ffmpeg_custom_path").and_then(|v|v.as_str()) { s.ffmpeg_custom_path=p.to_string(); }
     if let Some(b) = g("close_to_tray").and_then(|x| x.as_bool()) {
         s.close_to_tray = cfg!(windows) && b;
+    }
+    load_proxy(&mut s, &v);
+    str_in("ui_font", &mut s.ui_font);
+    for ev in s.sounds_ev.iter_mut() {
+        // Before the Sounds page one switch covered finished and failed.
+        let legacy = if ev.0 == "complete" || ev.0 == "failed" { g("sounds").and_then(|x| x.as_bool()) } else { None };
+        if let Some(b) = g(&format!("sound_{}", ev.0)).and_then(|x| x.as_bool()).or(legacy) {
+            ev.1 = b;
+        }
+        if let Some(f) = g(&format!("sound_{}_file", ev.0)).and_then(|x| x.as_str()) {
+            ev.2 = f.to_string();
+        }
+    }
+    if let Some(n) = g("ui_scale").and_then(|x| x.as_u64()) {
+        s.ui_scale = n.clamp(80, 175) as u32;
+    }
+    if let Some(b) = g("system_title_bar").and_then(|x| x.as_bool()) {
+        s.system_title_bar = b;
     }
     if let Some(b) = g("start_with_windows").and_then(|x| x.as_bool()) {
         s.start_with_windows = cfg!(windows) && b;
@@ -355,6 +413,87 @@ fn load() -> Settings {
 }
 
 /// "zip, .EXE  mp4" -> "zip exe mp4": lowercase extensions, one space apart.
+/// Sound events: (key, label, on by default).
+const SOUND_EVENTS: &[(&str, &str, bool)] = &[
+    ("complete", "Download complete", true),
+    ("failed", "Download failed", true),
+    ("queue_start", "Queue processing started", false),
+    ("queue_done", "Queue processing finished", false),
+];
+
+/// The proxy page's fields, from their own keys or, for settings written
+/// before the page existed, from the single `proxy_url`.
+fn load_proxy(s: &mut Settings, v: &serde_json::Value) {
+    let g = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    if let Some(mode) = g("proxy_mode") {
+        s.proxy_mode = mode;
+        s.proxy_pac = g("proxy_pac").unwrap_or_default();
+        s.proxy_kind = g("proxy_kind").unwrap_or_else(|| "http".into());
+        s.proxy_host = g("proxy_host").unwrap_or_default();
+        s.proxy_port = g("proxy_port").unwrap_or_default();
+        s.proxy_user = g("proxy_user").unwrap_or_default();
+        s.proxy_pass = g("proxy_pass").unwrap_or_default();
+        if let Some(list) = g("proxy_protocols") {
+            s.proxy_http = list.split(',').any(|p| p == "http");
+            s.proxy_https = list.split(',').any(|p| p == "https");
+        }
+    } else {
+        match crate::engine::proxy_choice(&s.proxy_url) {
+            crate::engine::ProxyChoice::System => s.proxy_mode = "system".into(),
+            crate::engine::ProxyChoice::Direct => s.proxy_mode = "none".into(),
+            crate::engine::ProxyChoice::Pac(u) => {
+                s.proxy_mode = "pac".into();
+                s.proxy_pac = u;
+            }
+            crate::engine::ProxyChoice::Manual(u) => {
+                s.proxy_mode = "manual".into();
+                fill_manual(s, &u);
+            }
+        }
+    }
+    if let Some(b) = v.get("proxy_from_browser").and_then(|x| x.as_bool()) {
+        s.proxy_from_browser = b;
+    }
+}
+
+/// Split "socks5://user:pass@host:port" into the manual fields.
+fn fill_manual(s: &mut Settings, url: &str) {
+    let url = if url.contains("://") { url.to_string() } else { format!("http://{url}") };
+    let Ok(u) = reqwest::Url::parse(&url) else { return };
+    s.proxy_kind = if u.scheme().starts_with("socks") { "socks5".into() } else { "http".into() };
+    s.proxy_host = u.host_str().unwrap_or("").to_string();
+    s.proxy_port = u.port().map(|p| p.to_string()).unwrap_or_default();
+    s.proxy_user = url_decode(u.username());
+    s.proxy_pass = url_decode(u.password().unwrap_or(""));
+}
+
+fn url_decode(s: &str) -> String {
+    url::form_urlencoded::parse(format!("x={s}").as_bytes()).next().map(|(_, v)| v.into_owned()).unwrap_or_default()
+}
+
+/// The `proxy_url` value the engine reads, built from the proxy page.
+fn proxy_field(s: &Settings) -> String {
+    match s.proxy_mode.as_str() {
+        "none" => "direct".into(),
+        "pac" if !s.proxy_pac.trim().is_empty() => format!("pac:{}", s.proxy_pac.trim()),
+        "manual" if !s.proxy_host.trim().is_empty() => {
+            let scheme = if s.proxy_kind == "socks5" { "socks5h" } else { "http" };
+            let enc = |x: &str| url::form_urlencoded::byte_serialize(x.as_bytes()).collect::<String>();
+            let login = if s.proxy_user.is_empty() {
+                String::new()
+            } else if s.proxy_pass.is_empty() {
+                format!("{}@", enc(&s.proxy_user))
+            } else {
+                format!("{}:{}@", enc(&s.proxy_user), enc(&s.proxy_pass))
+            };
+            let port = s.proxy_port.trim();
+            let port = if port.is_empty() { if s.proxy_kind == "socks5" { "1080" } else { "8080" } } else { port };
+            format!("{scheme}://{login}{}:{port}", s.proxy_host.trim())
+        }
+        _ => String::new(),
+    }
+}
+
 fn normalize_types(raw: &str) -> String {
     let mut seen = Vec::new();
     for t in raw.split(|c: char| c == ',' || c == ';' || c.is_whitespace()) {
@@ -386,6 +525,9 @@ fn save(s: &Settings) -> bool {
     set(obj, "language", s.language.clone().into());
     set(obj, "close_to_tray", s.close_to_tray.into());
     set(obj, "start_with_windows", s.start_with_windows.into());
+    set(obj, "system_title_bar", s.system_title_bar.into());
+    set(obj, "ui_scale", s.ui_scale.into());
+    set(obj, "ui_font", s.ui_font.trim().into());
     set(obj, "extract_auto", s.extract_auto.into());
     set(obj, "extract_types", s.extract_types.clone().into());
     set(obj, "extract_into_folder", s.extract_into_folder.into());
@@ -398,7 +540,21 @@ fn save(s: &Settings) -> bool {
     set(obj, "connections_default", (s.connections_default as u64).into());
     set(obj, "speed_limit_kbps", s.speed_limit_kbps.into());
     set(obj, "user_agent", s.user_agent.clone().into());
-    set(obj, "proxy_url", s.proxy_url.clone().into());
+    set(obj, "proxy_url", proxy_field(s).into());
+    set(obj, "proxy_mode", s.proxy_mode.clone().into());
+    set(obj, "proxy_pac", s.proxy_pac.trim().into());
+    set(obj, "proxy_kind", s.proxy_kind.clone().into());
+    set(obj, "proxy_host", s.proxy_host.trim().into());
+    set(obj, "proxy_port", s.proxy_port.trim().into());
+    set(obj, "proxy_user", s.proxy_user.clone().into());
+    set(obj, "proxy_pass", s.proxy_pass.clone().into());
+    let protocols: Vec<&str> = [("http", s.proxy_http), ("https", s.proxy_https)].iter().filter(|p| p.1).map(|p| p.0).collect();
+    set(obj, "proxy_protocols", protocols.join(",").into());
+    set(obj, "proxy_from_browser", s.proxy_from_browser.into());
+    for (k, on, file) in &s.sounds_ev {
+        set(obj, &format!("sound_{k}"), (*on).into());
+        set(obj, &format!("sound_{k}_file"), file.trim().into());
+    }
     set(obj, "timeout_secs", s.timeout_secs.into());
     set(obj, "max_retries", s.max_retries.into());
     set(obj, "antivirus_cmd", s.antivirus_cmd.clone().into());
@@ -415,7 +571,8 @@ fn save(s: &Settings) -> bool {
     if s.logins != crate::model::site_logins() {
         crate::model::save_site_logins(&s.logins);
     }
-    set(obj, "sounds", s.sounds.into());
+    // Kept for older builds: on when any download sound is.
+    set(obj, "sounds", s.sounds_ev.iter().any(|e| e.1 && (e.0 == "complete" || e.0 == "failed")).into());
     set(obj, "quota_mb", s.quota_mb.trim().parse::<u64>().unwrap_or(0).into());
     set(obj, "quota_hours", s.quota_hours.trim().parse::<u64>().unwrap_or(1).clamp(1, 720).into());
     set(obj, "subtitles", s.subtitles.into());
@@ -824,7 +981,9 @@ impl eframe::App for SettingsApp {
                             1 => self.pane_engine(ui),
                             PANE_YTDLP => self.pane_plugins(ui),
                             3 => self.pane_browser(ui),
-                            4 => self.pane_rules(ui),
+                            4 => self.pane_proxy(ui),
+                            5 => self.pane_rules(ui),
+                            6 => self.pane_sounds(ui),
                             _ => self.pane_updates(ui),
                         }
                         ui.add_space(16.0);
@@ -1862,7 +2021,7 @@ fn window_row(ui: &mut Ui, idx: usize, w: &mut SpeedWindow) -> bool {
 }
 
 /// Sidebar entry: 14 px icon + 12 px label, 6 px radius, accent active row.
-fn rail_item(ui: &mut Ui, glyph: &str, label: &str, active: bool) -> bool {
+fn rail_item(ui: &mut Ui, icon: &str, label: &str, active: bool) -> bool {
     let label = crate::i18n::t(label);
     let t = tok();
     let w = ui.available_width();
@@ -1875,13 +2034,11 @@ fn rail_item(ui: &mut Ui, glyph: &str, label: &str, active: bool) -> bool {
         p.rect_filled(rect, 6.0, t.hover);
     }
     let col = if active { t.accent } else { t.text2 };
-    p.text(
-        egui::pos2(rect.left() + 10.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        glyph,
-        crate::fonts::icon(14.0),
-        col,
-    );
+    if icon.chars().count() == 1 {
+        p.text(egui::pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, icon, crate::fonts::icon(14.0), col);
+    } else {
+        crate::app::line_icon(p, egui::pos2(rect.left() + 17.0, rect.center().y), 15.0, icon, col);
+    }
     p.text(
         egui::pos2(rect.left() + 32.0, rect.center().y),
         Align2::LEFT_CENTER,
@@ -2207,11 +2364,12 @@ fn btn_mini(ui: &mut Ui, label: &str) -> Response {
 
 /// The identity row every plugin card shares (`.plugin-head`): brand tile ·
 /// name · version chip, then right-aligned meta and the open/closed chevron.
+/// `icon` is an `app::line_icon` key: the same outline strokes as the main
+/// window's sidebar, in the text colour, so it reads in dark and light alike.
 fn plugin_head(
     ui: &mut Ui,
     w: f32,
-    glyph: &str,
-    brand: Color32,
+    icon: &str,
     name: &str,
     version: &str,
     meta: &str,
@@ -2228,14 +2386,8 @@ fn plugin_head(
         egui::pos2(rect.left() + 13.0, rect.center().y - 17.0),
         Vec2::splat(34.0),
     );
-    p.rect_filled(tile, 9.0, wash(brand, 30));
-    p.text(
-        tile.center(),
-        Align2::CENTER_CENTER,
-        glyph,
-        crate::fonts::icon(17.0),
-        brand,
-    );
+    p.rect(tile, 9.0, wash(t.text, 10), Stroke::new(1.0, t.border), StrokeKind::Inside);
+    crate::app::line_icon(p, tile.center(), 18.0, icon, if open { t.accent } else { t.text });
     // name, with the version chip right after it
     let name_g = p.layout_no_wrap(name.to_owned(), semi(13.0), t.text);
     let nx = tile.right() + 11.0;
@@ -2473,6 +2625,54 @@ impl SettingsApp {
         }
         self.s.hide_col_icons = hide_icons;
 
+        // ---- Interface size: the main window's text, icons and spacing ----
+        let mut open_size = true;
+        let scale = &mut self.s.ui_scale;
+        card(ui, "Interface size", None, &mut open_size, |ui| {
+            egui::ComboBox::from_id_salt("ui_scale")
+                .selected_text(format!("{scale}%"))
+                .show_ui(ui, |ui| {
+                    for pct in [90u32, 100, 110, 125, 150, 175] {
+                        ui.selectable_value(scale, pct, format!("{pct}%"));
+                    }
+                });
+            ui.add_space(4.0);
+            hint(ui, "Makes the main window's text larger or smaller. Applies when you press Save.");
+        });
+
+        // ---- Font: the interface typeface ----
+        let mut open_font = true;
+        let font = &mut self.s.ui_font;
+        card(ui, "Font", None, &mut open_font, |ui| {
+            let shown = if font.trim().is_empty() {
+                "Default (Segoe UI)".to_string()
+            } else {
+                std::path::Path::new(font.trim())
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| font.clone())
+            };
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("ui_font")
+                    .selected_text(shown)
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(font, String::new(), "Default (Segoe UI)");
+                        for (name, _, _) in crate::fonts::UI_FONTS.iter().skip(1) {
+                            ui.selectable_value(font, name.to_string(), *name);
+                        }
+                    });
+                ui.add_space(8.0);
+                if button(ui, "Other font file…", false).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Font", &["ttf", "otf"]).pick_file() {
+                        *font = p.to_string_lossy().to_string();
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            hint(ui, "Takes effect the next time Download Craft starts. Scripts the font lacks (Bengali, Arabic…) still use their own fonts.");
+        });
+
         // ---- Language: one lang/<code>.json per language ----
         let mut open_lang = true;
         let langs = crate::i18n::available();
@@ -2495,6 +2695,7 @@ impl SettingsApp {
         {
             let mut tray = self.s.close_to_tray;
             let mut startup = self.s.start_with_windows;
+            let mut os_caption = self.s.system_title_bar;
             let mut open_window = self.open_window;
             card(ui, "Window", None, &mut open_window, |ui| {
                 switch_row(
@@ -2512,10 +2713,19 @@ impl SettingsApp {
                     "Start with Windows",
                     "Opens in the tray when you sign in, from wherever this copy is now (a moved folder is followed).",
                 );
+                ui.add_space(6.0);
+                switch_row(
+                    ui,
+                    "system_title_bar",
+                    &mut os_caption,
+                    "Use the Windows title bar",
+                    "For systems where buttons react above where you point (custom or stripped Windows builds). Takes effect the next time Download Craft starts.",
+                );
             });
             self.open_window = open_window;
             self.s.close_to_tray = tray;
             self.s.start_with_windows = startup;
+            self.s.system_title_bar = os_caption;
         }
     }
 
@@ -2557,8 +2767,6 @@ impl SettingsApp {
                     s.temp_dir = p.to_string_lossy().to_string();
                 }
             }
-            ui.add_space(6.0);
-            checkbox(ui, &mut s.sounds, "Play a sound when a download finishes or fails", 14.0, 11.5, true);
             ui.add_space(6.0);
             let mut c = field_row(ui, "quota", "Download quota", None, Some("For capped connections: downloads pause once this much arrived within the hours on the right, and resume by themselves. 0 = off."));
             input_box(&mut c, "quota_mb_in", &mut s.quota_mb, 80.0, true, false, "0");
@@ -2631,17 +2839,6 @@ impl SettingsApp {
                 true,
                 false,
                 "default (Download Craft)",
-            );
-            let mut c = field_row(ui, "proxy", "Proxy", None, None);
-            let w = c.available_width();
-            input_box(
-                &mut c,
-                "engine_proxy",
-                &mut s.proxy_url,
-                w,
-                true,
-                false,
-                "http://host:port (empty = direct)",
             );
             let mut c = field_row(ui, "timeout", "Timeout", Some("sec"), None);
             let mut timeout = s.timeout_secs as f64;
@@ -2885,8 +3082,7 @@ impl SettingsApp {
                 let head = plugin_head(
                     ui,
                     inner.width(),
-                    "\u{e24d}", // insert_drive_file
-                    t.accent,
+                    "ytdlp",
                     "yt-dlp",
                     &pill,
                     &meta,
@@ -3200,8 +3396,7 @@ impl SettingsApp {
                 let head = plugin_head(
                     ui,
                     inner.width(),
-                    "\u{e02c}", // movie
-                    ok_green(),
+                    "ffmpeg",
                     "ffmpeg",
                     &pill,
                     &meta,
@@ -3443,12 +3638,22 @@ impl SettingsApp {
         );
         ui.add_space(12.0);
         if self.host_status.is_none() {
-            self.host_status = Some(
+            // Loading the extension should be all anyone does: a browser
+            // that is not linked yet is linked here, without a button.
+            let probe = || -> Vec<(&'static str, bool)> {
                 ["chrome", "edge", "brave", "opera", "firefox"]
                     .iter()
                     .map(|b| (*b, crate::app::native_host_status(b)))
-                    .collect(),
-            );
+                    .collect()
+            };
+            let mut status = probe();
+            if status.iter().any(|(_, ok)| !ok) {
+                for (b, _) in status.iter().filter(|(_, ok)| !ok) {
+                    let _ = crate::app::install_native_host(b);
+                }
+                status = probe();
+            }
+            self.host_status = Some(status);
         }
         self.browser_card(ui, 0);
         ui.add_space(10.0);
@@ -3521,10 +3726,10 @@ impl SettingsApp {
             .filter(|(k, _)| status.iter().any(|(b, ok)| b == k && *ok))
             .count();
         let open = self.browser_open[idx];
-        let (glyph, brand, name) = if firefox {
-            ("\u{e80b}", Color32::from_rgb(0xff, 0x8a, 0x3d), "Firefox")
+        let (icon, name) = if firefox {
+            ("Firefox", "Firefox")
         } else {
-            ("\u{e87b}", t.accent, "Chrome · Edge · Brave · Opera")
+            ("Chromium", "Chrome · Edge · Brave · Opera")
         };
         let pill = if connected > 0 { "connected" } else { "not set up" };
         let meta = format!("{connected} of {} linked", browsers.len());
@@ -3543,7 +3748,7 @@ impl SettingsApp {
                 ui.set_width(w);
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 let inner = ui.max_rect();
-                if plugin_head(ui, inner.width(), glyph, brand, name, pill, &meta, open).clicked() {
+                if plugin_head(ui, inner.width(), icon, name, pill, &meta, open).clicked() {
                     want_open = !open;
                 }
                 if !open {
@@ -3636,6 +3841,136 @@ impl SettingsApp {
     }
 
     // ---------- Categories & Rules ----------
+    // ---------- Proxy / Socks ----------
+    fn pane_proxy(&mut self, ui: &mut Ui) {
+        h2(ui, "Proxy / Socks");
+        hint(ui, "How downloads reach the internet. yt-dlp and video downloads use the same choice.");
+        ui.add_space(10.0);
+        let s = &mut self.s;
+        let mut open = true;
+        card(ui, "From the browser", None, &mut open, |ui| {
+            switch_row(
+                ui,
+                "proxy_from_browser",
+                &mut s.proxy_from_browser,
+                "Use the browser's proxy for downloads caught from it",
+                "A download handed over by the extension goes out the same way the browser reached the site (when \"Use system settings\" is chosen below).",
+            );
+        });
+        let mut open = true;
+        card(ui, "Connection", None, &mut open, |ui| {
+            let modes: [(&str, &str, &str); 4] = [
+                ("none", "No proxy", "Connect directly, even when Windows has a proxy set."),
+                ("system", "Use system settings", "Whatever Windows' proxy settings say, including its automatic script."),
+                ("pac", "Use automatic configuration script", "A PAC script picks the proxy for each site."),
+                ("manual", "Manual proxy / socks configuration", "One HTTP or SOCKS5 proxy for every download."),
+            ];
+            for (key, title, sub) in modes {
+                let (picked, _) = loc_option(ui, s.proxy_mode == key, title, None, sub, false, None);
+                if picked {
+                    s.proxy_mode = key.to_string();
+                }
+                ui.add_space(4.0);
+            }
+            if s.proxy_mode == "pac" {
+                ui.add_space(4.0);
+                let mut c = field_row(ui, "proxy_pac", "Script address", None, Some(if cfg!(windows) { "The PAC file's URL, e.g. http://intranet/proxy.pac" } else { "PAC scripts run through Windows; on this system such downloads go direct." }));
+                let w = c.available_width();
+                input_box(&mut c, "proxy_pac_in", &mut s.proxy_pac, w, true, false, "http://host/proxy.pac");
+            }
+            if s.proxy_mode == "manual" {
+                ui.add_space(6.0);
+                sec_head(ui, "Proxy type");
+                let mut kind = if s.proxy_kind == "socks5" { "SOCKS5".to_string() } else { "HTTP".to_string() };
+                if segmented(ui, "proxy_kind", &["HTTP", "SOCKS5"], &mut kind) {
+                    s.proxy_kind = if kind == "SOCKS5" { "socks5".into() } else { "http".into() };
+                }
+                ui.add_space(8.0);
+                let mut c = field_row(ui, "proxy_host", "Server address", None, None);
+                let w = (c.available_width() - 96.0).max(80.0);
+                input_box(&mut c, "proxy_host_in", &mut s.proxy_host, w, true, false, "proxy.example.com");
+                c.add_space(6.0);
+                input_box(&mut c, "proxy_port_in", &mut s.proxy_port, 90.0, true, true, if s.proxy_kind == "socks5" { "1080" } else { "8080" });
+                let mut c = field_row(ui, "proxy_user", "User name", None, Some("Only when the proxy asks for a login."));
+                let w = c.available_width();
+                input_box(&mut c, "proxy_user_in", &mut s.proxy_user, w, true, false, "optional");
+                let mut c = field_row(ui, "proxy_pass", "Password", None, None);
+                let w = c.available_width();
+                c.add(egui::TextEdit::singleline(&mut s.proxy_pass).password(true).desired_width(w).hint_text("optional"));
+                ui.add_space(6.0);
+                if s.proxy_kind == "http" {
+                    sec_head(ui, "Use this proxy for");
+                    ui.horizontal(|ui| {
+                        checkbox(ui, &mut s.proxy_http, "http", 14.0, 11.5, false);
+                        ui.add_space(14.0);
+                        checkbox(ui, &mut s.proxy_https, "https", 14.0, 11.5, false);
+                    });
+                    ui.add_space(4.0);
+                }
+                if button(ui, "Get system proxy", false).clicked() {
+                    let (proxy, pac) = crate::sysproxy::system_settings();
+                    if let Some(list) = proxy {
+                        // "host:port" or "http=a:80;https=b:443": take the https one, else the first.
+                        let pick = list
+                            .split(';')
+                            .map(str::trim)
+                            .find(|x| x.starts_with("https="))
+                            .or_else(|| list.split(';').map(str::trim).next())
+                            .unwrap_or("")
+                            .rsplit('=')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        if s.proxy_kind == "socks5" { fill_manual(s, &format!("socks5://{pick}")); } else { fill_manual(s, &pick); }
+                    } else if let Some(pac) = pac {
+                        s.proxy_mode = "pac".into();
+                        s.proxy_pac = pac;
+                    }
+                }
+            }
+            ui.add_space(4.0);
+            hint(ui, "FTP downloads always use passive (PASV) mode and connect directly.");
+        });
+    }
+
+    // ---------- Sounds ----------
+    fn pane_sounds(&mut self, ui: &mut Ui) {
+        h2(ui, "Sounds");
+        hint(ui, "A sound for each event. Leave the file empty for the system's own sound; a .wav file plays instead.");
+        ui.add_space(10.0);
+        let mut open = true;
+        let evs = &mut self.s.sounds_ev;
+        card(ui, "Events", None, &mut open, |ui| {
+            // One row per event, as IDM lays it out: on/off with the event's
+            // name, the sound file, then Browse and Play.
+            for (key, on, file) in evs.iter_mut() {
+                let label = SOUND_EVENTS.iter().find(|e| e.0 == *key).map(|e| e.1).unwrap_or(key);
+                ui.horizontal(|c| {
+                    c.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+                    c.allocate_ui_with_layout(
+                        Vec2::new(190.0, 28.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |c| {
+                            c.set_min_width(190.0);
+                            checkbox(c, on, label, 14.0, 11.5, false);
+                        },
+                    );
+                    let w = (c.available_width() - 2.0 * 34.0).max(60.0);
+                    input_box(c, &format!("snd_in_{key}"), file, w, true, false, "system sound");
+                    if icon_sq(c, "\u{e2c7}", 28.0, 6.0).on_hover_text("Browse…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("Sound", &["wav"]).pick_file() {
+                            *file = p.to_string_lossy().to_string();
+                        }
+                    }
+                    if icon_sq(c, "\u{e037}", 28.0, 6.0).on_hover_text("Play").clicked() {
+                        crate::platform::play_sound_file(key, file);
+                    }
+                });
+                ui.add_space(6.0);
+            }
+        });
+    }
+
     fn pane_rules(&mut self, ui: &mut Ui) {
         let t = tok();
         h2(ui, "Categories & Rules");

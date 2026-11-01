@@ -8,6 +8,12 @@
   "use strict";
   if (window.__dcPageHook) return;
   window.__dcPageHook = true;
+  // Anti-bot frames (Cloudflare Turnstile, hCaptcha, reCAPTCHA, Arkose) hold
+  // no media, forbid most connections by CSP (their own `fetch("data:,")`
+  // probe was blamed on this wrapper) and may count a wrapped fetch as
+  // tampering. The manifest skips them; this covers the on-install injection.
+  if (/(^|\.)(challenges\.cloudflare\.com|hcaptcha\.com|recaptcha\.net|arkoselabs\.com)$/i.test(location.hostname)
+      || (/(^|\.)google\.com$/i.test(location.hostname) && location.pathname.startsWith("/recaptcha/"))) return;
 
   const MAX_BODY = 2 * 1024 * 1024;
   const MAX_PER_BODY = 30;
@@ -67,6 +73,10 @@
   const origFetch = window.fetch;
   if (typeof origFetch === "function") {
     window.fetch = function (...args) {
+      const a0 = args[0];
+      const target = typeof a0 === "string" ? a0 : (a0 && (a0.url || a0.href)) || "";
+      // data:/blob: answers are the page's own bytes, never a media list.
+      if (/^(data|blob):/i.test(String(target))) return origFetch.apply(this, args);
       const p = origFetch.apply(this, args);
       p.then((res) => {
         try {

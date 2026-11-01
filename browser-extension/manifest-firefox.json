@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_extName__",
   "default_locale": "en",
-  "version": "0.9.12",
+  "version": "0.9.13",
   "description": "__MSG_extDescription__",
   "permissions": [
     "nativeMessaging",
@@ -15,7 +15,8 @@
     "cookies",
     "webRequest",
     "webRequestBlocking",
-    "notifications"
+    "notifications",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "http://*/*",
@@ -42,7 +43,14 @@
         "content.js"
       ],
       "all_frames": true,
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "exclude_matches": [
+        "*://challenges.cloudflare.com/*",
+        "*://*.hcaptcha.com/*",
+        "*://*.recaptcha.net/*",
+        "*://www.google.com/recaptcha/*",
+        "*://*.arkoselabs.com/*"
+      ]
     },
     {
       "matches": [
@@ -53,7 +61,14 @@
         "page-relay.js"
       ],
       "all_frames": true,
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "exclude_matches": [
+        "*://challenges.cloudflare.com/*",
+        "*://*.hcaptcha.com/*",
+        "*://*.recaptcha.net/*",
+        "*://www.google.com/recaptcha/*",
+        "*://*.arkoselabs.com/*"
+      ]
     },
     {
       "matches": [
@@ -65,7 +80,14 @@
       ],
       "all_frames": true,
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "exclude_matches": [
+        "*://challenges.cloudflare.com/*",
+        "*://*.hcaptcha.com/*",
+        "*://*.recaptcha.net/*",
+        "*://www.google.com/recaptcha/*",
+        "*://*.arkoselabs.com/*"
+      ]
     }
   ],
   "action": {

@@ -37,6 +37,12 @@ pub fn helper_dir() -> Option<PathBuf> {
 pub fn version_output(command: Command) -> Option<std::process::Output> {
     version_output_timeout(command, std::time::Duration::from_secs(5))
 }
+/// The first run of a just-downloaded helper: a frozen build unpacks itself
+/// and antivirus scans it first, which can take far longer than 5 s on a slow
+/// or busy machine.
+pub fn first_run_output(command: Command) -> Option<std::process::Output> {
+    version_output_timeout(command, std::time::Duration::from_secs(120))
+}
 fn version_output_timeout(mut command: Command, timeout: std::time::Duration) -> Option<std::process::Output> {
     // A file avoids pipe deadlock and reader threads left behind by a tool's
     // descendants inheriting stdout. Keep only a bounded version prefix in RAM.
@@ -141,6 +147,49 @@ pub fn play_sound(ok: bool) {
     }
 }
 
+/// One of the Sounds page's events ("complete", "failed", "queue_start",
+/// "queue_done"), when it is switched on there.
+pub fn play_event(event: &str) {
+    let legacy = crate::model::ui_pref_bool("sounds", false) && (event == "complete" || event == "failed");
+    if !crate::model::ui_pref_bool(&format!("sound_{event}"), legacy) {
+        return;
+    }
+    play_sound_file(event, &crate::model::ui_pref_str(&format!("sound_{event}_file"), ""));
+}
+
+/// Play `file` (a .wav), or the system sound for `event` when it is empty
+/// or missing.
+pub fn play_sound_file(event: &str, file: &str) {
+    let file = file.trim();
+    if file.is_empty() || !Path::new(file).is_file() {
+        play_sound(event != "failed");
+        return;
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "winmm")]
+        extern "system" {
+            fn PlaySoundW(sound: *const u16, module: isize, flags: u32) -> i32;
+        }
+        const SND_ASYNC: u32 = 0x0001;
+        const SND_NODEFAULT: u32 = 0x0002;
+        const SND_FILENAME: u32 = 0x0002_0000;
+        let wide: Vec<u16> = file.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: `wide` is NUL-terminated; SND_ASYNC copies what it needs.
+        unsafe { PlaySoundW(wide.as_ptr(), 0, SND_FILENAME | SND_ASYNC | SND_NODEFAULT) };
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("afplay").arg(file).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if Command::new("paplay").arg(file).spawn().is_err() {
+            let _ = Command::new("aplay").arg("-q").arg(file).spawn();
+        }
+    }
+}
+
 pub fn power(action: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
@@ -181,6 +230,13 @@ pub fn power(action: &str) -> Result<(), String> {
         }
     }
 }
+/// Browsers whose native-host registration the app keeps current. Linux
+/// also has Chromium as a separate browser (Fedora's default Chromium build).
+#[cfg(windows)]
+pub const HOST_BROWSERS: &[&str] = &["chrome", "edge", "brave", "opera", "vivaldi", "firefox"];
+#[cfg(not(windows))]
+pub const HOST_BROWSERS: &[&str] = &["chrome", "chromium", "edge", "brave", "opera", "vivaldi", "firefox"];
+
 pub fn native_host_directory(browser: &str) -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or("No home directory")?;
     #[cfg(target_os = "macos")]
@@ -541,3 +597,39 @@ pub fn drag_files_out(files: &[PathBuf]) {
 
 #[cfg(not(windows))]
 pub fn drag_files_out(_files: &[PathBuf]) {}
+
+/// Whether windows should keep the OS title bar instead of painting their
+/// own. The borderless window relies on DWM drawing the client area over the
+/// whole frame; stripped Windows builds (Themes service off, "Micro 10" and
+/// similar) still reserve the caption, so the picture lands one caption lower
+/// than where clicks are read and every button answers above itself. The
+/// `system_title_bar` key in ui.json wins; without it this follows the theme
+/// state.
+pub fn system_title_bar() -> bool {
+    if std::env::var_os("DOWNLOADCRAFT_SYSTEM_FRAME").is_some_and(|v| v != "0") {
+        return true;
+    }
+    crate::model::ui_pref_bool("system_title_bar", frame_unsupported())
+}
+
+/// The OS cannot host a borderless window cleanly: visual styles or desktop
+/// composition are off.
+#[cfg(windows)]
+pub fn frame_unsupported() -> bool {
+    #[link(name = "uxtheme")]
+    extern "system" {
+        fn IsThemeActive() -> i32;
+    }
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmIsCompositionEnabled(enabled: *mut i32) -> i32;
+    }
+    let mut on = 0i32;
+    // SAFETY: plain queries; `on` outlives the call.
+    unsafe { IsThemeActive() == 0 || DwmIsCompositionEnabled(&mut on) != 0 || on == 0 }
+}
+
+#[cfg(not(windows))]
+pub fn frame_unsupported() -> bool {
+    false
+}

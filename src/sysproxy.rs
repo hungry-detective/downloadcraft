@@ -36,6 +36,31 @@ pub fn proxy_for(url: &str) -> Option<String> {
     v
 }
 
+/// The proxy a given PAC script (Settings → Proxy → automatic configuration
+/// script) picks for `url`; None = go direct. Cached like `proxy_for`.
+pub fn pac_proxy_for(script: &str, url: &str) -> Option<String> {
+    let host = reqwest::Url::parse(url).ok().map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")))?;
+    let key = format!("{script}|{host}");
+    static CACHE: OnceLock<Mutex<HashMap<String, (std::time::Instant, Option<String>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((at, v)) = cache.lock().ok()?.get(&key) {
+        if at.elapsed().as_secs() < CACHE_SECS {
+            return v.clone();
+        }
+    }
+    let v = imp::resolve_with(url, (false, Some(script.to_string()))).and_then(|list| pick(&list, url));
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, (std::time::Instant::now(), v.clone()));
+    }
+    v
+}
+
+/// The fixed proxy in the system's settings (Settings → Proxy → Get system):
+/// (proxy list as Windows stores it, PAC script URL).
+pub fn system_settings() -> (Option<String>, Option<String>) {
+    imp::system_settings()
+}
+
 /// WinHTTP's answer is a list ("a:8080; b:3128" or "http=a:80;https=b:443"):
 /// take the first entry that fits the URL's scheme.
 fn pick(list: &str, url: &str) -> Option<String> {
@@ -101,8 +126,24 @@ mod imp {
         matches!(ie_config(), Some((auto, pac)) if auto || pac.is_some())
     }
 
+    pub fn system_settings() -> (Option<String>, Option<String>) {
+        unsafe {
+            let mut c: WINHTTP_CURRENT_USER_IE_PROXY_CONFIG = std::mem::zeroed();
+            if WinHttpGetIEProxyConfigForCurrentUser(&mut c) == 0 {
+                return (None, None);
+            }
+            let pac = take(c.lpszAutoConfigUrl).filter(|s| !s.trim().is_empty());
+            let proxy = take(c.lpszProxy).filter(|s| !s.trim().is_empty());
+            let _ = take(c.lpszProxyBypass);
+            (proxy, pac)
+        }
+    }
+
     pub fn resolve(url: &str) -> Option<String> {
-        let (auto, pac) = ie_config()?;
+        resolve_with(url, ie_config()?)
+    }
+
+    pub fn resolve_with(url: &str, (auto, pac): (bool, Option<String>)) -> Option<String> {
         unsafe {
             let agent = wide("Download Craft");
             let session = WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_NO_PROXY, std::ptr::null(), std::ptr::null(), 0);
@@ -147,6 +188,15 @@ mod imp {
     }
     pub fn resolve(_url: &str) -> Option<String> {
         None
+    }
+    // No WinHTTP to run a PAC script here: such downloads go direct.
+    pub fn resolve_with(_url: &str, _cfg: (bool, Option<String>)) -> Option<String> {
+        None
+    }
+    pub fn system_settings() -> (Option<String>, Option<String>) {
+        let env = std::env::var("https_proxy").or_else(|_| std::env::var("HTTPS_PROXY"))
+            .or_else(|_| std::env::var("http_proxy")).or_else(|_| std::env::var("HTTP_PROXY")).ok();
+        (env.filter(|s| !s.trim().is_empty()), None)
     }
 }
 
