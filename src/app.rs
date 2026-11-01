@@ -863,6 +863,40 @@ enum ButtonId {
     UpdCheck,
     UpdDownload,
     UpdRestart,
+    RfOpen,
+    RfApply,
+    RfCancel,
+}
+
+/// Why a failure means the link itself is dead (and a fresh one from the
+/// page would continue the download), in plain words; `None` for failures a
+/// new link would not fix (disk full, a cut connection, a checksum).
+fn dead_link_reason(reason: &str) -> Option<String> {
+    let low = reason.to_ascii_lowercase();
+    if low.contains("no such host") || low.contains("dns error") || low.contains("name or service not known") || low.contains("failed to lookup address") {
+        Some("the server's address no longer exists.".into())
+    } else if low.contains("410") || low.contains("404") || low.contains("not found") {
+        Some("the file is no longer at this address (404).".into())
+    } else if low.contains("403") || low.contains("expired") || low.contains("forbidden") || low.contains("refused this link") {
+        Some("the server refused it (403): download links like this one expire.".into())
+    } else if low.contains("web page instead of the file") {
+        Some("the server now answers with a web page instead of the file.".into())
+    } else {
+        None
+    }
+}
+
+/// The "Refresh download address" window's state.
+struct RefreshDlg {
+    id: u64,
+    name: String,
+    /// The page the file came from (Open page), when the row knows it.
+    page: String,
+    /// Why the window opened by itself (a resume on a dead link).
+    reason: Option<String>,
+    new_url: String,
+    error: Option<String>,
+    opened: std::time::Instant,
 }
 
 /// Checkbox identity for manual routing.
@@ -2308,6 +2342,8 @@ pub struct CraftApp {
     tb_press: Option<(std::time::Instant, egui::Pos2)>,
     tray: Option<PlatformTray>,
     details_id: Option<u64>,
+    /// The "Refresh download address" window, for one row.
+    refresh_dlg: Option<RefreshDlg>,
     probing: bool,
     probe_size: Option<u64>,
     probe_name: Option<String>,
@@ -2534,6 +2570,7 @@ impl CraftApp {
             tb_press: None,
             tray: None,
             details_id: None,
+            refresh_dlg: None,
             probing: false,
             probe_size: None,
             probe_name: None,
@@ -2629,6 +2666,11 @@ impl CraftApp {
                 Err(e) => app.push_log(format!("Browser host ({b}) unavailable: {e}")),
                 Ok(false) => {}
             }
+        }
+        // The browser extension kept in a folder that never moves, at this
+        // app's own version (a portable update may unpack the app anywhere).
+        for note in crate::extsync::sync() {
+            app.push_log(note);
         }
         // Start with Windows: the Run entry points at this copy, wherever it
         // is now (a moved portable folder follows), or is removed when off.
@@ -3387,21 +3429,172 @@ impl CraftApp {
                 }
             }
             RowAct::Convert(kind) => self.convert(id, kind),
-            RowAct::RefreshAddress => {
-                let Some(d) = self.downloads.iter().find(|d| d.id == id) else { return };
-                let page = d.referer.clone();
-                let name = d.filename.clone();
-                crate::model::set_refresh_wait(Some(crate::model::RefreshWait {
-                    id,
-                    until: chrono::Local::now().timestamp() + 10 * 60,
-                }));
-                if let Ok(u) = url::Url::parse(&page) {
-                    crate::platform::open_url(u.as_str());
+            RowAct::RefreshAddress => self.open_refresh(id, None),
+        }
+    }
+
+    /// Opens the "Refresh download address" window for row `id` and starts
+    /// waiting (10 minutes) for the next link the browser sends, as IDM does.
+    /// `reason` says why when a resume failed on a dead link.
+    fn open_refresh(&mut self, id: u64, reason: Option<String>) {
+        let Some(d) = self.downloads.iter().find(|d| d.id == id) else { return };
+        crate::model::set_refresh_wait(Some(crate::model::RefreshWait {
+            id,
+            until: chrono::Local::now().timestamp() + 10 * 60,
+        }));
+        self.refresh_dlg = Some(RefreshDlg {
+            id,
+            name: d.filename.clone(),
+            page: d.referer.clone(),
+            reason,
+            new_url: String::new(),
+            error: None,
+            opened: std::time::Instant::now(),
+        });
+    }
+
+    /// The link typed or pasted into the refresh window takes the row's
+    /// place; the bytes already on disk are kept and the row resumes.
+    fn apply_typed_link(&mut self) {
+        let Some(dlg) = self.refresh_dlg.as_mut() else { return };
+        let url = dlg.new_url.trim().to_string();
+        if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("ftp://")) {
+            dlg.error = Some("Paste a link that starts with http:// or https://".into());
+            return;
+        }
+        let id = dlg.id;
+        crate::model::set_refresh_wait(None);
+        self.refresh_dlg = None;
+        let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) else { return };
+        let dest = d.dest_path();
+        d.url = url.clone();
+        if matches!(d.status, Status::Failed(_)) {
+            d.status = Status::Paused;
+        }
+        let name = d.filename.clone();
+        crate::model::rebind_resume(&dest, &url);
+        self.save_queue();
+        self.push_log(format!("Refresh address: new link for {name} - continuing."));
+        self.resume(id);
+    }
+
+    /// The "Refresh download address" window: a card in the app's style with
+    /// the refresh icon, what happened, the two ways to get a new link
+    /// (click it again in the browser, or paste it) and Cancel.
+    fn draw_refresh_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dlg) = self.refresh_dlg.as_ref() else { return };
+        // The row went away, or the wait ran out.
+        let left = (10 * 60) as i64 - dlg.opened.elapsed().as_secs() as i64;
+        if left <= 0 || !self.downloads.iter().any(|d| d.id == dlg.id) {
+            crate::model::set_refresh_wait(None);
+            self.refresh_dlg = None;
+            return;
+        }
+        let (name, page, reason, error) = (dlg.name.clone(), dlg.page.clone(), dlg.reason.clone(), dlg.error.clone());
+        let mut new_url = dlg.new_url.clone();
+        let w = modal_width(ctx, 460.0);
+        egui::Window::new("refresh_modal")
+            .id(egui::Id::new("refresh_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(egui::vec2(w, 0.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(pl().modal_bg)
+                    .stroke(egui::Stroke::new(1.0_f32, pl().modal_bd))
+                    .corner_radius(12.0)
+                    .inner_margin(egui::Margin::ZERO),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(w);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                // ---- title bar: refresh icon · title · close ----
+                let (bar, _) = ui.allocate_exact_size(egui::vec2(w, 44.0), egui::Sense::hover());
+                let p = ui.painter().clone();
+                p.line_segment(
+                    [egui::pos2(bar.min.x, bar.max.y - 0.5), egui::pos2(bar.max.x, bar.max.y - 0.5)],
+                    egui::Stroke::new(1.0, pl().modal_bd),
+                );
+                let tile = egui::Rect::from_center_size(egui::pos2(bar.min.x + 26.0, bar.center().y), egui::vec2(28.0, 28.0));
+                p.rect_filled(tile, 8.0, mix(pl().modal_bg, pl().primary, 0.18));
+                line_icon(&p, tile.center(), 16.0, "Updates", pl().primary);
+                p.text(
+                    egui::pos2(bar.min.x + 50.0, bar.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Refresh download address",
+                    crate::fonts::semi(12.5),
+                    pl().txt,
+                );
+                let close_r = egui::Rect::from_center_size(egui::pos2(bar.max.x - 22.0, bar.center().y), egui::vec2(25.0, 25.0));
+                let close_hover = self.man.hover(&close_r);
+                if close_hover {
+                    p.rect_filled(close_r, 6.0, pl().surface_lt);
                 }
-                self.push_log(format!(
-                    "Refresh address for {name}: click its download link again in the browser (within 10 minutes) - the new link continues this download."
-                ));
-            }
+                p.text(close_r.center(), egui::Align2::CENTER_CENTER, "\u{e5cd}", crate::fonts::icon(14.0), if close_hover { pl().txt } else { pl().dim });
+                self.hits.push((HitKind::Btn(ButtonId::RfCancel), close_r));
+
+                egui::Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 14 }).show(ui, |ui| {
+                    let row_w = w - 32.0;
+                    ui.set_width(row_w);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    // The file, with its type icon.
+                    let (file_r, _) = ui.allocate_exact_size(egui::vec2(row_w, 40.0), egui::Sense::hover());
+                    let p = ui.painter().clone();
+                    p.rect(file_r, 8.0, pl().surface, egui::Stroke::new(1.0, mix(pl().modal_bg, pl().modal_bd, 0.45)), egui::StrokeKind::Inside);
+                    let cat = crate::model::category_of(&name);
+                    p.text(egui::pos2(file_r.min.x + 20.0, file_r.center().y), egui::Align2::CENTER_CENTER, file_icon(cat), crate::fonts::icon(16.0), cat_color(cat));
+                    let shown = truncate_to_width(&p, &name, crate::fonts::semi(11.5), pl().txt, row_w - 48.0);
+                    crate::shaped::draw(&p, egui::pos2(file_r.min.x + 38.0, file_r.center().y), egui::Align2::LEFT_CENTER, &shown, crate::fonts::semi(11.5), pl().txt);
+                    ui.add_space(10.0);
+                    if let Some(r) = &reason {
+                        ui.add(egui::Label::new(egui::RichText::new(format!("The link stopped working: {r}")).font(crate::fonts::reg(11.0)).color(pl().error)).wrap());
+                        ui.add_space(6.0);
+                    }
+                    ui.add(egui::Label::new(
+                        egui::RichText::new("Open the page you downloaded it from and click its download link again: the new link continues this download from where it stopped. Or paste a new link below.")
+                            .font(crate::fonts::reg(11.0))
+                            .color(pl().dim),
+                    ).wrap());
+                    ui.add_space(10.0);
+                    let r = dp_input(ui, "rf_url", &mut new_url, "Paste the new download link", row_w, false, false);
+                    self.hits.push((HitKind::Field("rf_url"), r));
+                    if let Some(e) = &error {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(e).font(crate::fonts::reg(10.5)).color(pl().error));
+                    }
+                    ui.add_space(8.0);
+                    // Waiting for the browser, with the time left.
+                    let (wait_r, _) = ui.allocate_exact_size(egui::vec2(row_w, 18.0), egui::Sense::hover());
+                    let p = ui.painter().clone();
+                    let t = ui.ctx().input(|i| i.time) as f32;
+                    p.circle_filled(egui::pos2(wait_r.min.x + 5.0, wait_r.center().y), 3.5, pl().success.gamma_multiply(0.55 + 0.45 * (t * 3.0).sin().abs()));
+                    p.text(
+                        egui::pos2(wait_r.min.x + 16.0, wait_r.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        format!("Waiting for the new link from your browser… {}:{:02} left", left / 60, left % 60),
+                        crate::fonts::reg(10.5),
+                        pl().dim,
+                    );
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                    ui.add_space(12.0);
+                    ui.allocate_ui_with_layout(egui::vec2(row_w, 28.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let r = dp_button(ui, &self.man, "Use link", true);
+                        self.hits.push((HitKind::Btn(ButtonId::RfApply), r));
+                        let r = dp_button(ui, &self.man, "Cancel", false);
+                        self.hits.push((HitKind::Btn(ButtonId::RfCancel), r));
+                        if url::Url::parse(&page).is_ok() {
+                            let r = dp_button(ui, &self.man, "Open page", false);
+                            self.hits.push((HitKind::Btn(ButtonId::RfOpen), r));
+                        }
+                    });
+                });
+            });
+        if let Some(d) = self.refresh_dlg.as_mut() {
+            d.new_url = new_url;
         }
     }
 
@@ -3417,6 +3610,10 @@ impl CraftApp {
             }
         }
         crate::model::set_refresh_wait(None);
+        if self.refresh_dlg.as_ref().is_some_and(|r| r.id == id) {
+            self.refresh_dlg = None;
+        }
+        let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) else { return };
         let dest = d.dest_path();
         d.url = item.url.clone();
         if let Some(c) = item.cookie.filter(|c| !c.is_empty()) {
@@ -5145,6 +5342,8 @@ impl CraftApp {
             self.push_log(note);
         }
         let mut repair_restart: Vec<u64> = Vec::new();
+        // Rows that failed on a dead link: the refresh window opens for one.
+        let mut dead_links: Vec<(u64, String)> = Vec::new();
         for id in finished {
             // The helper's stage label dies with the helper.
             self.phases.remove(&id);
@@ -5190,7 +5389,8 @@ impl CraftApp {
                     let landed = std::fs::metadata(d.dest_path())
                         .map(|m| m.len())
                         .unwrap_or(0);
-                    let adaptive = d.pair_url.starts_with("http");
+                    let adaptive = d.pair_url.starts_with("http")
+                        || task.shared.merged.load(Ordering::SeqCst);
                     // A merge the engine finished (both legs at their servers'
                     // own lengths, file muxed) is done even when the expected
                     // total was a little off: a Facebook reel failed with
@@ -5284,6 +5484,12 @@ impl CraftApp {
                         if !repaired {
                             d.status = Status::Failed(reason.clone());
                             msg = Some(format!("Failed #{id}: {reason}"));
+                            if let Some(why) = dead_link_reason(&reason) {
+                                // A YouTube row reads a fresh link itself.
+                                if !crate::engine::is_youtube_page(&d.url) && !crate::engine::is_youtube_page(&d.referer) {
+                                    dead_links.push((id, why));
+                                }
+                            }
                         }
                         // Never keep a phantom size: a failed transfer with no
                         // bytes (e.g. a walled video page) must not display
@@ -5323,6 +5529,13 @@ impl CraftApp {
                     self.push_log(m);
                 }
                 self.save_queue();
+            }
+        }
+        // A dead link opens "Refresh download address" (IDM does the same),
+        // one at a time.
+        if self.refresh_dlg.is_none() {
+            if let Some((id, why)) = dead_links.into_iter().next() {
+                self.open_refresh(id, Some(why));
             }
         }
         // Checksum repairs restart immediately (the job was already running;
@@ -5799,9 +6012,17 @@ impl CraftApp {
                 // A dialog that found the row Paused asks to start it: resume,
                 // or its "starting it" notice promised something that never
                 // happened.
-                Some(Status::Paused) => {
+                // A failed row clicked again in the browser (a YouTube link
+                // that expired, a dropped connection) is retried the same way:
+                // it continues from its bytes, a YouTube page re-read fresh.
+                Some(Status::Paused) | Some(Status::Failed(_)) => {
                     self.queue_running = true;
                     self.resume(id);
+                }
+                // Already running: bring its progress window up instead of
+                // nothing visibly happening.
+                Some(Status::Downloading) => {
+                    let _ = Self::spawn_progress(id);
                 }
                 _ => {}
             }
@@ -6363,6 +6584,12 @@ impl eframe::App for CraftApp {
             }
             // Installed while downloads were running: restart as soon as the
             // last one stops (an interrupted one resumes after the restart).
+            if self.update_restart_ready
+                && ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("update_restart_now"))).unwrap_or(false)
+            {
+                self.update_auto = false;
+                self.restart_for_update();
+            }
             if self.update_restart_ready && self.update_auto && self.tasks.is_empty() {
                 self.update_auto = false;
                 notify("Download Craft updated", "Restarting into the new version…");
@@ -6672,13 +6899,40 @@ impl eframe::App for CraftApp {
                 // grows out of it on hover. The glyph is the concept's arrow
                 // *without* its baseline (the line under it read as a second,
                 // unrelated icon).
-                if self.update_found && !self.update_busy {
+                // Every stage of an update shows here: found ("Update", opens
+                // the About & Updates window), downloading and installing in
+                // the background ("Updating 45%"), and installed while
+                // downloads were running ("Restart": swaps in the new version
+                // now; the running downloads resume after it).
+                let installing = self.selfupd_rx.is_some();
+                let stage: Option<(String, &str, egui::Color32, bool)> = if self.update_restart_ready {
+                    Some(("Restart to update".to_owned(), MI_REFRESH, pl().success, true))
+                } else if installing {
+                    let pct: String = self.update_status.chars().filter(|c| c.is_ascii_digit()).collect();
+                    let label = if self.update_status.contains('%') && !pct.is_empty() {
+                        format!("Updating {pct}%")
+                    } else {
+                        "Updating…".to_owned()
+                    };
+                    Some((label, MI_ARROW_DOWN, pl().primary, false))
+                } else if self.update_found && !self.update_busy {
+                    Some(("Update".to_owned(), MI_ARROW_DOWN, pl().primary, true))
+                } else {
+                    None
+                };
+                if let Some((word, glyph, accent, clickable)) = stage {
+                    // The first stage rests as a circle; the later ones keep
+                    // their word showing, since they report something.
+                    let always = self.update_restart_ready || installing;
                     let rest = egui::Rect::from_min_size(
                         egui::pos2(right - 28.0, cy - 14.0),
                         egui::vec2(28.0, 28.0),
                     );
                     let hov = self.man.hover(&rest);
-                    let t = ctx.animate_bool_with_time(egui::Id::new("update_chip"), hov, 0.22);
+                    let t = if always { 1.0 } else { ctx.animate_bool_with_time(egui::Id::new("update_chip"), hov, 0.22) };
+                    if installing {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                    }
                     // Blink for the first seconds after an update is found,
                     // so it is noticed; then it rests.
                     let now = ui.input(|i| i.time);
@@ -6690,19 +6944,23 @@ impl eframe::App for CraftApp {
                         0.0
                     };
                     let label = p.layout_no_wrap(
-                        "Update".to_owned(),
+                        word.clone(),
                         crate::fonts::semi(10.5),
-                        pl().primary,
+                        accent,
                     );
-                    let w = 28.0 + t * (label.size().x + 5.0);
+                    let w = 28.0 + t * (label.size().x + 10.0);
                     let chip = egui::Rect::from_min_size(
                         egui::pos2(right - w, cy - 14.0),
                         egui::vec2(w, 28.0),
                     );
-                    p.rect_filled(chip, 14.0, wash(pl().txt, if hov { 20 } else { 12 }));
+                    let chip_hov = self.man.hover(&chip);
+                    p.rect_filled(chip, 14.0, wash(pl().txt, if chip_hov && clickable { 20 } else { 12 }));
+                    if always {
+                        p.rect_stroke(chip, 14.0, egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+                    }
                     if blink > 0.0 {
-                        p.rect_filled(chip, 14.0, pl().primary.gamma_multiply(0.35 * blink));
-                        p.rect_stroke(chip, 14.0, egui::Stroke::new(1.5_f32, pl().primary.gamma_multiply(blink)), egui::StrokeKind::Inside);
+                        p.rect_filled(chip, 14.0, accent.gamma_multiply(0.35 * blink));
+                        p.rect_stroke(chip, 14.0, egui::Stroke::new(1.5_f32, accent.gamma_multiply(blink)), egui::StrokeKind::Inside);
                     }
                     // The whole arrow (head included) from the icon font: the
                     // hand-drawn strokes lost their head at this size.
@@ -6713,24 +6971,29 @@ impl eframe::App for CraftApp {
                     p.text(
                         egui::pos2(chip.left() + 14.0, cy),
                         egui::Align2::CENTER_CENTER,
-                        MI_ARROW_DOWN,
+                        glyph,
                         crate::fonts::icon(16.0),
-                        pl().primary,
+                        accent,
                     );
                     if t > 0.01 {
                         p.galley(
                             egui::pos2(ib.right() + 5.0, cy - label.size().y / 2.0),
                             p.layout_no_wrap(
-                                "Update".to_owned(),
+                                word.clone(),
                                 crate::fonts::semi(10.5),
-                                pl().primary.gamma_multiply(t),
+                                accent.gamma_multiply(t),
                             ),
-                            pl().primary,
+                            accent,
                         );
                     }
-                    if self.man.clicked(&chip) {
-                        // The About & Updates window: details, Update now.
-                        crate::about::spawn();
+                    if clickable && self.man.clicked(&chip) {
+                        if self.update_restart_ready {
+                            // Handled after the frame: restarting closes it.
+                            ctx.data_mut(|d| d.insert_temp(egui::Id::new("update_restart_now"), true));
+                        } else {
+                            // The About & Updates window: details, Update now.
+                            crate::about::spawn();
+                        }
                     }
                     live.push(chip);
                     right = chip.left() - 8.0;
@@ -7404,7 +7667,7 @@ impl eframe::App for CraftApp {
                                                 }
                                                 Some(p)
                                                     if d.downloaded_bytes == 0
-                                                        && p != "Downloading" =>
+                                                        && !crate::engine::phase_is_downloading(p) =>
                                                 {
                                                     p.clone()
                                                 }
@@ -8545,6 +8808,7 @@ impl eframe::App for CraftApp {
             }
         }
 
+        self.draw_refresh_dialog(ctx);
         if let Some(did) = self.details_id {
             let snap = self.downloads.iter().find(|d| d.id == did).cloned();
             match snap {
@@ -9899,6 +10163,18 @@ impl CraftApp {
     fn do_button(&mut self, b: ButtonId) {
         self.diag_acts += 1;
         match b {
+            ButtonId::RfOpen => {
+                if let Some(page) = self.refresh_dlg.as_ref().map(|d| d.page.clone()) {
+                    if let Ok(u) = url::Url::parse(&page) {
+                        crate::platform::open_url(u.as_str());
+                    }
+                }
+            }
+            ButtonId::RfApply => self.apply_typed_link(),
+            ButtonId::RfCancel => {
+                crate::model::set_refresh_wait(None);
+                self.refresh_dlg = None;
+            }
             ButtonId::AddPaste => {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
                     if let Ok(t) = cb.get_text() {
@@ -10868,6 +11144,14 @@ mod audit_completion_tests {
         assert_eq!(dragged_width(SortCol::Status, 110.0, 5000.0), 900.0);
     }
     use super::*;
+    #[test]
+    fn dead_links_open_the_refresh_window_and_other_failures_do_not() {
+        assert!(dead_link_reason("error sending request for url (https://x/f.zip): client error (Connect): dns error: No such host is known. (os error 11001)").unwrap().contains("no longer exists"));
+        assert!(dead_link_reason("server answered 404 Not Found").unwrap().contains("404"));
+        assert!(dead_link_reason("HTTP 403 Forbidden").unwrap().contains("403"));
+        assert!(dead_link_reason("connection ended early (got 1 of 2) — resume to retry").is_none());
+        assert!(dead_link_reason("not enough disk space").is_none());
+    }
     #[test]
     fn validation_failure_never_becomes_completed_from_full_byte_count() {
         let s=SharedState::new();

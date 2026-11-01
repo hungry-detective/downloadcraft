@@ -11,7 +11,7 @@ let lastFallbackError = "";
 // Must match manifest version + content.js EXT_VER. Tabs running an older
 // content script are rejected with a "reload the tab" error instead of
 // failing mysteriously (their extension APIs are gone after a reload).
-const EXT_VER = "0.9.13";
+const EXT_VER = "0.9.14";
 
 // Promise-style calls (the `await api.*` ones below) go through this handle so
 // one file serves both engines: Firefox exposes the promise-returning
@@ -842,6 +842,40 @@ function setBadge() {
 
 // Ping once at startup so the badge reflects reality.
 sendToHostPing();
+
+// "1.10.2" vs "1.9.0": > 0 when `a` is newer.
+function cmpVersion(a, b) {
+  const p = (s) => String(s || "").split(".").map((n) => parseInt(n, 10) || 0);
+  const x = p(a), y = p(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+// The app keeps its own version of this extension in a folder that never
+// moves (it says which in its pong). When that copy is newer than this one,
+// reload: an extension loaded from that folder comes back as the new
+// version, its open tabs refreshed by onInstalled. Once per version, so a
+// copy loaded from somewhere else cannot loop; that one is told where the
+// up-to-date folder is instead. True when a reload is under way.
+async function followAppExtension(res) {
+  try {
+    const kept = res && res.ext_version;
+    const mine = api.runtime.getManifest().version;
+    if (!kept || cmpVersion(kept, mine) <= 0) return false;
+    const { reloadedFor = "" } = await api.storage.local.get({ reloadedFor: "" });
+    await api.storage.local.set({ extDir: res.ext_dir || "", extKept: kept });
+    if (reloadedFor !== kept) {
+      await api.storage.local.set({ reloadedFor: kept });
+      api.runtime.reload();
+      return true;
+    }
+    showWelcome("old-folder");
+  } catch (e) { /* storage or reload unavailable: keep running as is */ }
+  return false;
+}
 async function sendToHostPing() {
   try {
     const res = await hostSend({ type: "ping" });
@@ -852,6 +886,7 @@ async function sendToHostPing() {
       if (cur.appTheme !== res.theme) await api.storage.local.set({ appTheme: res.theme });
     }
     if (!hostOk) lastHostError = "ping answered, but no pong (old host version?)";
+    if (hostOk && await followAppExtension(res)) return;
     console.log(
       "[download-craft] native host '" + HOST + "': " +
         (hostOk ? "connected" : "unexpected reply: " + lastHostError)

@@ -31,6 +31,14 @@
 
   const reason = new URLSearchParams(location.search).get("reason");
   if (reason === "no-app") $("sub").textContent = "The extension cannot reach the Download Craft app.";
+  if (reason === "old-folder") {
+    // Loaded from an old copy (the app was updated or moved): the app keeps
+    // the current version in a fixed folder, which needs loading once.
+    api.storage.local.get({ extDir: "", extKept: "" }).then(({ extDir, extKept }) => {
+      $("sub").textContent = `The app ships extension ${extKept || "a newer version"}, but this copy is loaded from an old folder. `
+        + `Remove it, then Load unpacked from ${extDir || "the folder shown in the app's Settings → Browser Integration"} — the app keeps that folder up to date from now on.`;
+    }).catch(() => {});
+  }
   $("recheck").addEventListener("click", check);
   check();
 })();

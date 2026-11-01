@@ -461,8 +461,12 @@ fn run_id(id: u64) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("no such id: {id}"))?
         .clone();
     let dest = item.dest_path();
-    let opts = opts_for(&item, 0);
-    let (got_bytes, got_total) = run_engine(item.url.clone(), dest, item.connections, opts)?;
+    let mut opts = opts_for(&item, 0);
+    // A row still under a placeholder name (`download_123.bin`, as `add`
+    // names a page link) takes the real one, a YouTube video's title
+    // included, as the app's own runs do.
+    opts.allow_rename = crate::model::is_fallback_filename(&item.filename) || !item.filename.contains('.');
+    let (got_bytes, got_total, got_name) = run_engine(item.url.clone(), dest, item.connections, opts)?;
     // Re-read under the lock so a completed CLI job retains concurrent adds.
     let _guard=crate::model::fs_lock("queue");
     anyhow::ensure!(_guard.owned(), "Download finished but queue is busy; retry updating its status");
@@ -471,6 +475,9 @@ fn run_id(id: u64) -> anyhow::Result<()> {
         d.status = crate::model::Status::Completed;
         d.speed_bps = 0.0;
         d.downloaded_bytes = got_bytes;
+        if let Some(n) = got_name {
+            d.filename = n;
+        }
         if got_total.is_some() {
             d.total_bytes = got_total;
         }
@@ -486,7 +493,7 @@ fn run_engine(
     dest: std::path::PathBuf,
     connections: usize,
     opts: EngineOpts,
-) -> anyhow::Result<(u64, Option<u64>)> {
+) -> anyhow::Result<(u64, Option<u64>, Option<String>)> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -555,10 +562,9 @@ fn run_engine(
     eprintln!();
     let r = rt.block_on(handle)?;
     r.map_err(|e| anyhow::anyhow!("{e:#}"))?;
-    if let Ok(mut g) = shared.resolved_name.lock() {
-        if let Some(n) = g.take() {
-            println!("saved as: {n}");
-        }
+    let name = shared.resolved_name.lock().ok().and_then(|mut g| g.take());
+    if let Some(n) = &name {
+        println!("saved as: {n}");
     }
     println!("done in {:.1}s", t0.elapsed().as_secs_f64());
     let total = if shared.has_total.load(Ordering::SeqCst) {
@@ -566,7 +572,7 @@ fn run_engine(
     } else {
         None
     };
-    Ok((shared.downloaded.load(Ordering::SeqCst), total))
+    Ok((shared.downloaded.load(Ordering::SeqCst), total, name))
 }
 
 fn truncate(s: &str, n: usize) -> String {

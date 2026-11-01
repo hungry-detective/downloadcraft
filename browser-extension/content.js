@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.9.13";
+  const EXT_VER = "0.9.14";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -389,7 +389,18 @@
         });
       }
     } catch (e) { /* captions are optional */ }
-    return { videoId: id, title, thumb: ytThumb(pr, id), streams, videoOnly, audio, sizes, subs };
+    // The best M4A sound track's size and length, links or not: what the
+    // panel's "♪ M4A" saves (and roughly what an MP3 of it weighs).
+    let audioSize = 0;
+    let audioDur = 0;
+    let audioBr = -1;
+    for (const f of (pr.streamingData.adaptiveFormats || [])) {
+      if (!String(f.mimeType || "").startsWith("audio/mp4")) continue;
+      if (f.audioTrack && f.audioTrack.audioIsDefault === false) continue;
+      const br = Number(f.bitrate || 0);
+      if (br > audioBr && sizeOf(f) > 0) { audioBr = br; audioSize = sizeOf(f); audioDur = durOf(f); }
+    }
+    return { videoId: id, title, thumb: ytThumb(pr, id), streams, videoOnly, audio, sizes, subs, audioSize, audioDur };
   }
 
   function stripFbSlice(url) {
@@ -1364,25 +1375,112 @@
   }
   const DRM_NOTE = "This video is DRM-protected, so it can't be downloaded: a saved copy would have no picture or sound. Watch it on the site instead.";
 
-  // Small on-page error toast (failures are otherwise silent).
-  function toast(text) {
-    let el = document.getElementById("dc-yt-toast");
-    if (!el) {
-      el = document.createElement("div");
-      el.id = "dc-yt-toast";
-      el.style.cssText = [
-        "position:fixed", "left:18px", "bottom:18px", "z-index:2147483647",
-        "max-width:min(480px,90vw)", "padding:10px 14px", "border-radius:10px",
-        "background:rgba(60,16,16,.94)", "border:1px solid rgba(255,120,120,.4)",
-        "color:#ffd9d9", "font:13px system-ui,sans-serif",
-        "box-shadow:0 8px 28px rgba(0,0,0,.5)",
-      ].join(";");
-      document.documentElement.appendChild(el);
+  // On-page toast, bottom center: a card in its own shadow root (the site's
+  // CSS cannot reach it) with an icon, a title, the message, an optional
+  // action and a bar that runs down until it closes. `toast(text)` keeps
+  // working for every caller; a message asking for a tab reload becomes the
+  // "updated" card with a Reload tab button.
+  const TOAST_ICONS = {
+    error: '<path d="M12 8v5M12 16.5v.01"/><circle cx="12" cy="12" r="9"/>',
+    update: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5v.01"/>',
+  };
+  // A tab open across an extension update still runs the old script, whose
+  // red bottom-left box (#dc-yt-toast) shows next to this card. A stylesheet
+  // rule beats its inline display:block, now and whenever it shows later.
+  try {
+    if (!document.getElementById("dc-old-toast-off")) {
+      const st = document.createElement("style");
+      st.id = "dc-old-toast-off";
+      st.textContent = "#dc-yt-toast{display:none!important}";
+      (document.head || document.documentElement).appendChild(st);
     }
-    el.textContent = text;
-    el.style.display = "block";
-    clearTimeout(el.dataset.timer);
-    el.dataset.timer = setTimeout(() => { el.style.display = "none"; }, 9000);
+  } catch (e) { /* page without a DOM to style */ }
+  function toast(text, opts) {
+    opts = opts || {};
+    let msg = String(text || "").replace(/^Download Craft:\s*/, "");
+    let kind = opts.kind || "error";
+    let title = opts.title || "Download Craft";
+    let action = opts.action || null;
+    if (/reload this tab/i.test(msg) && !opts.kind) {
+      kind = "update";
+      title = "Download Craft was updated";
+      msg = "Reload this tab to keep downloading from it.";
+      action = { label: "Reload tab", run: () => location.reload() };
+    } else if (/already in queue/i.test(msg) && !opts.kind) {
+      kind = "info";
+      msg = "This download is already in the queue.";
+    }
+    let host = document.getElementById("dc-toast-host");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "dc-toast-host";
+      host.style.cssText = "position:fixed;left:0;right:0;bottom:24px;z-index:2147483647;display:flex;justify-content:center;pointer-events:none";
+      const root = host.attachShadow({ mode: "open" });
+      root.innerHTML = `<style>
+        .card{pointer-events:auto;box-sizing:border-box;display:flex;align-items:center;gap:12px;
+          width:max-content;max-width:min(520px,calc(100vw - 32px));padding:12px 12px 12px 14px;
+          border-radius:14px;background:rgba(22,24,34,.92);backdrop-filter:blur(14px) saturate(140%);
+          -webkit-backdrop-filter:blur(14px) saturate(140%);border:1px solid rgba(255,255,255,.09);
+          box-shadow:0 18px 48px rgba(0,0,0,.45),0 2px 8px rgba(0,0,0,.3);color:#e9eaf2;
+          font:13px/1.4 "Segoe UI",system-ui,-apple-system,sans-serif;position:relative;overflow:hidden;
+          transform:translateY(16px) scale(.98);opacity:0;transition:transform .28s cubic-bezier(.2,.9,.3,1.2),opacity .2s}
+        .card.on{transform:none;opacity:1}
+        .ic{flex:none;width:34px;height:34px;border-radius:10px;display:grid;place-items:center}
+        .ic svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+        .error .ic{background:rgba(255,92,92,.14);color:#ff8a8a}
+        .update .ic{background:rgba(108,124,255,.16);color:#9aa6ff}
+        .info .ic{background:rgba(70,200,150,.14);color:#6fe0b0}
+        .tx{min-width:0;flex:1}
+        .tt{font-weight:600;font-size:13.5px;color:#fff}
+        .ms{color:#b9bccb;margin-top:1px;word-break:break-word}
+        .act{flex:none;border:0;border-radius:9px;padding:8px 14px;font:600 12.5px "Segoe UI",system-ui,sans-serif;
+          color:#fff;background:linear-gradient(135deg,#6c7cff,#8b5cf6);cursor:pointer;box-shadow:0 4px 14px rgba(108,124,255,.35)}
+        .act:hover{filter:brightness(1.1)}
+        .x{flex:none;width:26px;height:26px;border:0;border-radius:8px;background:transparent;color:#8d90a3;
+          cursor:pointer;font-size:16px;line-height:1}
+        .x:hover{background:rgba(255,255,255,.08);color:#fff}
+        .bar{position:absolute;left:0;bottom:0;height:2px;width:100%;transform-origin:left;
+          background:currentColor;opacity:.55}
+        .error .bar{color:#ff8a8a}.update .bar{color:#9aa6ff}.info .bar{color:#6fe0b0}
+        @media (prefers-color-scheme: light){
+          .card{background:rgba(255,255,255,.94);color:#1b1d27;border-color:rgba(20,24,40,.1);
+            box-shadow:0 18px 48px rgba(20,24,40,.18),0 2px 8px rgba(20,24,40,.08)}
+          .tt{color:#12131a}.ms{color:#565a6e}.x{color:#6b6f82}.x:hover{background:rgba(20,24,40,.06);color:#12131a}
+        }
+      </style><div class="card" role="status" aria-live="polite"><div class="ic"><svg viewBox="0 0 24 24"></svg></div>
+        <div class="tx"><div class="tt"></div><div class="ms"></div></div>
+        <button class="act" hidden></button><button class="x" aria-label="Close">✕</button><div class="bar"></div></div>`;
+      document.documentElement.appendChild(host);
+    }
+    const root = host.shadowRoot;
+    const card = root.querySelector(".card");
+    const close = () => { card.classList.remove("on"); clearTimeout(host.__dcT); };
+    card.className = "card " + kind;
+    root.querySelector("svg").innerHTML = TOAST_ICONS[kind] || TOAST_ICONS.info;
+    root.querySelector(".tt").textContent = title;
+    root.querySelector(".ms").textContent = msg;
+    const act = root.querySelector(".act");
+    act.hidden = !action;
+    if (action) {
+      act.textContent = action.label;
+      act.onclick = () => { close(); action.run(); };
+    }
+    root.querySelector(".x").onclick = close;
+    // An update card waits for the user; the rest leave on their own.
+    const ms = kind === "update" ? 20000 : 7000;
+    const bar = root.querySelector(".bar");
+    bar.style.transition = "none";
+    bar.style.transform = "scaleX(1)";
+    clearTimeout(host.__dcT);
+    requestAnimationFrame(() => {
+      card.classList.add("on");
+      requestAnimationFrame(() => {
+        bar.style.transition = `transform ${ms}ms linear`;
+        bar.style.transform = "scaleX(0)";
+      });
+    });
+    host.__dcT = setTimeout(close, ms);
   }
 
   function safeFilename(title) {
@@ -2850,7 +2948,18 @@
       };
       const haveH = new Set(entries.map((e) => e.h));
       const ladderDur = Math.max(0, ...Object.values(info.sizes || {}).map((m) => (m && m.dur) || 0));
-      for (const q of [1080, 720, 480, 360, 240, 144]) {
+      // Every height the page's player data lists (1440p, 4K, 8K included,
+      // even when it hides their links), filled out with the usual steps
+      // below the tallest. With nothing listed, the full ladder up to 4K:
+      // the app takes the closest quality at or below the one picked.
+      const listed = Object.keys(sizeByQ)
+        .map((q) => parseInt((q.match(/^(\d+)p/) || [0, 0])[1], 10) || 0)
+        .filter((h) => h >= 144);
+      const tallest = listed.length ? Math.max(...listed) : 2160;
+      const ladder = [...new Set([...listed, 4320, 2160, 1440, 1080, 720, 480, 360, 240, 144])]
+        .filter((h) => h <= tallest)
+        .sort((a, b) => b - a);
+      for (const q of ladder) {
         if (haveH.has(q)) continue;
         const label = `${q}p`;
         const sz = sizeForQ(label);
@@ -2924,24 +3033,30 @@
         send: () => sendDownload(sb.url, `${fname} [${sb.lang || sb.label}].vtt`, "text/vtt", null, null, null, null),
       });
     }
-    for (const st of (info.audio || [])) {
-      const kb = st.br > 0 ? Math.round(st.br / 1000) + "k" : st.label;
-      api.addChip({
-        label: `♪ ${(st.disp || "m4a").toUpperCase()} ${kb}`,
-        tip: `${st.label || "audio"}${st._size > 0 ? " · " + fmtSize(st._size) : ""} — audio-only track`,
-        send: () => { rememberQuality("audio"); sendDownload(st.url, tagged(fname, st), st.mime, st._size || null, null, null, st._dur || null); },
-      });
-    }
+    // The sound alone, always offered (YouTube hides its audio links on
+    // most videos now): the app reads the page itself and saves the M4A as
+    // served, or an MP3 made from it. Sizes from the page's player data.
+    const audioSize = info.audioSize || 0;
+    const stem = fname.replace(/\.mp4$/i, "");
+    api.addChip({
+      label: "♪ MP3",
+      tip: `Audio only, as MP3${audioSize ? " · about " + fmtSize(Math.round(audioSize * 1.9)) : ""} — the app saves the sound and converts it`,
+      send: () => { rememberQuality("audio"); sendDownload(location.href, `${stem}.mp3`, "audio/mpeg", null, null, "audio", info.audioDur || null); },
+    });
+    api.addChip({
+      label: "♪ M4A",
+      tip: `Audio only, as M4A${audioSize ? " · " + fmtSize(audioSize) : ""} — YouTube's own sound track, no conversion`,
+      send: () => { rememberQuality("audio"); sendDownload(location.href, `${stem}.m4a`, "audio/mp4", audioSize || null, null, "audio-m4a", info.audioDur || null); },
+    });
     api.sync();
     enrichSizes(sizePairs);
     markQueuedRows(sizePairs);
     // One click: the remembered quality among this video's rows (the
     // nearest one at or below it), or its best audio track.
-    const bestAudioTrack = [...(info.audio || [])].sort((a, b) => (b.br || 0) - (a.br || 0))[0] || null;
     btn.__dcQuickFor = () => {
       if (!prefQuality) return null;
       if (prefQuality === "audio") {
-        return bestAudioTrack ? { label: dcT("barAudio", "audio"), run: () => sendDownload(bestAudioTrack.url, tagged(fname, bestAudioTrack), bestAudioTrack.mime, bestAudioTrack._size || null, null, null, bestAudioTrack._dur || null) } : null;
+        return { label: dcT("barAudio", "audio"), run: () => sendDownload(location.href, `${fname.replace(/\.mp4$/i, "")}.mp3`, "audio/mpeg", null, null, "audio", info.audioDur || null) };
       }
       const i = typeof DCRank !== "undefined" && DCRank.pickHeight ? DCRank.pickHeight(entries.map((e) => e.h), prefQuality) : -1;
       return i >= 0 ? { label: entries[i].h + "p", run: entries[i].send } : null;

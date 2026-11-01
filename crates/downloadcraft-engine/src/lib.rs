@@ -107,6 +107,11 @@ pub struct Config {
     pub reject_html: bool,
     /// Bytes buffered per connection before a disk write. Default 512 KiB.
     pub write_buffer: usize,
+    /// The size alone is the file's identity: ETag and Last-Modified are not
+    /// compared on resume. For links that pin the exact file themselves
+    /// (YouTube's carry its length and version) and are served by many edge
+    /// servers, each with its own date. Default false.
+    pub size_identity: bool,
 }
 
 impl Default for Config {
@@ -123,6 +128,7 @@ impl Default for Config {
             slow_ratio: 0.2,
             reject_html: true,
             write_buffer: 512 * 1024,
+            size_identity: false,
         }
     }
 }

@@ -640,6 +640,19 @@ impl ConfirmApp {
                     if engine::is_stream_manifest(&url, ctype.as_deref(), &page_mime) {
                         total = None;
                     }
+                    // A YouTube video: the app's own reader names the size
+                    // (from the links themselves) and the title, without
+                    // the pre-roll wait a download needs.
+                    if total.is_none() && crate::engine::youtube_id(&url).is_some()
+                        && crate::youtube::own_reader_allowed(&opts)
+                    {
+                        if let Ok((size, title)) = crate::youtube::peek(&client, &opts, &url).await {
+                            total = size;
+                            if disp.is_none() {
+                                disp = Some(engine::sanitize_filename(&title));
+                            }
+                        }
+                    }
                     let is_page = ctype
                         .as_deref()
                         .map(|c| c.contains("text/html"))

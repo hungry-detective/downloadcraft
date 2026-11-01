@@ -418,6 +418,9 @@ struct ProgressApp {
     win_h: f32,
     /// Chevron state of the part section.
     parts_open: bool,
+    /// The engine label the transfer started with, and when it was first
+    /// seen: shown in Status for a few seconds.
+    engine_seen: Option<(String, Instant)>,
     /// Part-table scroll offset in pixels (long part lists).
     scroll: f32,
     /// The transfer finished and the "Download complete" dialog took over:
@@ -434,6 +437,11 @@ impl ProgressApp {
         let items = read_queue();
         self.item = items.into_iter().find(|d| d.id == self.id);
         self.snap = read_snap(self.id);
+        if self.engine_seen.is_none()
+            && (self.snap.phase == crate::engine::PHASE_APP_ENGINE || self.snap.phase == crate::engine::PHASE_YTDLP)
+        {
+            self.engine_seen = Some((self.snap.phase.clone(), Instant::now()));
+        }
         // Speed graph: the last ~30 s (one sample per refresh).
         self.speed_hist.push_back(if self.snap.live { self.snap.speed.max(0.0) } else { 0.0 });
         while self.speed_hist.len() > 120 {
@@ -563,6 +571,7 @@ pub fn run() -> eframe::Result<()> {
         finish_sel,
         win_h: 0.0,
         parts_open: true,
+        engine_seen: None,
         scroll: 0.0,
         handoff: false,
         theme_seen: String::new(),
@@ -876,17 +885,41 @@ impl ProgressApp {
         self.snap.live
             && self.snap.downloaded == 0
             && !self.snap.phase.is_empty()
-            && self.snap.phase != "Downloading"
+            && !crate::engine::phase_is_downloading(&self.snap.phase)
     }
 
-    /// The stage a live transfer is in, worded for the Status row:
-    /// `Some("Downloading — Getting info")`, or `None` when there is nothing
-    /// more to say than the status label.
+    /// The stage a live transfer is in before its first byte, worded for the
+    /// Status row on its own ("Reading YouTube", "Waiting 5s for YouTube",
+    /// "yt-dlp fallback — getting info"), or "Getting info" while nothing
+    /// named one yet. `None` once bytes move: the status label says it.
     fn stage_text(&self) -> Option<String> {
-        if !self.preparing() {
+        if !self.snap.live {
             return None;
         }
-        Some(format!("Downloading — {}", self.snap.phase))
+        // Which engine downloads, for its first seconds: green for the app's
+        // own, blue for yt-dlp.
+        if let Some((label, at)) = &self.engine_seen {
+            if at.elapsed() < std::time::Duration::from_secs(4) {
+                return Some(label.clone());
+            }
+        }
+        if self.snap.downloaded > 0 {
+            return None;
+        }
+        Some(match self.snap.phase.as_str() {
+            "" | "Downloading" => "Getting info".to_string(),
+            p if crate::engine::phase_is_downloading(p) => "Getting info".to_string(),
+            p => p.to_string(),
+        })
+    }
+
+    /// The Status row's colour for an engine label (`None` = the usual).
+    fn stage_color(&self, text: &str) -> Option<egui::Color32> {
+        match text {
+            crate::engine::PHASE_APP_ENGINE => Some(egui::Color32::from_rgb(0x34, 0xd3, 0x99)),
+            crate::engine::PHASE_YTDLP => Some(egui::Color32::from_rgb(0x60, 0xa5, 0xfa)),
+            _ => None,
+        }
     }
 
     /// Concept Info tab: the detail rows, laid out in order. The resolution row
@@ -913,11 +946,12 @@ impl ProgressApp {
         // A helper in a stage that moves no bytes yet (YouTube's player
         // challenge, a merge) is named here: "Downloading" with 0 of "-" and
         // no speed reads as a hang, and this can last ten seconds.
-        let stage = self.stage_text();
+        let stage = if downloading { self.stage_text() } else { None };
+        let stage_col = stage.as_deref().and_then(|s| self.stage_color(s)).unwrap_or(status_col);
         row(
             "Status:",
             stage.unwrap_or_else(|| item.status.label()),
-            status_col,
+            stage_col,
             reg(13.0),
         );
         // Live value while a video is arriving, the recorded one otherwise.
@@ -1439,19 +1473,21 @@ impl ProgressApp {
                 (None, "Close", "close"),
             ]
         } else if paused {
+            // The row is already stopped: Cancel just puts the window away
+            // (the title bar's × does the same).
             vec![
                 (Some(DmIcon::Play), "Resume", "resume"),
-                (None, "Close", "close"),
+                (None, "Cancel", "close"),
             ]
         } else if !downloading {
-            vec![(None, "Cancel", "cancel"), (None, "Close", "close")]
+            vec![(None, "Cancel", "cancel")]
         } else {
-            // Cancel stops the transfer here, as the main window's Stop does
-            // (the partial file is kept, so it can be resumed from the list).
+            // Pause and Cancel only, as IDM: Cancel stops the transfer (the
+            // partial file is kept, so it can be resumed from the list) and
+            // closes the window, which made a separate Close the same button.
             vec![
                 (Some(DmIcon::Pause), "Pause", "pause"),
                 (None, "Cancel", "stop"),
-                (None, "Close", "close"),
             ]
         };
         let mut right = IN_R;

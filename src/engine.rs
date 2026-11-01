@@ -21,6 +21,10 @@ pub struct SharedState {
     pub cancelled: AtomicBool,
     /// Set only after the engine and all final validation have succeeded.
     pub succeeded: AtomicBool,
+    /// The engine fetched a picture and its sound apart and muxed them (the
+    /// app's own YouTube reader does, with no pair link on the row): the
+    /// file's size is not the legs' sum, so the row must not compare them.
+    pub merged: AtomicBool,
     /// External tools pause by stopping and restarting from their partial files.
     pub external_helper: AtomicBool,
     /// Engine-detected filename (Content-Disposition / video title).
@@ -62,6 +66,9 @@ pub struct SharedState {
     /// yt-dlp has already run for this download (the fallback chain must not
     /// start it twice).
     pub ytdlp_tried: AtomicBool,
+    /// The app's own YouTube reader failed for this download: later
+    /// resolves (expired links, retries) go straight to the other paths.
+    pub youtube_own_failed: AtomicBool,
 }
 
 impl SharedState {
@@ -76,6 +83,7 @@ impl SharedState {
             paused: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             succeeded: AtomicBool::new(false),
+            merged: AtomicBool::new(false),
             external_helper: AtomicBool::new(false),
             resolved_name: std::sync::Mutex::new(None),
             resumable: AtomicBool::new(false),
@@ -90,6 +98,7 @@ impl SharedState {
             frag_index: AtomicU64::new(0),
             frag_count: AtomicU64::new(0),
             ytdlp_tried: AtomicBool::new(false),
+            youtube_own_failed: AtomicBool::new(false),
         }
     }
 
@@ -418,6 +427,16 @@ impl Default for EngineOpts {
 
 // ---- per-download log (IDM keeps one per download) -------------------------
 
+/// The stage an engine names as its transfer starts, telling which one
+/// downloads: shown for a few seconds before the status says Downloading.
+pub const PHASE_APP_ENGINE: &str = "Downloading using app engine";
+pub const PHASE_YTDLP: &str = "Downloading using yt-dlp";
+
+/// Whether `phase` only says the transfer is under way (no stage to name).
+pub fn phase_is_downloading(phase: &str) -> bool {
+    phase == "Downloading" || phase == PHASE_APP_ENGINE || phase == PHASE_YTDLP
+}
+
 /// Where download `key`'s log lives (`<config>/logs/<key>.log`).
 pub fn job_log_path(key: &str) -> Option<PathBuf> {
     if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
@@ -434,14 +453,23 @@ pub fn job_log(key: &str, line: impl AsRef<str>) {
     }
     if std::fs::metadata(&path).map(|m| m.len() > 256 * 1024).unwrap_or(false) {
         if let Ok(old) = std::fs::read_to_string(&path) {
-            let keep = &old[old.len() / 2..];
+            // Halved at a character boundary: a Bengali or emoji name in the
+            // log must not make the cut panic.
+            let mut mid = old.len() / 2;
+            while !old.is_char_boundary(mid) {
+                mid += 1;
+            }
+            let keep = &old[mid..];
             let cut = keep.find('\n').map(|i| &keep[i + 1..]).unwrap_or(keep);
             let _ = std::fs::write(&path, cut);
         }
     }
     use std::io::Write;
+    // One write per line: connections logging at the same moment would
+    // otherwise interleave their pieces ("[01:57:57[01:57:57] ] …").
+    let text = format!("[{}] {}\n", chrono::Local::now().format("%H:%M:%S"), line.as_ref().replace(['\r', '\n'], " "));
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), line.as_ref().replace(['\r', '\n'], " "));
+        let _ = f.write_all(text.as_bytes());
     }
 }
 
@@ -807,6 +835,20 @@ fn unique_work_dir(dest: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| "dl".to_string());
     let parent = dest.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     parent.join(format!("{stem}.dcwork-{}-{n}", std::process::id()))
+}
+
+/// The work folder of an adaptive (picture + sound) download: one per
+/// destination, the same on every attempt, so a paused, failed or restarted
+/// download continues its legs from the bytes already there (the engine's
+/// journal checks each leg's size against the fresh link). Only one job may
+/// write a destination at a time (`claim_dest_job`).
+fn adaptive_work_dir(dest: &std::path::Path) -> std::path::PathBuf {
+    let stem = dest
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "dl".to_string());
+    let parent = dest.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    parent.join(format!("{stem}.dcwork"))
 }
 
 /// Resume binding sidecar (P0): ties `.dcpart` bytes to the exact URL +
@@ -1228,8 +1270,51 @@ pub(crate) fn social_video_page(raw: &str) -> bool {
 }
 
 /// The extension's "Audio only" choice: yt-dlp fetches the best audio.
+/// The sound alone: "audio" (saved as MP3) or "audio-m4a" (YouTube's own
+/// AAC track as served, no re-encoding).
 pub(crate) fn wants_audio_only(pref: &str) -> bool {
-    pref.trim().eq_ignore_ascii_case("audio")
+    let p = pref.trim().to_ascii_lowercase();
+    matches!(p.as_str(), "audio" | "mp3" | "audio-m4a" | "m4a")
+}
+
+/// The sound alone, kept as the M4A YouTube serves (no MP3 conversion).
+pub(crate) fn wants_m4a(pref: &str) -> bool {
+    let p = pref.trim().to_ascii_lowercase();
+    matches!(p.as_str(), "audio-m4a" | "m4a")
+}
+
+/// `dest` as an .mp3 beside it, numbered when that name is taken.
+fn conflict_free_mp3(dest: &std::path::Path) -> std::path::PathBuf {
+    let out = dest.with_extension("mp3");
+    if out.exists() {
+        crate::model::conflict_free_dest(&out)
+    } else {
+        out
+    }
+}
+
+/// Re-encodes `src` (an M4A/WebM sound) as an MP3 at `out`: LAME's best
+/// variable bit rate, as yt-dlp's `--audio-quality 0` asks for.
+async fn ffmpeg_to_mp3(src: &std::path::Path, out: &std::path::Path) -> Result<()> {
+    let ffmpeg = ffmpeg_path().ok_or_else(|| anyhow!("MP3 needs FFmpeg (Settings -> Plugins)"))?;
+    let mut cmd = tokio::process::Command::new(ffmpeg);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(src)
+        .args(["-vn", "-c:a", "libmp3lame", "-q:a", "0"])
+        .arg(out)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let o = cmd.output().await.map_err(|e| anyhow!("FFmpeg would not start: {e}"))?;
+    if !o.status.success() {
+        let _ = tokio::fs::remove_file(out).await;
+        let err = String::from_utf8_lossy(&o.stderr);
+        return Err(anyhow!("making the MP3 failed: {}", err.lines().last().unwrap_or("FFmpeg error")));
+    }
+    Ok(())
 }
 
 fn vimeo_needs_audio(raw: &str) -> bool {
@@ -1653,6 +1738,20 @@ pub async fn resolve_media(
         shared.rate_limited.store(true, Ordering::SeqCst);
     }
     if page_url.contains("youtube.com") || page_url.contains("youtu.be") {
+        // The app's own reader (TV client + challenge solver): every
+        // quality, served whole. Skipped once it failed for this download.
+        if youtube_own_reader_allowed(opts) && !shared.youtube_own_failed.load(Ordering::SeqCst) {
+            match crate::youtube::resolve(client, opts, page_url, shared).await {
+                Ok(hit) => {
+                    dbg_resolve("youtube-own", &hit.url);
+                    return Some(hit);
+                }
+                Err(e) => {
+                    shared.youtube_own_failed.store(true, Ordering::SeqCst);
+                    job_log(&opts.log_key, &format!("the app's YouTube reader could not read the page: {e:#}"));
+                }
+            }
+        }
         // Player API first: works off the video id alone, even behind the
         // page wall (verified live: ANDROID client returns direct URLs).
         if let Some(vid) = youtube_id(page_url) {
@@ -1696,7 +1795,7 @@ fn dbg_resolve(via: &str, url: &str) {
 }
 
 /// Extract a YouTube video id from watch/shorts/embed/live/youtu.be URLs.
-fn youtube_id(page_url: &str) -> Option<String> {
+pub(crate) fn youtube_id(page_url: &str) -> Option<String> {
     let u = url::Url::parse(page_url).ok()?;
     if let Some(id) = u
         .query_pairs()
@@ -2006,7 +2105,7 @@ fn stream_score(f: &serde_json::Value) -> u64 {
 
 /// Parse a menu quality ("720p", "1080p60") into a height cap. None =
 /// no preference (best available).
-fn quality_cap(pref: &str) -> Option<u64> {
+pub(crate) fn quality_cap(pref: &str) -> Option<u64> {
     let digits: String = pref.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
     let n: u64 = digits.parse().ok()?;
     if (144..=4320).contains(&n) {
@@ -4379,6 +4478,7 @@ async fn download_inner(
     mut opts: EngineOpts,
     shared: Arc<SharedState>,
 ) -> Result<()> {
+    shared.set_phase("Getting info");
     // Settings -> Site logins: a saved login for this host.
     if opts.username.trim().is_empty() {
         if let Some((u, p)) = crate::model::login_for(&url) {
@@ -4642,7 +4742,27 @@ async fn download_inner(
     // is installed — or can be fetched once — it takes every quality above
     // the progressive file. Anything it cannot do falls through to the
     // built-in engine below, progressive fallback and all.
-    if is_yt && youtube_ytdlp_first(&opts) {
+    // The app's own reader goes first (Auto and App first): every quality
+    // on the app's own connections. When it cannot read the video, yt-dlp
+    // takes over as before.
+    let mut own_hit: Option<ResolvedMedia> = None;
+    if is_yt && youtube_own_reader_allowed(&opts) && youtube_id(&url).is_some() {
+        match crate::youtube::resolve(&client, &opts, &url, &shared).await {
+            Ok(hit) => {
+                job_log(&opts.log_key, "read by the app's own YouTube reader");
+                own_hit = Some(hit);
+            }
+            Err(e) if e.to_string() == "cancelled" => return Err(e),
+            Err(e) => {
+                shared.youtube_own_failed.store(true, Ordering::SeqCst);
+                job_log(&opts.log_key, &format!("the app's YouTube reader could not read the page ({e:#}): yt-dlp takes over"));
+                if std::env::var("DOWNLOAD_CRAFT_DEBUG").is_ok() {
+                    eprintln!("[dbg] youtube own reader failed: {e:#}");
+                }
+            }
+        }
+    }
+    if is_yt && own_hit.is_none() && youtube_ytdlp_first(&opts) {
         match ensure_ytdlp(&client).await {
             Ok(exe) => {
                 match download_with_ytdlp(&exe, &url, &dest, connections, &opts, &shared).await {
@@ -4705,7 +4825,12 @@ async fn download_inner(
     }
     if is_html || is_yt {
         let page_url = url.clone();
-        match resolve_media(&client, &opts, &url, &shared).await {
+        let from_own_reader = own_hit.is_some();
+        let resolved = match own_hit.take() {
+            Some(hit) => Some(hit),
+            None => resolve_media(&client, &opts, &url, &shared).await,
+        };
+        match resolved {
             Some(hit) => {
                 url = hit.url;
                 // media servers expect the page as referer
@@ -4732,6 +4857,36 @@ async fn download_inner(
                     }
                     return download_hls(&url, &dest, connections, &opts, &shared).await;
                 }
+                // The sound alone, read by the app's own YouTube reader: the
+                // M4A on the app's connections, then (unless M4A was asked
+                // for) an MP3 made from it with FFmpeg.
+                if from_own_reader && wants_audio_only(&opts.quality_pref) && hit.pair_url.is_none() {
+                    drop(_job);
+                    shared.set_phase(PHASE_APP_ENGINE);
+                    let mp3 = !wants_m4a(&opts.quality_pref);
+                    if mp3 && ffmpeg_path().is_none() {
+                        shared.set_phase("Fetching ffmpeg");
+                        ensure_ffmpeg(&client).await.map_err(|e| anyhow!("MP3 needs FFmpeg, and {e:#}; pick M4A to save the sound as it is"))?;
+                    }
+                    download_adaptive(url.clone(), None, dest.clone(), connections, opts.clone(), shared.clone()).await?;
+                    if mp3 {
+                        shared.set_phase("Converting to MP3");
+                        let out = conflict_free_mp3(&dest);
+                        ffmpeg_to_mp3(&dest, &out).await?;
+                        let _ = tokio::fs::remove_file(&dest).await;
+                        if let Some(n) = out.file_name() {
+                            mutex_guard(&shared.resolved_name).replace(n.to_string_lossy().into_owned());
+                        }
+                        let len = tokio::fs::metadata(&out).await.map(|m| m.len()).unwrap_or(0);
+                        // The file is not the stream's size any more: the
+                        // row must not compare them (as for a merge).
+                        shared.merged.store(true, Ordering::SeqCst);
+                        shared.total.store(len, Ordering::SeqCst);
+                        shared.has_total.store(true, Ordering::SeqCst);
+                        shared.downloaded.store(len, Ordering::SeqCst);
+                    }
+                    return Ok(());
+                }
                 // Adaptive video+audio pair (1080p+ menu choice): merge via
                 // ffmpeg on completion instead of a small progressive file.
                 // Drop our dest claim first: download_adaptive takes its own.
@@ -4741,6 +4896,9 @@ async fn download_inner(
                         eprintln!("[dbg] pair audio={}", pair);
                     }
                     drop(_job);
+                    if from_own_reader {
+                        shared.set_phase(PHASE_APP_ENGINE);
+                    }
                     // YouTube adaptive legs can die mid-file at ~20%:
                     // SABR-gated qualities serve only a ~2 MB preview outside
                     // the browser, and stream URLs expire/session-lock fast
@@ -4758,6 +4916,10 @@ async fn download_inner(
                     .await
                     {
                         Ok(()) => return Ok(()),
+                        // The own reader's links failing: yt-dlp (in the
+                        // fallback chain) is the better next step than the
+                        // old 360p path.
+                        Err(e) if from_own_reader => return Err(e),
                         Err(e) => {
                             let msg = format!("{e:#}");
                             let sabr = msg.contains("serves only the first");
@@ -5423,6 +5585,9 @@ fn runtime_version_supported(name:&str,version:&str)->bool {
 }
 fn js_runtime() -> Option<&'static str> { js_runtime_path().map(|(name,_)| name) }
 
+/// The runtime the app's own YouTube reader runs the player challenge in.
+pub(crate) fn js_runtime_for_solver() -> Option<(&'static str, std::path::PathBuf)> { js_runtime_path() }
+
 /// The JavaScript runtime yt-dlp will use ("deno", "node"…), if any.
 pub fn js_runtime_name() -> Option<&'static str> { js_runtime() }
 
@@ -5660,6 +5825,14 @@ pub async fn playlist_entries(url: &str, opts: &EngineOpts) -> Result<(String, V
 /// app's engine; "auto" (default) = whichever can deliver the requested
 /// quality (YouTube serves the app's engine only its progressive streams in
 /// full), with the other one as the fallback.
+/// Whether the app's own YouTube reader runs for this download: not when
+/// Settings put yt-dlp first, and not for "audio only" (yt-dlp makes the
+/// MP3).
+pub(crate) fn youtube_own_reader_allowed(_opts: &EngineOpts) -> bool {
+    crate::model::ui_pref_str("youtube_engine", "auto") != "ytdlp"
+        && std::env::var("DOWNLOAD_CRAFT_NO_OWN_YOUTUBE").is_err()
+}
+
 fn youtube_ytdlp_first(opts: &EngineOpts) -> bool {
     match crate::model::ui_pref_str("youtube_engine", "auto").as_str() {
         "native" => false,
@@ -6927,8 +7100,9 @@ async fn download_with_ytdlp(
     }
     if let Some(ff) = &merge_ffmpeg {
         cmd.arg("--ffmpeg-location").arg(ff);
-        // Audio only: an MP3 (best VBR); without ffmpeg the m4a as served.
-        if wants_audio_only(&opts.quality_pref) {
+        // Audio only: an MP3 (best VBR); without ffmpeg, or when M4A was
+        // asked for, the m4a as served.
+        if wants_audio_only(&opts.quality_pref) && !wants_m4a(&opts.quality_pref) {
             cmd.arg("-x").arg("--audio-format").arg("mp3").arg("--audio-quality").arg("0");
         }
     }
@@ -6984,8 +7158,13 @@ async fn download_with_ytdlp(
     let process_tree=crate::platform::HelperProcessTree::attach(&child)
         .map_err(|e|anyhow!("Could not supervise media helper processes: {e}"))?;
     // Nothing is on the wire until the player challenge is solved, so say what
-    // is happening instead of showing a motionless 0%.
-    shared.set_phase("Getting info");
+    // is happening instead of showing a motionless 0%; and when the app's own
+    // YouTube reader gave up first, that yt-dlp is the fallback.
+    shared.set_phase(if shared.youtube_own_failed.load(Ordering::SeqCst) {
+        "yt-dlp fallback — getting info"
+    } else {
+        "Getting info"
+    });
     let stdout = child
         .stdout
         .take()
@@ -7027,7 +7206,7 @@ async fn download_with_ytdlp(
                 continue;
             };
             if p.done.is_some() || p.speed.is_some() {
-                progress.set_phase("Downloading");
+                progress.set_phase(PHASE_YTDLP);
             }
             // The format yt-dlp picked names its own frame size, so the row can
             // report the resolution that really arrived rather than the menu
@@ -7164,6 +7343,13 @@ async fn adaptive_leg(
     limiter: std::sync::Arc<RateLimiter>,
     label: &str,
 ) -> Result<()> {
+    // A leg an earlier attempt finished (the other one failed) is kept.
+    if let Some(t) = total.filter(|t| *t > 0) {
+        if tokio::fs::metadata(leg_dest).await.map(|m| m.len() == t).unwrap_or(false) {
+            sub.downloaded.store(t, Ordering::SeqCst);
+            return Ok(());
+        }
+    }
     let strict = is_fragile_cdn(url) || is_googlevideo_url(url);
     let can_chunk = strict && matches!(total, Some(t) if t > 0);
     let parts = conns.clamp(1, 32);
@@ -7232,6 +7418,7 @@ pub async fn download_adaptive(
 ) -> Result<()> {
     if opts.expected_duration_secs > 0 { shared.expected_duration.store(opts.expected_duration_secs, Ordering::SeqCst); }
     shared.expects_audio.store(opts.require_audio || audio_url.is_some(), Ordering::SeqCst);
+    shared.merged.store(audio_url.is_some(), Ordering::SeqCst);
     download_adaptive_inner(video_url, audio_url, dest.clone(), connections, opts, shared.clone()).await?;
     verify_completed_media(&dest, &shared).await?;
     cleanup_completed_job(&dest, &shared);
@@ -7326,9 +7513,9 @@ async fn download_adaptive_inner(
         totals.push((0, grand_total));
         dones.push(0);
     }
-    // Work files live in a unique sidecar dir so concurrent jobs and
-    // retries never share part files.
-    let work = unique_work_dir(&dest);
+    // Work files live in the destination's own work folder, kept across
+    // attempts so a resume continues both legs.
+    let work = adaptive_work_dir(&dest);
     tokio::fs::create_dir_all(&work).await?;
     let v_dest = work.join("v");
     let a_dest = work.join("a");
@@ -7402,6 +7589,24 @@ async fn download_adaptive_inner(
             let sum = sv.downloaded.load(Ordering::SeqCst)
                 .saturating_add(sa.downloaded.load(Ordering::SeqCst));
             shared.downloaded.store(sum, Ordering::SeqCst);
+            // Part Info lists every connection of both legs, as IDM does:
+            // the picture's first, then the sound's, placed after it.
+            {
+                let mut totals = Vec::new();
+                let mut dones = Vec::new();
+                for (leg, base) in [(&sv, 0u64), (&sa, v_total.unwrap_or(0))] {
+                    let t = mutex_guard(&leg.part_total).clone();
+                    let d = mutex_guard(&leg.part_done).clone();
+                    for (i, (a, b)) in t.into_iter().enumerate() {
+                        totals.push((a + base, b + base));
+                        dones.push(d.get(i).copied().unwrap_or(0));
+                    }
+                }
+                if !totals.is_empty() {
+                    *mutex_guard(&shared.part_total) = totals;
+                    *mutex_guard(&shared.part_done) = dones;
+                }
+            }
             if v_done.load(Ordering::SeqCst) && a_done.load(Ordering::SeqCst) {
                 break;
             }
@@ -7417,14 +7622,12 @@ async fn download_adaptive_inner(
     // reset too: those leg bytes were deleted with the work dir, so keeping
     // them would persist phantom progress (bar jumps backwards on retry,
     // e.g. 31% -> 20%).
+    // A failed leg keeps its bytes in the work folder: Resume (or the same
+    // quality clicked again in the browser) continues from them.
     if let Err(e) = rv {
-        let _ = tokio::fs::remove_dir_all(&work).await;
-        shared.downloaded.store(0, Ordering::SeqCst);
         return Err(e);
     }
     if let Err(e) = ra {
-        let _ = tokio::fs::remove_dir_all(&work).await;
-        shared.downloaded.store(0, Ordering::SeqCst);
         return Err(e);
     }
     // Mux (or plain move when audio-less). The unique work dir is removed on
@@ -8963,10 +9166,17 @@ async fn segmented(
     use downloadcraft_engine as dce;
     // Strict googlevideo edges 403 ranges above ~2 MiB: ask in windows.
     let strict = is_googlevideo_url(url);
+    // The TV client's links serve bigger ranges at full speed (one 60 MiB
+    // request crawls at ~2 MB/s, 10 MiB pieces run at ~14 MB/s a link).
+    let piece = if crate::youtube::tv_link(url) { 8 * 1024 * 1024 } else { STRICT_PART_MAX };
     let config = dce::Config {
         connections: connections.clamp(1, 32),
-        max_request: strict.then_some(STRICT_PART_MAX),
-        min_split: if strict { STRICT_PART_MAX } else { 1024 * 1024 },
+        max_request: strict.then_some(piece),
+        min_split: if strict { piece } else { 1024 * 1024 },
+        // Each fresh googlevideo link may come from another edge server with
+        // its own Last-Modified for the same file (a resume threw 128 MB away
+        // on "Last-Modified changed"); the link's own clen/lmt pin the file.
+        size_identity: strict,
         stall_timeout: std::time::Duration::from_secs(opts.timeout_secs.clamp(15, 120)),
         max_retries: opts.max_retries.max(1),
         ..dce::Config::default()
@@ -8984,9 +9194,19 @@ async fn segmented(
         dl = dl.on_link_expired(Arc::new(move |old: String| {
             let (c, o, s) = (c.clone(), o.clone(), s.clone());
             Box::pin(async move {
+                // The leg that expired: the video's or the sound's link,
+                // matched by its itag (the sound leg used to get the
+                // video's link, whose size never matched).
+                let itag = |u: &str| {
+                    url::Url::parse(u).ok().and_then(|u| u.query_pairs().find(|(k, _)| k == "itag").map(|(_, v)| v.into_owned()))
+                };
+                let want = itag(&old);
                 resolve_media(&c, &o, &o.referer, &s)
                     .await
-                    .map(|hit| hit.url)
+                    .map(|hit| match hit.pair_url {
+                        Some(a) if want.is_some() && itag(&a) == want => a,
+                        _ => hit.url,
+                    })
                     .filter(|u| *u != old && is_googlevideo_url(u))
             })
         }));

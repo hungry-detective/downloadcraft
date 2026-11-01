@@ -30,6 +30,8 @@ mod selfupdate;
 mod autostart;
 mod sysproxy;
 mod winauth;
+mod youtube;
+mod extsync;
 #[cfg(windows)]
 mod tray;
 #[cfg(not(windows))]

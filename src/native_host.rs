@@ -508,6 +508,17 @@ static OUT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn write_message(reply: &Reply) {
     let Ok(mut v) = serde_json::to_value(reply) else { return };
+    // A pong also says which app this is and which extension it keeps in
+    // its fixed folder: an older running extension reloads onto those files.
+    if reply.kind == "pong" {
+        v["app_version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
+        if let Some(ver) = crate::extsync::kept_version() {
+            v["ext_version"] = serde_json::json!(ver);
+        }
+        if let Some(dir) = crate::extsync::stable_dir() {
+            v["ext_dir"] = serde_json::json!(dir.display().to_string());
+        }
+    }
     if let Some(rid) = *CURRENT_RID.lock().unwrap_or_else(|e| e.into_inner()) {
         v["rid"] = serde_json::json!(rid);
     }

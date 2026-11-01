@@ -26,6 +26,16 @@ next to the program.
 ZIP archives (and the portable update) use the `zip` crate (© zip-rs
 contributors).
 
+## yt-dlp/ejs challenge solver — Unlicense (public domain)
+
+The app's own YouTube reader runs yt-dlp's player-challenge solver scripts
+(`assets/ejs/yt.solver.lib.min.js` and `yt.solver.core.min.js`, release
+0.8.0, built in unchanged) in Deno. The lib script bundles meriyah (ISC,
+© KFlash and others) and astring (MIT, © David Bonnet); their licence texts
+are kept in the script's header.
+
+- Source: https://github.com/yt-dlp/ejs
+
 ## Material Icons font — Apache License 2.0
 
 `assets/fonts/MaterialIcons-Regular.ttf` (© Google) is bundled for UI glyphs.

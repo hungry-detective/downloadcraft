@@ -3002,7 +3002,7 @@ impl SettingsApp {
             ui.add_space(4.0);
             wrapped(
                 ui,
-                "Whichever goes first, the other takes over when it fails, and a download sent from the browser falls back to the extension's own browser download last. Auto uses the app's engine where YouTube serves it the whole file (the progressive streams) and yt-dlp for the higher qualities, which YouTube only serves in full to yt-dlp.",
+                "Auto and App first read YouTube with the app itself, every quality up to 4K, on its own connections; yt-dlp takes over for what it cannot read (a sign-in, an age check, a live stream) and makes Audio only (MP3). yt-dlp first always asks yt-dlp. Whichever goes first, the other takes over when it fails, and a download sent from the browser falls back to the extension's own browser download last.",
                 reg(9.5),
                 tok().muted,
             );
@@ -3659,6 +3659,33 @@ impl SettingsApp {
         ui.add_space(10.0);
         self.browser_card(ui, 1);
         ui.add_space(10.0);
+        // The folder the extension is loaded from: the app keeps it at its
+        // own version, wherever the app itself is unpacked or updated.
+        if let Some(dir) = crate::extsync::stable_dir() {
+            let mut open = true;
+            card(ui, "Extension folder", None, &mut open, |ui| {
+                wrapped(
+                    ui,
+                    "Load the extension from this folder (chrome://extensions → Developer mode → Load unpacked). The app copies its own version here on every start, and the extension reloads itself onto it, so updating or moving the app never breaks the browser side.",
+                    reg(10.5),
+                    t.muted,
+                );
+                ui.add_space(8.0);
+                let shown = dir.display().to_string();
+                let ver = crate::extsync::manifest_version(&dir).map(|v| format!("  ·  v{v}")).unwrap_or_default();
+                ui.label(egui::RichText::new(format!("{shown}{ver}")).font(egui::FontId::monospace(10.5)).color(t.text));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if button(ui, "Open folder", true).clicked() {
+                        crate::app::open_path(&dir, false);
+                    }
+                    if button(ui, "Copy path", false).clicked() {
+                        ui.ctx().copy_text(shown.clone());
+                    }
+                });
+            });
+            ui.add_space(10.0);
+        }
         let s = &mut self.s;
         card(ui, "Capture", None, &mut self.open_capture, |ui| {
             switch_row(
@@ -3943,19 +3970,27 @@ impl SettingsApp {
         card(ui, "Events", None, &mut open, |ui| {
             // One row per event, as IDM lays it out: on/off with the event's
             // name, the sound file, then Browse and Play.
+            // Every row shares one grid: a fixed label column, then the file
+            // box and the two buttons, sized from the card's width (gaps
+            // included) so all rows line up and none runs past the edge.
+            const LABEL_W: f32 = 200.0;
+            const GAP: f32 = 6.0;
+            const BTN: f32 = 28.0;
+            let row_w = ui.available_width();
+            let w = (row_w - LABEL_W - 2.0 * BTN - 3.0 * GAP - 2.0).max(60.0);
             for (key, on, file) in evs.iter_mut() {
                 let label = SOUND_EVENTS.iter().find(|e| e.0 == *key).map(|e| e.1).unwrap_or(key);
                 ui.horizontal(|c| {
-                    c.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+                    c.spacing_mut().item_spacing = Vec2::new(GAP, 0.0);
                     c.allocate_ui_with_layout(
-                        Vec2::new(190.0, 28.0),
+                        Vec2::new(LABEL_W, 28.0),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |c| {
-                            c.set_min_width(190.0);
+                            c.set_min_width(LABEL_W);
+                            c.set_max_width(LABEL_W);
                             checkbox(c, on, label, 14.0, 11.5, false);
                         },
                     );
-                    let w = (c.available_width() - 2.0 * 34.0).max(60.0);
                     input_box(c, &format!("snd_in_{key}"), file, w, true, false, "system sound");
                     if icon_sq(c, "\u{e2c7}", 28.0, 6.0).on_hover_text("Browse…").clicked() {
                         if let Some(p) = rfd::FileDialog::new().add_filter("Sound", &["wav"]).pick_file() {

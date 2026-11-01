@@ -498,7 +498,7 @@ async fn run_once(
     let run = Arc::new(Run {
         dl: dl.clone(),
         mirrors: Mutex::new(job.mirrors.clone()),
-        has_mirrors: !job.mirrors.is_empty(),
+        has_mirrors: !job.mirrors.is_empty() || cfg.size_identity,
         url: RwLock::new(job.url.clone()),
         journal: job.journal(),
         data,
