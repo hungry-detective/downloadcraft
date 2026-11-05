@@ -2302,6 +2302,8 @@ pub struct CraftApp {
     /// Pop the standalone "Download complete" dialog when a download finishes.
     /// Its own "Don't show this dialog again" checkbox clears this.
     show_complete: bool,
+    /// Auto-open the IDM-style progress window when a download starts.
+    progress_windows: bool,
     /// Sounds for finished / failed downloads (Settings -> Storage).
     sounds: bool,
     queue_running: bool,
@@ -2524,6 +2526,9 @@ impl CraftApp {
             max_concurrent: 3,
         per_host_conns: 0,
             show_complete: true,
+            // One window: per-download progress windows are opt-in (the
+            // row's "Show download window" still opens one by hand).
+            progress_windows: false,
             sounds: false,
             stats_line: String::new(),
             queues: Vec::new(),
@@ -2958,6 +2963,7 @@ impl CraftApp {
                 "max_concurrent": self.max_concurrent,
                 "per_host_conns": self.per_host_conns,
                 "show_complete": self.show_complete,
+                "progress_windows": self.progress_windows,
                 "timeout_secs": self.timeout_secs,
                 "max_retries": self.max_retries,
                 "user_agent": self.user_agent,
@@ -3070,6 +3076,9 @@ impl CraftApp {
                     }
                     if let Some(b) = g("show_complete").and_then(|x| x.as_bool()) {
                         self.show_complete = b;
+                    }
+                    if let Some(b) = g("progress_windows").and_then(|x| x.as_bool()) {
+                        self.progress_windows = b;
                     }
                     if let Some(n) = g("timeout_secs").and_then(|x| x.as_u64()) {
                         self.timeout_secs = n.clamp(5, 600);
@@ -3974,8 +3983,16 @@ impl CraftApp {
                                     total = total.or(ta);
                                 }
                             }
-                            if disp.is_none() && !hit.title.trim().is_empty() {
-                                disp = Some(crate::engine::sanitize_filename(&hit.title));
+                            if !hit.title.trim().is_empty()
+                                && disp
+                                    .as_deref()
+                                    .map_or(true, crate::engine::weak_capture_name)
+                            {
+                                // A resolved title beats a capture-supplied
+                                // one only when that one is meaningless
+                                // ("50k", "videoplayback"): a real server
+                                // filename still wins.
+                                disp = Some(crate::engine::title_filename(&hit.title, None));
                             }
                         }
                     }
@@ -4660,9 +4677,13 @@ impl CraftApp {
         // matter which path started it (Add dialog, capture popup, Redownload,
         // Resume, Start Queue, retry-all). The window claims a per-download
         // slot, so a start while one is already open never stacks duplicates,
-        // while a window the user closed comes straight back on Retry.
-        if let Err(e) = Self::spawn_progress(id) {
-            self.push_log(format!("Could not open the progress window for #{id}: {e}"));
+        // while a window the user closed comes straight back on Retry. Users
+        // who prefer only the main list turn this off in Settings; the row's
+        // Show download window still opens one by hand.
+        if self.progress_windows {
+            if let Err(e) = Self::spawn_progress(id) {
+                self.push_log(format!("Could not open the progress window for #{id}: {e}"));
+            }
         }
         // The live limit is the task's only cap: make it current first.
         self.refresh_speed_limit();

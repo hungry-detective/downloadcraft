@@ -28,7 +28,7 @@ function helpers(docTitle, href, ogTitle) {
   const fn = new Function(
     "document",
     "location",
-    `${block}\nreturn { mediaBase, pageTitle, urlBasename };`
+    `${block}\nreturn { mediaBase, pageTitle, urlBasename, safeFilename, isMetricTitle };`
   );
   return fn(document, location);
 }
@@ -75,5 +75,31 @@ describe("fallbacks", () => {
   it("strips a known media extension from the title", () => {
     const h = helpers("holiday.webm", "https://h/v?id=9");
     assert.equal(h.mediaBase("https://h/v?id=9"), "holiday");
+  });
+});
+
+describe("metric titles", () => {
+  it("rejects counter chrome but keeps real numbers", () => {
+    const h = helpers("", "https://h/watch");
+    for (const t of ["50K views", "6.6K likes", "1,234 subscribers", "no views", "50K VIEWS"]) {
+      assert.equal(h.isMetricTitle(t), true, t);
+    }
+    for (const t of ["50k", "6.6k", "50K views of Tokyo", "Song 50K", ""]) {
+      assert.equal(h.isMetricTitle(t), false, t);
+    }
+  });
+
+  it("never lets a counter-only page title name a file", () => {
+    const h = helpers("50K views", POOJA);
+    assert.equal(h.pageTitle(), "");
+    assert.equal(h.mediaBase(POOJA), POOJA_STEM);
+  });
+
+  it("trusts an already-resolved title, including a real numeric one", () => {
+    const h = helpers("", "https://h/watch");
+    assert.equal(h.safeFilename("50K views", "abc123"), "50K views.mp4");
+    assert.equal(h.safeFilename("50k", "abc123"), "50k.mp4");
+    assert.equal(h.safeFilename("", "abc123"), "youtube_abc123.mp4");
+    assert.equal(h.safeFilename("a/b:c", "abc123"), "a_b_c.mp4");
   });
 });

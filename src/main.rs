@@ -140,6 +140,11 @@ fn main() -> eframe::Result<()> {
         None => return Ok(()),
     };
 
+    // The heartbeat runs on its own thread, never from the GUI loop: a
+    // minimized window stops drawing frames, and capture dialogs must still
+    // see the app as running (see `model::start_heartbeat`).
+    crate::model::start_heartbeat();
+
     let rt = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -174,6 +179,6 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(CraftApp::new(rt.clone())))
         }),
     );
-    crate::model::clear_heartbeat();
+    crate::model::stop_heartbeat();
     result
 }

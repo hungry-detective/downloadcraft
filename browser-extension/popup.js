@@ -210,6 +210,14 @@ const safeName = (s, ext = ".mp4") => {
   const base = String(s || "video").replace(/[<>:"/\\|?*]/g, "_").trim().slice(0, 120) || "video";
   return base.toLowerCase().endsWith(ext) ? base : base + ext;
 };
+// `v.title` comes from content.js, which already prefers authoritative
+// player metadata over page chrome, so trust it here: only a missing title
+// falls back to the video id.
+const youtubeStem = (title, id) => {
+  const t = String(title || "").replace(/\s+/g, " ").trim();
+  const clean = t || (id ? `youtube_${id}` : "youtube_video");
+  return safeName(clean).replace(/\.mp4$/i, "");
+};
 const contOf = (mime) => String(mime || "").split(";")[0].split("/")[1] || "mp4";
 const tagOf = (url, mime) => {
   const m = String(mime || "").toLowerCase();
@@ -361,7 +369,7 @@ const browserJob = (url, filename, extra) => (url && /^https?:\/\//i.test(url) ?
 // A YouTube video from the page's player data: every quality in one select.
 function youtubeItem(v, pageUrl) {
   const page = v.pageUrl || pageUrl;
-  const stem = safeName(v.title || "youtube_video").replace(/\.mp4$/i, "");
+  const stem = youtubeStem(v.title, v.videoId);
   const best = (arr) => (arr || []).slice().sort((a, b) => {
     // By bitrate (`br`): YouTube's audio labels are "MEDIUM"/"LOW".
     const bn = (x) => Number(x.br) > 0 ? Number(x.br) : (parseInt((String(x.label || "").match(/(\d+)k/) || [0, 0])[1], 10) * 1000 || 0);

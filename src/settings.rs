@@ -53,6 +53,8 @@ struct Settings {
     extract_delete: bool,
     /// Pop the standalone "Download complete" dialog when a transfer ends.
     show_complete: bool,
+    /// Pop a standalone IDM-style progress window when a download starts.
+    progress_windows: bool,
     /// The list's column titles without their icons.
     hide_col_icons: bool,
     /// Main window zoom, in percent (`ui_scale` in ui.json).
@@ -165,6 +167,7 @@ impl Default for Settings {
             extract_into_folder: true,
             extract_delete: false,
             show_complete: true,
+            progress_windows: false,
             hide_col_icons: false,
             save_dir: dirs::download_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -280,6 +283,9 @@ fn load() -> Settings {
     }
     if let Some(b) = g("show_complete").and_then(|x| x.as_bool()) {
         s.show_complete = b;
+    }
+    if let Some(b) = g("progress_windows").and_then(|x| x.as_bool()) {
+        s.progress_windows = b;
     }
     if let Some(b) = g("category_folders").and_then(|x| x.as_bool()) {
         s.category_folders = b;
@@ -534,6 +540,7 @@ fn save(s: &Settings) -> bool {
     set(obj, "extract_delete", s.extract_delete.into());
     set(obj, "ffmpeg_custom_path", s.ffmpeg_custom_path.clone().into());
     set(obj, "show_complete", s.show_complete.into());
+    set(obj, "progress_windows", s.progress_windows.into());
     set(obj, "hide_col_icons", s.hide_col_icons.into());
     set(obj, "save_dir", s.save_dir.clone().into());
     set(obj, "category_folders", s.category_folders.into());
@@ -648,6 +655,7 @@ struct SettingsApp {
     /// Appearance cards (the concept opens both by default).
     open_theme: bool,
     open_window: bool,
+    open_progress: bool,
     /// Browser Integration cards (Chromium family, Firefox) expanded.
     browser_open: [bool; 2],
     /// Native host registered per browser, asked when the pane first opens
@@ -791,6 +799,7 @@ pub fn run() -> eframe::Result<()> {
         open_windows: false,
         open_theme: true,
         open_window: true,
+        open_progress: true,
         browser_open: [true, false],
         host_status: None,
         open_updates: true,
@@ -2727,6 +2736,21 @@ impl SettingsApp {
             self.s.start_with_windows = startup;
             self.s.system_title_bar = os_caption;
         }
+
+        // ---- Progress windows ----
+        let mut open_progress = self.open_progress;
+        let mut progress_windows = self.s.progress_windows;
+        card(ui, "Progress windows", None, &mut open_progress, |ui| {
+            switch_row(
+                ui,
+                "progress_windows",
+                &mut progress_windows,
+                "Open a progress window for each download",
+                "IDM-style. Off by default, so downloads stay in the main window; right-click a row and choose Show download window when you want one.",
+            );
+        });
+        self.open_progress = open_progress;
+        self.s.progress_windows = progress_windows;
     }
 
     // ---------- Download Engine ----------
