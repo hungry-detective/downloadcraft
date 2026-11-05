@@ -408,6 +408,7 @@ pub fn run() -> eframe::Result<()> {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Download complete")
+        .with_app_id(crate::platform::app_id())
         .with_inner_size([CW, CH])
         .with_resizable(false)
         .with_decorations(crate::platform::system_title_bar())

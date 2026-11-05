@@ -4916,7 +4916,11 @@ impl CraftApp {
             }
             // The window may have been closed while the transfer sat paused:
             // reopening is cheap and a live one is left alone by its slot.
-            let _ = Self::spawn_progress(id);
+            // Only when per-download windows are on, though: with them off,
+            // Resume must not pop a window the user never asked for.
+            if self.progress_windows {
+                let _ = Self::spawn_progress(id);
+            }
             self.push_log(format!("Resumed #{id}"));
             self.save_queue();
         } else if let Some(d) = self.downloads.iter().find(|d| d.id == id) {
@@ -6041,9 +6045,14 @@ impl CraftApp {
                     self.resume(id);
                 }
                 // Already running: bring its progress window up instead of
-                // nothing visibly happening.
-                Some(Status::Downloading) => {
-                    let _ = Self::spawn_progress(id);
+                // nothing visibly happening — but only when per-download
+                // windows are enabled. With them off the main list is the
+                // only surface, and a capture must not pop a window the user
+                // switched off in Settings.
+                Some(Status::Downloading) if self.progress_windows => {
+                    if let Err(e) = Self::spawn_progress(id) {
+                        self.push_log(format!("Could not open the progress window for #{id}: {e}"));
+                    }
                 }
                 _ => {}
             }

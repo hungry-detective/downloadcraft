@@ -809,6 +809,7 @@ pub fn run() -> eframe::Result<()> {
     // the main GUI. 640 wide is the concept's window width.
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Download Craft Settings")
+        .with_app_id(crate::platform::app_id())
         .with_inner_size([640.0, 520.0])
         .with_min_inner_size([600.0, 430.0])
         .with_resizable(true);

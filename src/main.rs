@@ -156,6 +156,7 @@ fn main() -> eframe::Result<()> {
     // snap and double-click still go through the OS (`StartDrag` / `BeginResize`).
     // Systems that cannot host that keep the OS caption (`system_title_bar`).
     let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id(crate::platform::app_id())
         .with_inner_size([920.0, 500.0])
         .with_min_inner_size([840.0, 480.0])
         .with_decorations(crate::platform::system_title_bar());
