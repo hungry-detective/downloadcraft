@@ -1116,6 +1116,7 @@ pub fn run() -> eframe::Result<()> {
     };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Download all links — Download Craft")
+        .with_app_id(crate::platform::app_id())
         .with_inner_size([LINKS_W, LINKS_H])
         .with_min_inner_size([640.0, 380.0])
         .with_resizable(true)

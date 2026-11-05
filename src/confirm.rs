@@ -570,10 +570,18 @@ impl ConfirmApp {
     fn stop_prestart(&mut self, keep_as: Option<&std::path::Path>) -> bool {
         let Some(pre) = self.pre.take() else { return false };
         pre.shared.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-        let finished = pre.handle.is_finished() && engine::has_partial(&pre.dest) == false && pre.dest.is_file();
+        // Let the transfer notice the flag and write its journal before the
+        // hard abort: aborting mid-write is what leaves partial files for the
+        // next run to clean up. The wait is bounded and returns as soon as the
+        // task ends — this runs on the dialog's UI thread, where the old
+        // blanket 250 ms sleep froze the window on every Download.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+        while !pre.handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let finished =
+            pre.handle.is_finished() && !engine::has_partial(&pre.dest) && pre.dest.is_file();
         pre.handle.abort();
-        // Let the transfer write its journal and let go of the files.
-        std::thread::sleep(std::time::Duration::from_millis(250));
         let mut whole = false;
         if let Some(to) = keep_as {
             if finished && !to.exists() {
@@ -648,8 +656,11 @@ impl ConfirmApp {
                     {
                         if let Ok((size, title)) = crate::youtube::peek(&client, &opts, &url).await {
                             total = size;
-                            if disp.is_none() {
-                                disp = Some(engine::sanitize_filename(&title));
+                            if disp.as_deref().map_or(true, engine::weak_capture_name) {
+                                disp = Some(engine::title_filename(
+                                    &title,
+                                    Some(std::path::Path::new(&guess_name)),
+                                ));
                             }
                         }
                     }
@@ -679,8 +690,13 @@ impl ConfirmApp {
                                     total = total.or(ta);
                                 }
                             }
-                            if disp.is_none() && !hit.title.trim().is_empty() {
-                                disp = Some(engine::sanitize_filename(&hit.title));
+                            if !hit.title.trim().is_empty()
+                                && disp.as_deref().map_or(true, engine::weak_capture_name)
+                            {
+                                disp = Some(engine::title_filename(
+                                    &hit.title,
+                                    Some(std::path::Path::new(&guess_name)),
+                                ));
                             }
                         }
                     }
@@ -989,6 +1005,7 @@ pub fn run() -> eframe::Result<()> {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Add download")
+        .with_app_id(crate::platform::app_id())
         .with_inner_size([DM_W, DM_H])
         .with_resizable(false)
         .with_decorations(crate::platform::system_title_bar())

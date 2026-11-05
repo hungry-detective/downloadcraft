@@ -102,7 +102,48 @@ pub fn clear_heartbeat() {
     }
 }
 
+/// Whether the main instance still holds its `win/main` slot. The OS drops
+/// that lock when the owning process ends and only then, so it is the
+/// authoritative answer to "is the app running" — unlike a timestamp, which
+/// goes stale whenever the GUI stops drawing frames (minimized, covered, or
+/// on a desktop that simply stops scheduling the window).
+fn main_instance_held() -> bool {
+    let Some(dir) = config_dir().map(|d| d.join("win")) else {
+        return false;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // The same no-sharing open the owner uses: it fails while the slot
+        // is taken and succeeds (for this probe) when it is free.
+        opts.share_mode(0);
+    }
+    let Ok(file) = opts.open(dir.join("main")) else {
+        // Windows refuses the open outright while the owner holds the slot.
+        return cfg!(windows);
+    };
+    #[cfg(unix)]
+    {
+        if let Err(std::fs::TryLockError::WouldBlock) = file.try_lock() {
+            return true;
+        }
+        let _ = file.unlock();
+    }
+    let _ = &file;
+    false
+}
+
 pub fn is_main_live() -> bool {
+    // The instance lock first: the OS holds it for exactly as long as the
+    // process lives, so a minimized window can never look like a dead app.
+    if main_instance_held() {
+        return true;
+    }
+    // No slot claimed (an older build, or a launcher that skipped it): a
+    // fresh heartbeat still counts.
     let Some(p) = config_dir().map(|d| d.join("main.lock")) else {
         return false;
     };
@@ -114,6 +155,31 @@ pub fn is_main_live() -> bool {
         // app "running" long enough to queue captures that then sat there.
         .map(|dt| chrono::Local::now().timestamp() - dt.timestamp() < 10)
         .unwrap_or(false)
+}
+
+static HEARTBEAT_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Refresh the heartbeat from a thread of its own. The GUI loop only runs
+/// while frames are being drawn, and a minimized window can be skipped by the
+/// compositor for minutes: when the heartbeat came from that loop, `main.lock`
+/// went stale and a capture dialog declared the running app stopped.
+pub fn start_heartbeat() {
+    if HEARTBEAT_ON.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        while HEARTBEAT_ON.load(std::sync::atomic::Ordering::SeqCst) {
+            touch_heartbeat();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
+}
+
+/// Shutdown: stop refreshing and remove the timestamp together, so a dialog
+/// opened right after does not take the closing app for running.
+pub fn stop_heartbeat() {
+    HEARTBEAT_ON.store(false, std::sync::atomic::Ordering::SeqCst);
+    clear_heartbeat();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

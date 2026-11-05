@@ -792,6 +792,14 @@ fn replayable_headers(
     (!kept.is_empty()).then_some(kept)
 }
 
+/// One capture's inbox identity: the resource URL plus the requested quality.
+/// The queue and `poll_inbox` match captures the same way, so two quality
+/// choices of one page stay two entries end to end.
+fn same_capture(item: &InboxItem, url: &str, quality: &str) -> bool {
+    item.url == url
+        && crate::model::same_quality(item.quality.as_deref().unwrap_or(""), quality)
+}
+
 fn queue_download(msg: &Incoming) -> Result<bool, String> {
     const MAX_INBOX: usize = 200;
     let url = msg.url.clone().unwrap_or_default();
@@ -831,9 +839,16 @@ fn queue_download(msg: &Incoming) -> Result<bool, String> {
         audio_expected: msg.audio_expected,
         browser: msg.browser.clone().and_then(|b| b.sanitized()),
     };
-    // Same URL re-captured: refresh metadata instead of ignoring it (the
-    // filename/referer/cookie may be corrected this time).
-    let is_new = match items.iter_mut().find(|i| i.url == url) {
+    // Same capture re-captured: refresh metadata instead of ignoring it (the
+    // filename/referer/cookie may be corrected this time). Quality is part of
+    // the identity, exactly as in the queue and `poll_inbox`: one page at
+    // 1080p and at 720p is two downloads, so neither may overwrite the other
+    // here before the manager reads the inbox.
+    let quality_key = fresh.quality.clone().unwrap_or_default();
+    let is_new = match items
+        .iter_mut()
+        .find(|i| same_capture(i, &url, &quality_key))
+    {
         Some(existing) => {
             *existing = fresh;
             false
@@ -1127,5 +1142,26 @@ mod media_tests {
         assert_eq!(b.links.len(), 2);
         assert_eq!(b.links[0].text, "A video");
         assert_eq!(b.links[1].url, "http://other.example/b.zip");
+    }
+
+    #[test]
+    fn inbox_identity_keeps_each_quality_of_one_page() {
+        // One page captured at two qualities must stay two inbox entries: they
+        // are two downloads (the queue and poll_inbox match them the same way).
+        let hd: InboxItem = serde_json::from_str(
+            r#"{"url":"https://www.youtube.com/watch?v=ABC","received_at":"2026-11-05","quality":"1080p"}"#,
+        )
+        .unwrap();
+        assert!(same_capture(&hd, "https://www.youtube.com/watch?v=ABC", "1080p"));
+        assert!(same_capture(&hd, "https://www.youtube.com/watch?v=ABC", " 1080P "));
+        assert!(!same_capture(&hd, "https://www.youtube.com/watch?v=ABC", "720p"));
+        assert!(!same_capture(&hd, "https://www.youtube.com/watch?v=XYZ", "1080p"));
+        // No quality choice: an empty capture only matches another empty one.
+        let plain: InboxItem = serde_json::from_str(
+            r#"{"url":"https://example.com/f.zip","received_at":"2026-11-05"}"#,
+        )
+        .unwrap();
+        assert!(same_capture(&plain, "https://example.com/f.zip", ""));
+        assert!(!same_capture(&plain, "https://example.com/f.zip", "720p"));
     }
 }

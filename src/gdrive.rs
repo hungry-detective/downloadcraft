@@ -104,7 +104,13 @@ pub fn classify(raw: &str) -> Option<Link> {
 
 /// The plain download address of a Drive file id.
 pub fn download_url(id: &str, resource_key: Option<&str>) -> String {
-    let mut u = url::Url::parse(DOWNLOAD).expect("constant URL");
+    download_url_at(DOWNLOAD, id, resource_key)
+}
+
+/// `download_url` against a given endpoint. Tests point this at a local
+/// server, so the resolve path runs without the network.
+fn download_url_at(base: &str, id: &str, resource_key: Option<&str>) -> String {
+    let mut u = url::Url::parse(base).expect("download endpoint");
     {
         let mut q = u.query_pairs_mut();
         q.append_pair("id", id).append_pair("export", "download");
@@ -185,6 +191,17 @@ pub fn form_target(html: &str) -> Option<String> {
 /// Turn a Drive / Docs link into the address that serves the file itself.
 /// Anything that is not a Google link comes back unchanged.
 pub async fn resolve(client: &reqwest::Client, opts: &crate::engine::EngineOpts, url: &str) -> Result<String> {
+    resolve_at(client, opts, url, DOWNLOAD).await
+}
+
+/// `resolve` with the download endpoint injected: the page/file decision is
+/// the part worth covering, and a local server can stand in for Drive.
+async fn resolve_at(
+    client: &reqwest::Client,
+    opts: &crate::engine::EngineOpts,
+    url: &str,
+    download_base: &str,
+) -> Result<String> {
     let link = match classify(url) {
         Some(l) => l,
         None => return Ok(url.to_string()),
@@ -205,7 +222,7 @@ pub async fn resolve(client: &reqwest::Client, opts: &crate::engine::EngineOpts,
             }) {
                 return Ok(url.to_string());
             }
-            download_url(&id, resource_key.as_deref())
+            download_url_at(download_base, &id, resource_key.as_deref())
         }
     };
     let resp = opts.get(client, &first).send().await?;
@@ -335,18 +352,78 @@ mod tests {
         assert_eq!(form_target(page), None);
     }
 
-    /// Live check against Drive (network): a large public file goes through
-    /// the virus-scan page and ends at the file itself.
+    /// The whole resolve path — small file, virus-scan page, and the honest
+    /// refusals — against a local server standing in for Drive. No network and
+    /// no shared file that can vanish, so it belongs in the default suite (the
+    /// old version was `#[ignore]`d for needing both).
     #[tokio::test]
-    #[ignore]
-    async fn live_large_public_file() {
+    async fn scan_page_error_and_file_paths_offline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else { break };
+                tokio::spawn(async move {
+                    let mut raw = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    loop {
+                        let n = s.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 { return; }
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                    }
+                    let request = String::from_utf8_lossy(&raw).to_string();
+                    let line = request.lines().next().unwrap_or("");
+                    let (status, mime, body) = if line.contains("id=goodfile0001") {
+                        ("200 OK", "application/octet-stream", b"npz-bytes".to_vec())
+                    } else if line.contains("id=missingfile1") {
+                        ("404 Not Found", "text/plain", b"gone".to_vec())
+                    } else if line.contains("id=forbidden001") {
+                        ("403 Forbidden", "text/plain", b"no".to_vec())
+                    } else if line.contains("id=scanfolder01") {
+                        let page = r#"<html><body><p>Google Drive can't scan this file for viruses.</p>
+                            <form id="download-form" action="https://drive.usercontent.google.com/download" method="get">
+                            <input type="hidden" name="id" value="scanfolder01">
+                            <input type="hidden" name="export" value="download">
+                            <input type="hidden" name="confirm" value="t">
+                            <input type="hidden" name="uuid" value="u-1"></form></body></html>"#;
+                        ("200 OK", "text/html; charset=utf-8", page.as_bytes().to_vec())
+                    } else if line.contains("id=quotafile001") {
+                        let page = b"<html>too many users have viewed this file</html>".to_vec();
+                        ("200 OK", "text/html; charset=utf-8", page)
+                    } else {
+                        let page = b"<html><p>sign in to continue</p></html>".to_vec();
+                        ("200 OK", "text/html; charset=utf-8", page)
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = s.write_all(head.as_bytes()).await;
+                    let _ = s.write_all(&body).await;
+                });
+            }
+        });
         let opts = crate::engine::EngineOpts::default();
         let client = opts.build_client().unwrap();
-        let link = "https://drive.google.com/file/d/1l_5RK28JRL19wpT22B-DY9We3TVXnnQQ/view?usp=sharing";
-        let got = resolve(&client, &opts, link).await.unwrap();
-        eprintln!("resolved: {got}");
-        let r = opts.get(&client, &got).header("Range", "bytes=0-15").send().await.unwrap();
-        eprintln!("status {} type {:?} disp {:?} range {:?}", r.status(), r.headers().get("content-type"), r.headers().get("content-disposition"), r.headers().get("content-range"));
-        assert!(!r.headers().get("content-type").unwrap().to_str().unwrap().contains("text/html"));
+        let base = format!("http://{addr}/download");
+        let link = |id: &str| format!("https://drive.google.com/file/d/{id}/view");
+        // A small file: the first answer is already the bytes.
+        let got = resolve_at(&client, &opts, &link("goodfile0001"), &base).await.unwrap();
+        assert!(got.contains("id=goodfile0001"), "{got}");
+        // The virus-scan page: its form fields become the download address.
+        let got = resolve_at(&client, &opts, &link("scanfolder01"), &base).await.unwrap();
+        assert!(got.starts_with("https://drive.usercontent.google.com/download?"), "{got}");
+        assert!(got.contains("id=scanfolder01") && got.contains("confirm=t") && got.contains("uuid=u-1"), "{got}");
+        // Refusals say why, instead of downloading the page as the file.
+        let err = resolve_at(&client, &opts, &link("missingfile1"), &base).await.unwrap_err().to_string();
+        assert!(err.contains("no file"), "{err}");
+        let err = resolve_at(&client, &opts, &link("forbidden001"), &base).await.unwrap_err().to_string();
+        assert!(err.contains("not shared publicly"), "{err}");
+        let err = resolve_at(&client, &opts, &link("quotafile001"), &base).await.unwrap_err().to_string();
+        assert!(err.contains("download limit"), "{err}");
+        let err = resolve_at(&client, &opts, &link("unknowfile01"), &base).await.unwrap_err().to_string();
+        assert!(err.contains("page instead of the file"), "{err}");
     }
 }

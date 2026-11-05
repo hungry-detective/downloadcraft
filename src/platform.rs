@@ -3,6 +3,17 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The identity every window of this app reports: the main manager, About,
+/// Settings, and the standalone capture/progress dialogs. All of them are
+/// separate processes, so without a shared id the desktop lists each one as
+/// its own application (four dock icons, four "new window" entries). This is
+/// the installed desktop file's basename, which is what Wayland matches an
+/// `app_id` against; X11 gets the same string as `WM_CLASS`, and the packaged
+/// `.desktop` names it in `StartupWMClass`.
+pub fn app_id() -> &'static str {
+    "com.downloadcraft.app"
+}
+
 /// AppImage mount paths disappear after exit. Relaunch the permanent image.
 pub fn launch_path() -> std::io::Result<PathBuf> {
     #[cfg(target_os = "linux")]

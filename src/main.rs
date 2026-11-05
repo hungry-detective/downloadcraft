@@ -140,6 +140,11 @@ fn main() -> eframe::Result<()> {
         None => return Ok(()),
     };
 
+    // The heartbeat runs on its own thread, never from the GUI loop: a
+    // minimized window stops drawing frames, and capture dialogs must still
+    // see the app as running (see `model::start_heartbeat`).
+    crate::model::start_heartbeat();
+
     let rt = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -151,6 +156,7 @@ fn main() -> eframe::Result<()> {
     // snap and double-click still go through the OS (`StartDrag` / `BeginResize`).
     // Systems that cannot host that keep the OS caption (`system_title_bar`).
     let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id(crate::platform::app_id())
         .with_inner_size([920.0, 500.0])
         .with_min_inner_size([840.0, 480.0])
         .with_decorations(crate::platform::system_title_bar());
@@ -174,6 +180,6 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(CraftApp::new(rt.clone())))
         }),
     );
-    crate::model::clear_heartbeat();
+    crate::model::stop_heartbeat();
     result
 }

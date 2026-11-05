@@ -200,37 +200,40 @@ fn player_path_ok(path: &str) -> bool {
         && path.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.'))
 }
 
+/// Decode the JSON string literal that starts just after its opening quote
+/// (`s` begins inside the literal). Done through the JSON parser so `\uXXXX`
+/// escapes decode properly, surrogate pairs (emoji) included — the hand
+/// rolled version turned those into nothing.
+fn json_string_at(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut escaped = false;
+    for (i, b) in bytes.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match b {
+            b'\\' => escaped = true,
+            b'"' => {
+                let literal = format!("\"{}\"", &s[..i]);
+                return serde_json::from_str::<String>(&literal).ok();
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The title from the page's player data, else its `<title>`.
 fn page_title(html: &str) -> Option<String> {
     const MARK: &str = "\"videoDetails\":{";
     if let Some(at) = html.find(MARK) {
         let rest = &html[at..html.len().min(at + 4096)];
         if let Some(t) = rest.find("\"title\":\"") {
-            let s = &rest[t + 9..];
-            let mut out = String::new();
-            let mut chars = s.chars();
-            while let Some(c) = chars.next() {
-                match c {
-                    '"' => break,
-                    '\\' => {
-                        // The JSON escapes a title can carry.
-                        match chars.next() {
-                            Some('u') => {
-                                let hex: String = chars.by_ref().take(4).collect();
-                                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                                    out.push(ch);
-                                }
-                            }
-                            Some('n') => out.push(' '),
-                            Some(other) => out.push(other),
-                            None => break,
-                        }
-                    }
-                    c => out.push(c),
+            if let Some(out) = json_string_at(&rest[t + 9..]) {
+                if !out.trim().is_empty() {
+                    return Some(out);
                 }
-            }
-            if !out.trim().is_empty() {
-                return Some(out);
             }
         }
     }
@@ -245,6 +248,54 @@ fn page_title(html: &str) -> Option<String> {
         .replace("&lt;", "<")
         .replace("&gt;", ">");
     (!title.is_empty() && title != "YouTube").then_some(title)
+}
+
+/// A title that is only a compact counter ("50K views", "6.6K likes") is
+/// page chrome, not a name. A real numeric title ("50k", "6.6k") is kept.
+fn is_metric_title(t: &str) -> bool {
+    let mut parts = t.split_whitespace();
+    let Some(first) = parts.next() else { return false };
+    let Some(unit) = parts.next() else { return false };
+    if parts.next().is_some() {
+        return false;
+    }
+    let unit = unit.to_ascii_lowercase();
+    if !matches!(
+        unit.as_str(),
+        "view" | "views" | "like" | "likes" | "subscriber" | "subscribers"
+            | "comment" | "comments" | "share" | "shares"
+    ) {
+        return false;
+    }
+    if first.eq_ignore_ascii_case("no") {
+        return true;
+    }
+    let count = first.trim_end_matches(['K', 'k', 'M', 'm', 'B', 'b']);
+    !count.is_empty()
+        && count
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+}
+
+/// Player metadata is authoritative: a video really titled "50 Views" keeps
+/// that name. The page-derived fallback is checked for counters, because
+/// there the title can be YouTube's "50K views" chrome.
+fn video_title(player: &serde_json::Value, facts: &PageFacts, id: &str) -> String {
+    player
+        .pointer("/videoDetails/title")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            facts
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && !is_metric_title(s))
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("youtube_{id}"))
 }
 
 /// Seconds of pre-roll ads the player must play before the streams are
@@ -313,18 +364,23 @@ fn cache() -> &'static Mutex<Cache> {
     CACHE.get_or_init(|| Mutex::new(Cache::default()))
 }
 
-async fn text_capped(resp: reqwest::Response, what: &str) -> Result<String> {
+async fn text_capped(mut resp: reqwest::Response, what: &str) -> Result<String> {
     if !resp.status().is_success() {
         return Err(anyhow!("{what} answered HTTP {}", resp.status().as_u16()));
     }
     if resp.content_length().is_some_and(|n| n as usize > PAGE_MOST) {
         return Err(anyhow!("{what} is too large"));
     }
-    let text = resp.text().await?;
-    if text.len() > PAGE_MOST {
-        return Err(anyhow!("{what} is too large"));
+    // Stream into a capped buffer: a server that sends no Content-Length must
+    // not be able to put the whole body in memory before the limit is checked.
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if buf.len() + chunk.len() > PAGE_MOST {
+            return Err(anyhow!("{what} is too large"));
+        }
+        buf.extend_from_slice(&chunk);
     }
-    Ok(text)
+    String::from_utf8(buf).map_err(|_| anyhow!("{what} is not valid text"))
 }
 
 async fn player_script(client: &reqwest::Client, path: &str) -> Result<Arc<String>> {
@@ -658,12 +714,7 @@ async fn read(client: &reqwest::Client, opts: &EngineOpts, id: &str) -> Result<(
             let js = player_script(client, &player_path).await?;
             solve(&player_path, &js, ns, sigs).await?
         };
-        let title = player
-            .pointer("/videoDetails/title")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or(facts.title)
-            .unwrap_or_else(|| format!("youtube_{id}"));
+        let title = video_title(&player, &facts, id);
         let ext = if sound.container == "webm" { "webm" } else { "m4a" };
         if std::env::var("DOWNLOAD_CRAFT_DEBUG").is_ok() {
             eprintln!("[dbg] youtube own reader: {id} sound alone, itag {} {}, ad wait {}s", sound.itag, sound.container, ad_wait(&player));
@@ -685,12 +736,7 @@ async fn read(client: &reqwest::Client, opts: &EngineOpts, id: &str) -> Result<(
     };
     let video_url = unlocked(&picture, &solved)?;
     let audio_url = sound.as_ref().map(|s| unlocked(s, &solved)).transpose()?;
-    let title = player
-        .pointer("/videoDetails/title")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or(facts.title)
-        .unwrap_or_else(|| format!("youtube_{id}"));
+    let title = video_title(&player, &facts, id);
     let ext = match (&picture.container[..], sound.as_ref().map(|s| &s.container[..])) {
         ("mp4", None | Some("mp4")) => "mp4",
         ("webm", None) => "webm",
@@ -828,5 +874,36 @@ mod tests {
     fn title_from_player_data_unescapes() {
         let html = r#"var x = {"videoDetails":{"videoId":"a","title":"Café \"Live\""}}"#;
         assert_eq!(page_title(html).as_deref(), Some("Café \"Live\""));
+    }
+
+    #[test]
+    fn page_title_decodes_json_escapes_and_surrogates() {
+        let html = r#"var x = {"videoDetails":{"videoId":"a","title":"Caf\u00e9 \ud83d\ude00 \/ live"}}"#;
+        assert_eq!(page_title(html).as_deref(), Some("Café 😀 / live"));
+    }
+
+    #[test]
+    fn metric_only_titles_are_page_chrome() {
+        for t in ["50K views", "6.6K likes", "1,234 subscribers", "no views", "50K VIEWS"] {
+            assert!(is_metric_title(t), "{t}");
+        }
+        for t in ["50k", "6.6k", "50K views of Tokyo", "Song 50K", ""] {
+            assert!(!is_metric_title(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn metric_player_title_is_kept_but_fallback_chrome_is_not() {
+        let player = json!({"videoDetails": {"title": "50K views"}});
+        let facts = PageFacts { title: Some("6.6K likes".into()), ..Default::default() };
+        // Player metadata is authoritative: a real video may be titled so.
+        assert_eq!(video_title(&player, &facts, "abc123"), "50K views");
+        let player = json!({"videoDetails": {"title": "50k"}});
+        assert_eq!(video_title(&player, &facts, "abc123"), "50k");
+        // With no player title only the fallback is checked for chrome.
+        let player = json!({"videoDetails": {}});
+        assert_eq!(video_title(&player, &facts, "abc123"), "youtube_abc123");
+        let facts = PageFacts { title: Some("A real title".into()), ..Default::default() };
+        assert_eq!(video_title(&player, &facts, "abc123"), "A real title");
     }
 }

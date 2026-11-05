@@ -1640,6 +1640,84 @@ fn percent_decode_owned(s: &str) -> String {
     String::from_utf8_lossy(&raw).into_owned()
 }
 
+/// A capture-supplied name that carries no real title: the CDN's opaque stem
+/// (`50k`, `6.6k`, `videoplayback`), a generic word, or a bare URL hash.
+/// Such a name must yield to a resolved page title even when the caller asked
+/// to keep the destination exactly — otherwise a YouTube capture is saved as
+/// `50k.mp4` although its title was resolved perfectly well.
+pub fn weak_capture_name(name: &str) -> bool {
+    let stem = name
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(name)
+        .trim()
+        .to_ascii_lowercase();
+    if stem.is_empty() {
+        return true;
+    }
+    // Our own placeholders are always weaker than a real title.
+    if stem.starts_with("youtube_") || stem.starts_with("download_") {
+        return true;
+    }
+    // A bare counter ("50k", "6.6k") or a bare resolution ("1080p").
+    let digits = stem.trim_end_matches(['k', 'm', 'b', 'p']);
+    if !digits.is_empty()
+        && digits.chars().any(|c| c.is_ascii_digit())
+        && digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '_'))
+    {
+        return true;
+    }
+    // A bare hash, as googlevideo path segments often are.
+    if stem.len() >= 8 && stem.chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
+    matches!(
+        stem.as_str(),
+        "videoplayback"
+            | "index"
+            | "file"
+            | "media"
+            | "stream"
+            | "video"
+            | "play"
+            | "master"
+            | "playlist"
+            | "manifest"
+            | "chunk"
+            | "segment"
+            | "init"
+            | "download"
+            | "untitled"
+    )
+}
+
+/// Media extensions a resolved title may legitimately carry itself.
+const TITLE_EXTS: &[&str] = &[
+    "mp4", "mkv", "webm", "mov", "avi", "m4v", "mp3", "m4a", "aac", "ogg", "wav", "flac",
+    "m3u8", "mpd", "ts", "m4s",
+];
+
+/// The file name for a resolved media title: the title itself, keeping the
+/// extension the captured name already has (a page title never carries one).
+/// `captured` is the destination as it stood before the title was known; when
+/// it is `None` the caller fixes the extension from the MIME type later.
+pub fn title_filename(title: &str, captured: Option<&std::path::Path>) -> String {
+    let name = sanitize_filename(title);
+    let lower = name.to_ascii_lowercase();
+    if TITLE_EXTS.iter().any(|e| lower.ends_with(&format!(".{e}"))) {
+        return name;
+    }
+    let ext = captured
+        .and_then(|p| p.extension().and_then(|e| e.to_str()))
+        .map(str::to_ascii_lowercase);
+    match ext {
+        Some(ext) if TITLE_EXTS.contains(&ext.as_str()) => format!("{name}.{ext}"),
+        _ => name,
+    }
+}
+
 /// Make a server/title string safe as a Windows filename.
 pub fn sanitize_filename(s: &str) -> String {
     let mut out: String = s
@@ -4838,8 +4916,15 @@ async fn download_inner(
                     opts.referer = page_url.clone();
                 }
                 if !hit.title.trim().is_empty() {
-                    let name = sanitize_filename(&hit.title);
-                    if opts.allow_rename {
+                    // A captured CDN name ("50k.mp4", "videoplayback") is not
+                    // a title: the resolved one replaces it even when the
+                    // caller asked to keep the destination as it is.
+                    let weak = dest
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map_or(true, weak_capture_name);
+                    if opts.allow_rename || weak {
+                        let name = title_filename(&hit.title, Some(&dest));
                         dest.set_file_name(&name);
                         mutex_guard(&shared.resolved_name).replace(name);
                     }
@@ -9395,6 +9480,59 @@ mod tests {
         assert!(out.ends_with(".mp4"));
         assert!(out.len() <= 124);
         assert!(String::from_utf8(out.clone().into_bytes()).is_ok());
+    }
+
+    #[test]
+    fn capture_names_that_are_not_titles() {
+        // The names that produced "50k.mp4" / "6.6k.mp4" in the first place.
+        for n in [
+            "50k.mp4",
+            "6.6k.mp4",
+            "1080.mp4",
+            "1080p.mp4",
+            "videoplayback.mp4",
+            "index.m4s",
+            "download.bin",
+            "youtube_abc123.mp4",
+            "a1b2c3d4e5f6.mp4",
+        ] {
+            assert!(weak_capture_name(n), "{n}");
+        }
+        for n in [
+            "Never Gonna Give You Up.mp4",
+            "Python Tutorial — Part 1.mp4",
+            "খেজুর আর হুজুর.mp4",
+            "Mr. Robot S01E01.mkv",
+            "dQw4w9WgXcQ.mp4",
+        ] {
+            assert!(!weak_capture_name(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn resolved_titles_keep_the_captured_extension() {
+        let captured = std::path::Path::new("50k.mp4");
+        assert_eq!(
+            title_filename("Never Gonna Give You Up", Some(captured)),
+            "Never Gonna Give You Up.mp4"
+        );
+        // A title that already names a media file is not given a second one.
+        assert_eq!(title_filename("Song.m4a", Some(captured)), "Song.m4a");
+        // Bengali is kept as it is.
+        assert_eq!(
+            title_filename("খেজুর আর হুজুর", Some(captured)),
+            "খেজুর আর হুজুর.mp4"
+        );
+        // No captured name: the caller fixes the extension from the MIME type.
+        assert_eq!(
+            title_filename("Never Gonna Give You Up", None),
+            "Never Gonna Give You Up"
+        );
+        // A non-media extension on the captured name is not trusted.
+        assert_eq!(
+            title_filename("Title", Some(std::path::Path::new("50k.tmp"))),
+            "Title"
+        );
     }
 
     #[test]

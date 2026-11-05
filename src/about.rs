@@ -172,6 +172,7 @@ pub fn run() -> eframe::Result<()> {
     };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("About Download Craft")
+        .with_app_id(crate::platform::app_id())
         .with_inner_size([AW, AH])
         .with_resizable(false)
         .with_decorations(crate::platform::system_title_bar())

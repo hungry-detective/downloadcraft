@@ -155,6 +155,7 @@ fn launch_main() {
 
 fn centered_window(title: &str, w: f32, h: f32) -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id(crate::platform::app_id())
         .with_title(title)
         .with_inner_size([w, h])
         .with_min_inner_size([w - 40.0, h - 40.0])
