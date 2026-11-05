@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main, master]
+    tags: ["v*"]
 jobs:
   linux:
     runs-on: ubuntu-22.04
@@ -25,6 +26,8 @@ jobs:
         run: |
           curl -fL https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 -o /tmp/runtime-x86_64
           python scripts/package_linux.py --binary target/x86_64-unknown-linux-gnu/release/download_craft --runtime /tmp/runtime-x86_64
+          python scripts/package_extensions.py --output /tmp/downloadcraft-extensions
+          cp /tmp/downloadcraft-extensions/*.zip /tmp/downloadcraft-extensions/*.xpi dist/
           for image in dist/DownloadCraft-*-x86_64.AppImage; do "$image" --appimage-extract-and-run --version; done
       - uses: actions/upload-artifact@v4
         with:
@@ -80,3 +83,25 @@ jobs:
         with:
           name: DownloadCraft-Windows
           path: dist/*.zip
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release and packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_VERSION#v}"
+          gh release create "$RELEASE_TAG" dist/* \
+            --title "Download Craft $version" \
+            --notes-file RELEASE-NOTES.md

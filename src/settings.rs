@@ -167,7 +167,7 @@ impl Default for Settings {
             extract_into_folder: true,
             extract_delete: false,
             show_complete: true,
-            progress_windows: false,
+            progress_windows: true,
             hide_col_icons: false,
             save_dir: dirs::download_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -284,7 +284,10 @@ fn load() -> Settings {
     if let Some(b) = g("show_complete").and_then(|x| x.as_bool()) {
         s.show_complete = b;
     }
-    if let Some(b) = g("progress_windows").and_then(|x| x.as_bool()) {
+    if g("progress_windows_default_v").and_then(|x| x.as_u64()).unwrap_or(0) < 1 {
+        // Migrate existing 0.9.14 installs to the restored default once.
+        s.progress_windows = true;
+    } else if let Some(b) = g("progress_windows").and_then(|x| x.as_bool()) {
         s.progress_windows = b;
     }
     if let Some(b) = g("category_folders").and_then(|x| x.as_bool()) {
@@ -541,6 +544,7 @@ fn save(s: &Settings) -> bool {
     set(obj, "ffmpeg_custom_path", s.ffmpeg_custom_path.clone().into());
     set(obj, "show_complete", s.show_complete.into());
     set(obj, "progress_windows", s.progress_windows.into());
+    set(obj, "progress_windows_default_v", 1.into());
     set(obj, "hide_col_icons", s.hide_col_icons.into());
     set(obj, "save_dir", s.save_dir.clone().into());
     set(obj, "category_folders", s.category_folders.into());
@@ -2747,7 +2751,7 @@ impl SettingsApp {
                 "progress_windows",
                 &mut progress_windows,
                 "Open a progress window for each download",
-                "IDM-style. Off by default, so downloads stay in the main window; right-click a row and choose Show download window when you want one.",
+                "IDM-style. Opens automatically when a download starts. Turn it off to keep downloads in the main window; right-click a row to open its window later.",
             );
         });
         self.open_progress = open_progress;
