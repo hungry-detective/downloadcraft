@@ -21,6 +21,9 @@ Icon=com.downloadcraft.app
 Terminal=false
 Categories=Network;FileTransfer;
 StartupNotify=true
+# X11 window grouping: the main window and the standalone dialogs are separate
+# processes, so they must resolve to this one entry in the dock.
+StartupWMClass=com.downloadcraft.app
 '''
 
 def install_tree(root,binary):

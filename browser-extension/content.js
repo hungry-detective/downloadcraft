@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.9.14";
+  const EXT_VER = "0.9.15";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -226,12 +226,17 @@
   // the page JSON can differ from what the user sees (and would name the
   // file after a title they never saw). Only trusted when the watch page's
   // own video-id matches — during SPA navigation the heading is stale.
+  function ytTitleText(t) {
+    const s = String(t || "").replace(/\s+/g, " ").trim();
+    return s && !isMetricTitle(s) ? s : "";
+  }
+
   function ytShownTitle(id) {
     try {
       const flexy = document.querySelector("ytd-watch-flexy[video-id]");
       if (!flexy || flexy.getAttribute("video-id") !== id) return "";
       const h1 = document.querySelector("ytd-watch-metadata h1");
-      return ((h1 && h1.textContent) || "").trim();
+      return ((h1 && h1.textContent) || "").replace(/\s+/g, " ").trim();
     } catch (e) { return ""; }
   }
 
@@ -247,11 +252,19 @@
       else fetchPlayerResponse(id, () => { try { if (alive() && ytVideoId() === id) refreshYouTube(); } catch (e) {} });
     }
     if (!pr) pr = prs.find((p) => p && p.videoDetails && p.videoDetails.videoId === id) || null;
-    const docTitle = document.title.replace(/ - YouTube$/, "");
+    const docTitle = ytTitleText(document.title.replace(/\s*-\s*YouTube\s*$/i, ""));
     if (!pr || !pr.streamingData) {
-      return { videoId: id, title: docTitle || "youtube_video", thumb: ytThumb(pr, id), streams: [], videoOnly: [], audio: [], subs: [] };
+      return { videoId: id, title: docTitle || `youtube_${id}`, thumb: ytThumb(pr, id), streams: [], videoOnly: [], audio: [], subs: [] };
     }
-    const title = ytShownTitle(id) || (pr.videoDetails && pr.videoDetails.title) || docTitle || "youtube_video";
+    const shown = ytShownTitle(id);
+    // Player metadata is authoritative: a video really titled "50 Views"
+    // keeps that name. Only a counter picked up from the on-screen fallback
+    // is rejected in favour of the metadata.
+    const metaTitle = String((pr.videoDetails && pr.videoDetails.title) || "").replace(/\s+/g, " ").trim();
+    const title = (shown && !isMetricTitle(shown) ? shown : "")
+      || metaTitle
+      || docTitle
+      || `youtube_${id}`;
     // Stream URLs carry `expire=<unix>` and are session-locked: rows older
     // than ~2 min 403 in the app (IDM re-grabs instead of offering dead
     // links), so drop them here and let the sniffer/menu refresh refill.
@@ -515,10 +528,25 @@
     t = t.trim();
     // "Title - Site" / "Title | Site": the suffix is chrome, not the name.
     t = clean(t) || String(document.title || "").trim();
-    return t;
+    return isMetricTitle(t) ? "" : t;
   }
   const GENERIC_TITLE = /^(video|videos|media|stream|player|watch|download|index|untitled|movie|online\s+video|full\s+video)$/i;
+  // A title that is only a compact counter ("50K views", "6.6K likes") is
+  // page chrome, not a name. A real numeric title ("50k", "6.6k") is kept.
+  const METRIC_TITLE = /^(?:no|[\d.,]+\s*[KMB]?)\s+(?:views?|likes?|subscribers?|comments?|shares?)\s*$/i;
+  function isMetricTitle(t) {
+    return METRIC_TITLE.test(String(t || "").replace(/\s+/g, " ").trim());
+  }
   const BORING_STEM = /^(videoplayback|index|file|media|stream|download|video|play|master|playlist|manifest|chunk|segment|init|frag\d*)$/i;
+  // The caller has already resolved the title (authoritative player metadata
+  // wins over page chrome), so only make it filesystem-safe here: a real
+  // video titled "50 Views" keeps its name.
+  function safeFilename(title, id) {
+    const fallback = id ? `youtube_${id}` : "youtube_video";
+    const s = String(title || fallback).replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim();
+    const base = s.replace(/\.+$/, "") || fallback;
+    return base.endsWith(".mp4") ? base : base + ".mp4";
+  }
   // Extensions the desktop side supplies from the MIME type: a title that
   // already ends in one must not produce "name.mp4.mp4".
   const MEDIA_EXT_RE = /\.(mp4|mkv|webm|mov|avi|m4v|mp3|m4a|aac|ogg|wav|flac|m3u8|mpd|ts|m4s)$/i;
@@ -1481,12 +1509,6 @@
       });
     });
     host.__dcT = setTimeout(close, ms);
-  }
-
-  function safeFilename(title) {
-    const s = String(title || "youtube_video").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim();
-    const base = s.replace(/\.+$/, "") || "youtube_video";
-    return base.endsWith(".mp4") ? base : base + ".mp4";
   }
 
   // A browser-session preference, shared through the worker (not website storage).
@@ -2862,7 +2884,7 @@
     btn.dataset.vid = info.videoId;
     btn.dataset.gen = String(GEN);
     btn.dataset.sig = sigParts.join("|");
-    const fname = safeFilename(info.title);
+    const fname = safeFilename(info.title, info.videoId);
     const tagged = (base, st) => {
       const clean = base.replace(/\.mp4$/i, "");
       // Rows the app resolves itself share the page URL: the quality in the
@@ -3164,7 +3186,7 @@
     // never show the previous video's title/streams.
     const parsed = ytStreams();
     ytParsedFor = parsed ? id : "";
-    const info = parsed || { videoId: id, title: document.title.replace(/ - YouTube$/, ""), thumb: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`, streams: [], videoOnly: [], audio: [], subs: [] };
+    const info = parsed || { videoId: id, title: ytTitleText(document.title.replace(/\s*-\s*YouTube\s*$/i, "")) || `youtube_${id}`, thumb: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`, streams: [], videoOnly: [], audio: [], subs: [] };
     try {
       if (IS_TOP) chrome.storage.local.set({
         downloadCraftVideos: [{

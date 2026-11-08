@@ -14,8 +14,9 @@
 //! `progress.json` several times a second; this window polls that file +
 //! `queue.json` and draws
 //! them. Pause/Resume/Cancel go back through `cmd.json`, polled by the main
-//! app. Closing this window pauses a running download (Resume, or a
-//! double-click on its row, carries on); minimising it keeps it going.
+//! app. The window is a view, not a control: closing it (or minimising it)
+//! leaves the transfer running, and only the explicit Pause/Cancel buttons
+//! change what the download does.
 
 use crate::app::pl;
 use crate::dm::*;
@@ -497,17 +498,14 @@ impl ProgressApp {
         });
     }
 
-    /// The user closed the window (its X, Close, Alt+F4): a download still
-    /// moving is paused rather than left running out of sight. The automatic
-    /// close after completion goes through `close_soon` directly.
+    /// The user closed the window (its X, Close, Alt+F4): the view goes away,
+    /// the transfer does not. Closing a detail window must never change what
+    /// the download is doing — Pause and Cancel are the explicit actions for
+    /// that. The automatic close after completion goes through `close_soon`
+    /// directly.
     fn close_by_user(&self, ctx: &egui::Context) {
         if CLOSING.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
-        }
-        let running = self.snap.live
-            || matches!(self.item.as_ref().map(|d| &d.status), Some(Status::Downloading | Status::Queued));
-        if running {
-            send_cmd(self.id, "pause");
         }
         Self::close_soon(ctx);
     }
@@ -585,6 +583,7 @@ pub fn run() -> eframe::Result<()> {
         .unwrap_or_else(|| format!("Download #{id}"));
 
     let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id(crate::platform::app_id())
         .with_title(title)
         .with_inner_size([PG_W, PG_MIN_H])
         .with_resizable(false)

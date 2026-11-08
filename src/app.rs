@@ -2302,6 +2302,8 @@ pub struct CraftApp {
     /// Pop the standalone "Download complete" dialog when a download finishes.
     /// Its own "Don't show this dialog again" checkbox clears this.
     show_complete: bool,
+    /// Auto-open the IDM-style progress window when a download starts.
+    progress_windows: bool,
     /// Sounds for finished / failed downloads (Settings -> Storage).
     sounds: bool,
     queue_running: bool,
@@ -2332,6 +2334,9 @@ pub struct CraftApp {
     /// Launched at sign-in: go to the tray as soon as the window exists.
     start_hidden: bool,
     startup_frames: u8,
+    /// Startup integrations are reconciled after the native window is
+    /// created, so filesystem work cannot delay the desktop dock/taskbar icon.
+    startup_maintenance_rx: std::sync::mpsc::Receiver<Vec<String>>,
     theme: String,
     theme_applied: String,
     /// The main window is moved into the middle of the work area once, on the
@@ -2475,6 +2480,7 @@ impl CraftApp {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || clipboard_watch(tx));
         let (conv_tx_init, conv_rx_init) = std::sync::mpsc::channel();
+        let (maintenance_tx, startup_maintenance_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             rt,
             downloads: Vec::new(),
@@ -2524,6 +2530,9 @@ impl CraftApp {
             max_concurrent: 3,
         per_host_conns: 0,
             show_complete: true,
+            // Starting a download opens its IDM-style progress window by
+            // default. Users can turn this off in Settings.
+            progress_windows: true,
             sounds: false,
             stats_line: String::new(),
             queues: Vec::new(),
@@ -2564,6 +2573,7 @@ impl CraftApp {
             start_with_windows: cfg!(windows),
             start_hidden: crate::autostart::is_startup_launch(&std::env::args().collect::<Vec<_>>()),
             startup_frames: 0,
+            startup_maintenance_rx,
             theme: "dark".to_string(),
             theme_applied: String::new(),
             placement_done: false,
@@ -2658,26 +2668,25 @@ impl CraftApp {
             Self::ui_state_path()
                 .and_then(|p| std::fs::metadata(&p).and_then(|m| m.modified()).ok()),
         );
-        // Zero-config browser integration: the native host always points
-        // at this binary (silent unless something needed fixing).
-        for b in crate::platform::HOST_BROWSERS {
-            match ensure_native_host(b) {
-                Ok(true) => app.push_log(format!("Browser host ready for {b}.")),
-                Err(e) => app.push_log(format!("Browser host ({b}) unavailable: {e}")),
-                Ok(false) => {}
+        // These startup integrations can touch several browser config
+        // directories and invoke OS tools. Keep them off the window-creation
+        // path so the desktop can show the app immediately.
+        let start_with_windows = app.start_with_windows;
+        std::thread::spawn(move || {
+            let mut notes = Vec::new();
+            for b in crate::platform::HOST_BROWSERS {
+                match ensure_native_host(b) {
+                    Ok(true) => notes.push(format!("Browser host ready for {b}.")),
+                    Err(e) => notes.push(format!("Browser host ({b}) unavailable: {e}")),
+                    Ok(false) => {}
+                }
             }
-        }
-        // The browser extension kept in a folder that never moves, at this
-        // app's own version (a portable update may unpack the app anywhere).
-        for note in crate::extsync::sync() {
-            app.push_log(note);
-        }
-        // Start with Windows: the Run entry points at this copy, wherever it
-        // is now (a moved portable folder follows), or is removed when off.
-        crate::autostart::sync(app.start_with_windows);
-        // Files an earlier update moved aside (the running program cannot
-        // delete its own).
-        crate::selfupdate::cleanup();
+            // Keep the extension copy current after the window is visible.
+            notes.extend(crate::extsync::sync());
+            crate::autostart::sync(start_with_windows);
+            crate::selfupdate::cleanup();
+            let _ = maintenance_tx.send(notes);
+        });
         app.poll_inbox();
         app.merge_queue_from_disk();
         app.check_wake();
@@ -2958,6 +2967,8 @@ impl CraftApp {
                 "max_concurrent": self.max_concurrent,
                 "per_host_conns": self.per_host_conns,
                 "show_complete": self.show_complete,
+                "progress_windows": self.progress_windows,
+                "progress_windows_default_v": 1,
                 "timeout_secs": self.timeout_secs,
                 "max_retries": self.max_retries,
                 "user_agent": self.user_agent,
@@ -3070,6 +3081,14 @@ impl CraftApp {
                     }
                     if let Some(b) = g("show_complete").and_then(|x| x.as_bool()) {
                         self.show_complete = b;
+                    }
+                    if g("progress_windows_default_v").and_then(|x| x.as_u64()).unwrap_or(0) < 1 {
+                        // 0.9.14 shipped with progress windows disabled by
+                        // default. Re-enable them once on upgrade, then keep
+                        // honoring the user's choice saved by the new UI.
+                        self.progress_windows = true;
+                    } else if let Some(b) = g("progress_windows").and_then(|x| x.as_bool()) {
+                        self.progress_windows = b;
                     }
                     if let Some(n) = g("timeout_secs").and_then(|x| x.as_u64()) {
                         self.timeout_secs = n.clamp(5, 600);
@@ -3974,8 +3993,16 @@ impl CraftApp {
                                     total = total.or(ta);
                                 }
                             }
-                            if disp.is_none() && !hit.title.trim().is_empty() {
-                                disp = Some(crate::engine::sanitize_filename(&hit.title));
+                            if !hit.title.trim().is_empty()
+                                && disp
+                                    .as_deref()
+                                    .map_or(true, crate::engine::weak_capture_name)
+                            {
+                                // A resolved title beats a capture-supplied
+                                // one only when that one is meaningless
+                                // ("50k", "videoplayback"): a real server
+                                // filename still wins.
+                                disp = Some(crate::engine::title_filename(&hit.title, None));
                             }
                         }
                     }
@@ -4660,9 +4687,13 @@ impl CraftApp {
         // matter which path started it (Add dialog, capture popup, Redownload,
         // Resume, Start Queue, retry-all). The window claims a per-download
         // slot, so a start while one is already open never stacks duplicates,
-        // while a window the user closed comes straight back on Retry.
-        if let Err(e) = Self::spawn_progress(id) {
-            self.push_log(format!("Could not open the progress window for #{id}: {e}"));
+        // while a window the user closed comes straight back on Retry. Users
+        // who prefer only the main list turn this off in Settings; the row's
+        // Show download window still opens one by hand.
+        if self.progress_windows {
+            if let Err(e) = Self::spawn_progress(id) {
+                self.push_log(format!("Could not open the progress window for #{id}: {e}"));
+            }
         }
         // The live limit is the task's only cap: make it current first.
         self.refresh_speed_limit();
@@ -4895,7 +4926,11 @@ impl CraftApp {
             }
             // The window may have been closed while the transfer sat paused:
             // reopening is cheap and a live one is left alone by its slot.
-            let _ = Self::spawn_progress(id);
+            // Only when per-download windows are on, though: with them off,
+            // Resume must not pop a window the user never asked for.
+            if self.progress_windows {
+                let _ = Self::spawn_progress(id);
+            }
             self.push_log(format!("Resumed #{id}"));
             self.save_queue();
         } else if let Some(d) = self.downloads.iter().find(|d| d.id == id) {
@@ -6020,9 +6055,14 @@ impl CraftApp {
                     self.resume(id);
                 }
                 // Already running: bring its progress window up instead of
-                // nothing visibly happening.
-                Some(Status::Downloading) => {
-                    let _ = Self::spawn_progress(id);
+                // nothing visibly happening — but only when per-download
+                // windows are enabled. With them off the main list is the
+                // only surface, and a capture must not pop a window the user
+                // switched off in Settings.
+                Some(Status::Downloading) if self.progress_windows => {
+                    if let Err(e) = Self::spawn_progress(id) {
+                        self.push_log(format!("Could not open the progress window for #{id}: {e}"));
+                    }
                 }
                 _ => {}
             }
@@ -6445,6 +6485,11 @@ const DATE_W: f32 = 104.0;
 
 impl eframe::App for CraftApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Ok(notes) = self.startup_maintenance_rx.try_recv() {
+            for note in notes {
+                self.push_log(note);
+            }
+        }
         // Script fonts load the first time a name needs them (see fonts).
         for d in &self.downloads {
             crate::fonts::ensure_text(ctx, &d.filename);
