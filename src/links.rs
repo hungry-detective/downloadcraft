@@ -1126,7 +1126,7 @@ pub fn run() -> eframe::Result<()> {
     }
     eframe::run_native(
         "Download all links",
-        eframe::NativeOptions { viewport, ..Default::default() },
+        crate::platform::native_options(viewport),
         Box::new(|cc| {
             crate::app::setup_fonts(cc);
             crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());

@@ -102,6 +102,10 @@ jobs:
           RELEASE_VERSION: ${{ github.ref_name }}
         run: |
           version="${RELEASE_VERSION#v}"
+          # The app's one-click update looks for the "-portable" Windows zip.
+          for f in dist/*-windows-x64.zip; do
+            [ -e "$f" ] && mv "$f" "${f%.zip}-portable.zip"
+          done
           gh release create "$RELEASE_TAG" dist/* \
             --title "Download Craft $version" \
             --notes-file RELEASE-NOTES.md

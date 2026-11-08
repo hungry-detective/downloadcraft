@@ -64,6 +64,10 @@ pub(crate) struct UiPrefs {
     pub(crate) timeout_secs: u64,
     pub(crate) rename_template: String,
     pub(crate) folder_rules: Vec<crate::model::FolderRule>,
+    /// Settings -> "Remember the last folders used".
+    pub(crate) remember_folders: bool,
+    /// Folders used before, newest first (only kept while that is on).
+    pub(crate) recent_folders: Vec<String>,
 }
 
 pub(crate) fn load_prefs() -> UiPrefs {
@@ -128,7 +132,87 @@ pub(crate) fn load_prefs() -> UiPrefs {
     if p.folder_rules.is_empty() {
         p.folder_rules = crate::model::default_folder_rules();
     }
+    p.remember_folders = v.get("remember_folders").and_then(|x| x.as_bool()).unwrap_or(false);
+    if p.remember_folders {
+        p.recent_folders = v
+            .get("recent_folders")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|s| s.as_str()).map(str::to_string).collect())
+            .unwrap_or_default();
+        // FDM-style: start where the last download went.
+        if let Some(last) = p.recent_folders.iter().find(|d| std::path::Path::new(d).is_dir()) {
+            p.save_dir = last.clone();
+        }
+    }
     p
+}
+
+/// How many folders "Remember the last folders used" keeps.
+const RECENT_FOLDERS: usize = 8;
+
+/// `dir` moved to the front of `list`, kept to RECENT_FOLDERS entries.
+fn push_recent(list: &[String], dir: &str) -> Vec<String> {
+    let dir = dir.trim().trim_end_matches(['\\', '/']).to_string();
+    let mut out = vec![dir.clone()];
+    out.extend(
+        list.iter()
+            .filter(|d| !d.trim_end_matches(['\\', '/']).eq_ignore_ascii_case(&dir))
+            .cloned(),
+    );
+    out.truncate(RECENT_FOLDERS);
+    out
+}
+
+/// Record the folder a download went to (only while the setting is on).
+fn save_recent_folder(dir: &str) {
+    if dir.trim().is_empty() {
+        return;
+    }
+    let _guard = crate::model::fs_lock("ui-settings");
+    if !_guard.owned() {
+        return;
+    }
+    let Some(path) = ui_path() else { return };
+    let mut v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let Some(obj) = v.as_object_mut() else { return };
+    if !obj.get("remember_folders").and_then(|x| x.as_bool()).unwrap_or(false) {
+        return;
+    }
+    let old: Vec<String> = obj
+        .get("recent_folders")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|s| s.as_str()).map(str::to_string).collect())
+        .unwrap_or_default();
+    obj.insert("recent_folders".to_string(), serde_json::json!(push_recent(&old, dir)));
+    if let Ok(json) = serde_json::to_string_pretty(&v) {
+        let _ = atomic_write(&path, json.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod recent_folder_tests {
+    use super::push_recent;
+
+    #[test]
+    fn newest_first_without_duplicates() {
+        let l = push_recent(&[], r"D:\Movies");
+        let l = push_recent(&l, r"E:\Music");
+        let l = push_recent(&l, r"d:\movies\");
+        assert_eq!(l, vec![r"d:\movies".to_string(), r"E:\Music".to_string()]);
+    }
+
+    #[test]
+    fn keeps_eight() {
+        let mut l = Vec::new();
+        for i in 0..12 {
+            l = push_recent(&l, &format!(r"C:\f{i}"));
+        }
+        assert_eq!(l.len(), 8);
+        assert_eq!(l[0], r"C:\f11");
+    }
 }
 
 fn save_remember_category(value: bool) {
@@ -222,6 +306,8 @@ struct ConfirmApp {
     proxy_url: String,
     timeout_secs: u64,
     rename_template: String,
+    /// Remembered folders for the path menu (empty when the setting is off).
+    recent_folders: Vec<String>,
     folder_rules: Vec<crate::model::FolderRule>,
     probing: bool,
     probe_size: Option<u64>,
@@ -475,6 +561,12 @@ impl ConfirmApp {
     /// then whatever the field currently holds (mirrors the main window).
     fn recent_dirs(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
+        // "Remember the last folders used": those come first, newest on top.
+        for d in &self.recent_folders {
+            if std::path::Path::new(d).is_dir() && !out.contains(d) {
+                out.push(d.clone());
+            }
+        }
         for d in [
             dirs::download_dir(),
             dirs::desktop_dir(),
@@ -777,6 +869,7 @@ impl ConfirmApp {
                 item.downloaded_bytes = len;
                 let _ = crate::model::record_finished(&mut item);
                 save_remember_category(self.remember_path);
+                save_recent_folder(&self.save_base);
                 self.done = true;
                 return;
             }
@@ -786,6 +879,7 @@ impl ConfirmApp {
         let id = match crate::model::append_to_queue(&mut item) {
             crate::model::AppendResult::Added(id) => {
                 save_remember_category(self.remember_path);
+                save_recent_folder(&self.save_base);
                 id
             }
             crate::model::AppendResult::AlreadyQueued(id) => {
@@ -818,6 +912,7 @@ impl ConfirmApp {
             }
         };
         save_remember_category(self.remember_path);
+                save_recent_folder(&self.save_base);
         if start {
             self.wake_targets(&[id]);
         }
@@ -976,6 +1071,7 @@ pub fn run() -> eframe::Result<()> {
         timeout_secs: prefs.timeout_secs,
         rename_template: prefs.rename_template,
         folder_rules: prefs.folder_rules,
+        recent_folders: if prefs.remember_folders { prefs.recent_folders } else { Vec::new() },
         pre: None,
         pre_tried: false,
         probing: false,
@@ -1016,10 +1112,7 @@ pub fn run() -> eframe::Result<()> {
     }
     eframe::run_native(
         "Add download",
-        eframe::NativeOptions {
-            viewport,
-            ..Default::default()
-        },
+        crate::platform::native_options(viewport),
         Box::new(|cc| {
             setup_popup_fonts(cc);
             crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());

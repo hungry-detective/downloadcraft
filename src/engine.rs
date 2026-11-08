@@ -1618,7 +1618,7 @@ fn disposition_filename(h: &reqwest::header::HeaderMap) -> Option<String> {
     None
 }
 
-fn percent_decode_owned(s: &str) -> String {
+pub(crate) fn percent_decode_owned(s: &str) -> String {
     let mut raw: Vec<u8> = Vec::with_capacity(s.len());
     let b = s.as_bytes();
     let mut i = 0;

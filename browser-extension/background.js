@@ -1137,6 +1137,15 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
+// The last path segment of `url`, decoded: the name a browser would give a
+// download whose own name is not known yet.
+function nameFromUrl(url) {
+  try {
+    const seg = new URL(url).pathname.split("/").filter(Boolean).pop() || "";
+    return decodeURIComponent(seg) || null;
+  } catch (e) { return null; }
+}
+
 // ---- automatic capture ----
 async function performBrowserCapture(item) {
   const cfg = await settings();
@@ -1187,7 +1196,10 @@ async function performBrowserCapture(item) {
       return;
     }
   }
-  const ok = await sendToHost(url, item.filename, {pageUrl:item.referrer || null,referer:item.referrer || null, fromRequest:true});
+  // The browser's own type and size go along: an address with no extension
+  // (Civitai's images redirect to one) still gets its ".jpg" in the app.
+  const ok = await sendToHost(url, item.filename || nameFromUrl(url), {pageUrl:item.referrer || null,referer:item.referrer || null, fromRequest:true,
+    mime: item.mime || null, size: known > 0 ? known : null});
   hostOk = ok;
   setBadge();
   if (ok) {
@@ -1798,6 +1810,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (e) {
         hostOk = false;
         return { ok: false, items: [], error: String((e && e.message) || e) };
+      }
+    }
+    // A finished download of the app, read piece by piece for dragging it
+    // onto a page's upload box (the popup builds a File from the pieces).
+    if (msg.type === "appReadFile" && Number.isInteger(msg.id)) {
+      try {
+        const res = await hostSend({ type: "readFile", id: msg.id, offset: Number(msg.offset) || 0 });
+        if (!res || res.type !== "file") return { ok: false, error: (res && res.error) || "no file" };
+        return { ok: true, name: res.name, mime: res.mime, size: res.size, offset: res.offset, data: res.data, done: !!res.done };
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) };
       }
     }
     if (msg.type === "appControl" && typeof msg.action === "string") {

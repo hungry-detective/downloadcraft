@@ -292,7 +292,7 @@ pub fn run() -> eframe::Result<()> {
     }
     eframe::run_native(
         crate::model::APP_NAME,
-        eframe::NativeOptions { viewport, ..Default::default() },
+        crate::platform::native_options(viewport),
         Box::new(|cc| {
             crate::fonts::install(cc, true);
             crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());

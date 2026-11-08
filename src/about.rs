@@ -61,7 +61,7 @@ pub fn spawn() {
 }
 
 /// A button's order for the main window (its `cmd.json`).
-fn send(action: &str) {
+pub(crate) fn send(action: &str) {
     let Some(p) = config_dir().map(|d| d.join("cmd.json")) else { return };
     let _guard = crate::model::fs_lock("cmd");
     if !_guard.owned() {
@@ -78,19 +78,19 @@ fn send(action: &str) {
 }
 
 #[derive(Default, Clone)]
-struct UpdState {
-    phase: String,
-    status: String,
-    size: u64,
-    running: u64,
+pub(crate) struct UpdState {
+    pub(crate) phase: String,
+    pub(crate) status: String,
+    pub(crate) size: u64,
+    pub(crate) running: u64,
 }
 
 #[derive(Default, Clone)]
-struct Release {
-    tag: String,
-    url: String,
-    highlights: Vec<String>,
-    newer: bool,
+pub(crate) struct Release {
+    pub(crate) tag: String,
+    pub(crate) url: String,
+    pub(crate) highlights: Vec<String>,
+    pub(crate) newer: bool,
 }
 
 fn read_json(name: &str) -> Option<serde_json::Value> {
@@ -98,7 +98,7 @@ fn read_json(name: &str) -> Option<serde_json::Value> {
     serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
 }
 
-fn read_state() -> UpdState {
+pub(crate) fn read_state() -> UpdState {
     let Some(v) = read_json("update_state.json") else { return UpdState::default() };
     UpdState {
         phase: v.get("phase").and_then(|x| x.as_str()).unwrap_or("idle").into(),
@@ -108,7 +108,7 @@ fn read_state() -> UpdState {
     }
 }
 
-fn read_release() -> Release {
+pub(crate) fn read_release() -> Release {
     let Some(v) = read_json("release_info.json") else { return Release::default() };
     Release {
         tag: v.get("tag").and_then(|x| x.as_str()).unwrap_or("").trim_start_matches('v').into(),
@@ -182,7 +182,7 @@ pub fn run() -> eframe::Result<()> {
     }
     eframe::run_native(
         crate::model::APP_NAME,
-        eframe::NativeOptions { viewport, ..Default::default() },
+        crate::platform::native_options(viewport),
         Box::new(|cc| {
             crate::fonts::install(cc, true);
             crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());

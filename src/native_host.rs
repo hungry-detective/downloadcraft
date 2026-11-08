@@ -79,6 +79,9 @@ struct Incoming {
     pub id: Option<u64>,
     #[serde(default)]
     pub action: Option<String>,
+    /// `{"type":"readFile"}`: where the next piece of the file starts.
+    #[serde(default)]
+    pub offset: Option<u64>,
     /// Request id on a persistent port; echoed on the reply.
     #[serde(default)]
     pub rid: Option<u64>,
@@ -255,6 +258,56 @@ impl Reply {
 
 /// The popup's Downloads tab: every active row, then the newest finished or
 /// failed ones, with live bytes and speed from the app's progress snapshot.
+/// Largest file the extension may drag into a page (issue #15): it is read
+/// through this channel piece by piece and held in the popup's memory.
+const DRAG_MOST: u64 = 100 << 20;
+/// One piece: 512 KiB, under native messaging's 1 MB reply limit once base64.
+const DRAG_PIECE: u64 = 512 << 10;
+
+/// A piece of a finished download, for dragging it out of the extension's
+/// list onto a page's upload box. Only a row of the app's own queue that is
+/// complete, and only its own file: the extension cannot name any other path.
+fn read_finished_file(id: Option<u64>, offset: u64) -> Result<serde_json::Value, String> {
+    use crate::model::{DownloadItem, Status};
+    let id = id.ok_or("no download named")?;
+    let dir = crate::model::config_dir().ok_or("no config dir")?;
+    let items: Vec<DownloadItem> = std::fs::read_to_string(dir.join("queue.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
+        .unwrap_or_default();
+    let d = items.iter().find(|d| d.id == id).ok_or("no such download")?;
+    if !matches!(d.status, Status::Completed) {
+        return Err("the download is not finished".into());
+    }
+    let path = d.dest_path();
+    let size = std::fs::metadata(&path).map_err(|_| "the file was moved or deleted")?.len();
+    if size > DRAG_MOST {
+        return Err(format!("too large to drag ({} MB, the most is {} MB)", size >> 20, DRAG_MOST >> 20));
+    }
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let start = offset.min(size);
+    f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
+    let mut buf = Vec::with_capacity(DRAG_PIECE.min(size - start) as usize);
+    f.take(DRAG_PIECE).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    let next = start + buf.len() as u64;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.filename.clone());
+    let mime = std::path::Path::new(&name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(crate::model::mime_for_ext)
+        .unwrap_or("application/octet-stream");
+    Ok(serde_json::json!({
+        "type": "file",
+        "name": name,
+        "mime": mime,
+        "size": size,
+        "offset": start,
+        "data": crate::model::base64_encode(&buf),
+        "done": next >= size,
+    }))
+}
+
 fn app_downloads() -> Vec<serde_json::Value> {
     use crate::model::{DownloadItem, Status};
     let dir = match crate::model::config_dir() {
@@ -823,7 +876,11 @@ fn queue_download(msg: &Incoming) -> Result<bool, String> {
         .filter(|s| !s.trim().is_empty());
     let fresh = InboxItem {
         url: url.clone(),
-        filename: msg.filename.as_deref().and_then(file_part),
+        // A name with no extension takes the one its MIME type names (an
+        // image saved from an address without one).
+        filename: msg.filename.as_deref().and_then(file_part).map(|n| {
+            crate::model::with_mime_ext(&n, msg.mime.as_deref().unwrap_or(""))
+        }),
         received_at: chrono::Local::now().to_rfc3339(),
         page_url: msg.page_url.clone(),
         referer,
@@ -1044,6 +1101,16 @@ pub fn run() -> eframe::Result<()> {
             },
             "control" => match app_control(msg.id, msg.action.as_deref().unwrap_or("")) {
                 Ok(()) => write_message(&Reply::ok()),
+                Err(e) => write_message(&Reply::err(e)),
+            },
+            "readFile" => match read_finished_file(msg.id, msg.offset.unwrap_or(0)) {
+                Ok(v) => {
+                    let mut v = v;
+                    if let Some(rid) = msg.rid {
+                        v["rid"] = serde_json::json!(rid);
+                    }
+                    write_value(&v);
+                }
                 Err(e) => write_message(&Reply::err(e)),
             },
             "links" => match spawn_links(&msg) {

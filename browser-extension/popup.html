@@ -83,6 +83,7 @@ input[type=text] { flex:1; min-width:0; height:32px; padding:0 9px; background:v
 .btn:hover { background:var(--hover); }
 .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
 /* downloads tab */
+.job.dragme { cursor:grab; } .job.dragme:active { cursor:grabbing; }
 .job { padding:9px 10px; background:var(--card); border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:9px; margin-bottom:7px; }
 .job.done { border-left-color:var(--ok); } .job.failed, .job.cancelled { border-left-color:var(--bad); }
 .job.paused, .job.queued { border-left-color:var(--warn); }

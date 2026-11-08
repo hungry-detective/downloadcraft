@@ -164,7 +164,7 @@ fn centered_window(title: &str, w: f32, h: f32) -> eframe::NativeOptions {
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
-    eframe::NativeOptions { viewport, ..Default::default() }
+    crate::platform::native_options(viewport)
 }
 
 fn center_on_first(ctx: &egui::Context, done: &mut bool, w: f32, h: f32) {

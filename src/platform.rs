@@ -14,6 +14,99 @@ pub fn app_id() -> &'static str {
     "com.downloadcraft.app"
 }
 
+/// Window options every window of the app starts with: its viewport, drawn
+/// with OpenGL, or (Windows) with Direct3D 12 once OpenGL failed here — see
+/// [`software_renderer`].
+pub fn native_options(viewport: egui::ViewportBuilder) -> eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions { viewport, ..Default::default() };
+    #[cfg(windows)]
+    if software_renderer() {
+        use_direct3d(&mut options);
+    }
+    options
+}
+
+/// The file that says OpenGL failed on this PC (issue #14: an Intel HD
+/// Graphics 2000 on Windows 11 closed at once with exit code 1). Kept apart
+/// from ui.json, which the main window rewrites whole.
+#[cfg(windows)]
+fn renderer_file() -> Option<PathBuf> {
+    crate::model::config_dir().map(|d| d.join("renderer.txt"))
+}
+
+/// Whether windows draw with Direct3D 12 instead of OpenGL: after OpenGL
+/// failed once here, or with `DOWNLOAD_CRAFT_RENDERER=d3d` (`=gl` forces
+/// OpenGL again).
+#[cfg(windows)]
+pub fn software_renderer() -> bool {
+    match std::env::var("DOWNLOAD_CRAFT_RENDERER").unwrap_or_default().to_ascii_lowercase().as_str() {
+        "d3d" | "dx12" | "wgpu" | "software" | "warp" => return true,
+        "gl" | "opengl" | "glow" => return false,
+        _ => {}
+    }
+    renderer_file()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .is_some_and(|s| s.trim() == "d3d")
+}
+
+/// Remember that OpenGL failed: every later window (and launch) uses Direct3D.
+#[cfg(windows)]
+pub fn remember_software_renderer() {
+    if let Some(p) = renderer_file() {
+        let _ = std::fs::write(p, "d3d");
+    }
+}
+
+/// Direct3D 12 through wgpu: the GPU's own driver when it can, else WARP,
+/// the software rasterizer every Windows 10/11 has — slower, but it draws a
+/// download manager's window on any PC.
+#[cfg(windows)]
+pub fn use_direct3d(options: &mut eframe::NativeOptions) {
+    use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
+    use eframe::wgpu;
+    options.renderer = eframe::Renderer::Wgpu;
+    let mut setup = WgpuSetupCreateNew::default();
+    setup.instance_descriptor.backends = wgpu::Backends::DX12;
+    // `DOWNLOAD_CRAFT_RENDERER=warp` takes the software rasterizer even with
+    // a capable GPU (to check that path on any PC).
+    let warp = std::env::var("DOWNLOAD_CRAFT_RENDERER").is_ok_and(|v| v.eq_ignore_ascii_case("warp"));
+    setup.native_adapter_selector = Some(std::sync::Arc::new(move |adapters: &[wgpu::Adapter], _surface: Option<&wgpu::Surface<'_>>| {
+        adapters
+            .iter()
+            .find(|a| (a.get_info().device_type == wgpu::DeviceType::Cpu) == warp)
+            .or_else(|| adapters.first())
+            .cloned()
+            .ok_or_else(|| "no Direct3D 12 adapter, not even WARP".to_string())
+    }));
+    options.wgpu_options = WgpuConfiguration { wgpu_setup: WgpuSetup::CreateNew(setup), ..Default::default() };
+}
+
+/// The window could not be opened at all: say why, in a file and (Windows)
+/// a message box, instead of closing without a word.
+pub fn report_startup_failure(error: &str) {
+    let text = format!(
+        "Download Craft could not open its window.\n\n{error}\n\nThe graphics driver may not support what the app needs. Updating it often helps; this message is also saved in startup-error.log in the app's settings folder (%APPDATA%\\download_craft)."
+    );
+    if let Some(dir) = crate::model::config_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(
+            dir.join("startup-error.log"),
+            format!("{} {} {}\n{error}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), crate::model::APP_NAME, env!("CARGO_PKG_VERSION")),
+        );
+    }
+    eprintln!("{text}");
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (body, title) = (wide(&text), wide("Download Craft"));
+        unsafe {
+            MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+        }
+    }
+}
+
 /// AppImage mount paths disappear after exit. Relaunch the permanent image.
 pub fn launch_path() -> std::io::Result<PathBuf> {
     #[cfg(target_os = "linux")]
@@ -338,7 +431,54 @@ pub fn install_native_host(browser: &str) -> Result<String, String> {
         serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    install_flatpak_host(browser, &exe, &manifest);
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// A browser installed as a Flatpak (Fedora's usual way to get Brave or
+/// Chrome) reads its native hosts from its own sandbox folder under
+/// `~/.var/app/<id>/`, and cannot start a program outside the sandbox. So
+/// the manifest and a launcher go into that folder, and the launcher starts
+/// the app on the host through `flatpak-spawn --host` (the browser needs
+/// `flatpak override --user --talk-name=org.freedesktop.Flatpak <id>` once
+/// for that). Nothing happens when the browser is not installed that way.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn install_flatpak_host(browser: &str, exe: &Path, manifest: &serde_json::Value) {
+    let Some(home) = dirs::home_dir() else { return };
+    let (id, rel): (&str, &str) = match browser {
+        "brave" => ("com.brave.Browser", "config/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
+        "chrome" => ("com.google.Chrome", "config/google-chrome/NativeMessagingHosts"),
+        "chromium" => ("org.chromium.Chromium", "config/chromium/NativeMessagingHosts"),
+        "edge" => ("com.microsoft.Edge", "config/microsoft-edge/NativeMessagingHosts"),
+        "vivaldi" => ("com.vivaldi.Vivaldi", "config/vivaldi/NativeMessagingHosts"),
+        "opera" => ("com.opera.Opera", "config/opera/NativeMessagingHosts"),
+        "firefox" => ("org.mozilla.firefox", ".mozilla/native-messaging-hosts"),
+        _ => return,
+    };
+    let app = home.join(".var/app").join(id);
+    if !app.is_dir() {
+        return;
+    }
+    let dir = app.join(rel);
+    let launcher = dir.join("download_craft_host.sh");
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let body = format!(
+        "#!/bin/sh\n# Started inside the browser's Flatpak sandbox: run the app on the host.\nexec flatpak-spawn --host env APPIMAGE_EXTRACT_AND_RUN=1 {} --native-host \"$@\"\n",
+        quote(&exe.to_string_lossy())
+    );
+    let mut m = manifest.clone();
+    m["path"] = serde_json::json!(launcher);
+    let written = std::fs::create_dir_all(&dir)
+        .and_then(|_| std::fs::write(&launcher, body))
+        .and_then(|_| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700))
+        })
+        .and_then(|_| std::fs::write(dir.join("com.download_craft.json"), serde_json::to_vec_pretty(&m).unwrap_or_default()));
+    if let Err(e) = written {
+        eprintln!("Flatpak {id}: could not register the native host: {e}");
+    }
 }
 
 #[cfg(all(test, unix))]

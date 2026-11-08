@@ -372,3 +372,250 @@ mod tests {
         assert_eq!(wanted_key('Ж'), None);
     }
 }
+
+// ---- the font library: any installed font, a file, or a link (issue #10) ----
+
+/// Free fonts offered by name and downloaded the first time they are picked
+/// (Google Fonts' own repository, SIL Open Font License): (name, file URL).
+pub const DOWNLOADABLE_FONTS: &[(&str, &str)] = &[
+    ("Inter", "https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz,wght%5D.ttf"),
+    ("Roboto", "https://github.com/google/fonts/raw/main/ofl/roboto/Roboto%5Bwdth,wght%5D.ttf"),
+    ("Open Sans", "https://github.com/google/fonts/raw/main/ofl/opensans/OpenSans%5Bwdth,wght%5D.ttf"),
+    ("Noto Sans", "https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans%5Bwdth,wght%5D.ttf"),
+    ("Poppins", "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Regular.ttf"),
+    ("Lato", "https://github.com/google/fonts/raw/main/ofl/lato/Lato-Regular.ttf"),
+];
+
+/// The app's own font folder: fonts picked from a file or a link are copied
+/// here, so the choice keeps working when the original moves.
+pub fn library_dir() -> Option<std::path::PathBuf> {
+    crate::model::config_dir().map(|d| d.join("fonts"))
+}
+
+/// The family and style a TrueType/OpenType file names in its `name` table
+/// (IDs 16/17 when present, else 1/2), or `None` for anything unreadable.
+pub fn font_names(data: &[u8]) -> Option<(String, String)> {
+    let be16 = |o: usize| data.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize);
+    let be32 = |o: usize| data.get(o..o + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    // A collection: its first face.
+    let base = if data.get(0..4) == Some(b"ttcf") { be32(12)? } else { 0 };
+    let tables = be16(base + 4)?;
+    let mut name_at = None;
+    for i in 0..tables.min(64) {
+        let rec = base + 12 + i * 16;
+        if data.get(rec..rec + 4) == Some(b"name") {
+            name_at = Some(be32(rec + 8)?);
+            break;
+        }
+    }
+    let t = name_at?;
+    let count = be16(t + 2)?;
+    let strings = t + be16(t + 4)?;
+    let mut found: [Option<String>; 18] = Default::default();
+    for i in 0..count.min(512) {
+        let r = t + 6 + i * 12;
+        let (platform, encoding, language, id, len, off) =
+            (be16(r)?, be16(r + 2)?, be16(r + 4)?, be16(r + 6)?, be16(r + 8)?, be16(r + 10)?);
+        if !matches!(id, 1 | 2 | 16 | 17) {
+            continue;
+        }
+        let bytes = data.get(strings + off..strings + off + len)?;
+        let text = if platform == 3 || platform == 0 {
+            // UTF-16BE (Windows / Unicode), English preferred.
+            if platform == 3 && encoding == 1 && language != 0x409 && found[id].is_some() {
+                continue;
+            }
+            let units: Vec<u16> = bytes.chunks(2).filter(|c| c.len() == 2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            String::from_utf16_lossy(&units)
+        } else if platform == 1 && encoding == 0 {
+            bytes.iter().map(|&b| b as char).collect()
+        } else {
+            continue;
+        };
+        let text = text.trim().to_string();
+        if !text.is_empty() && (found[id].is_none() || (platform == 3 && language == 0x409)) {
+            found[id] = Some(text);
+        }
+    }
+    let family = found[16].clone().or_else(|| found[1].clone())?;
+    let style = found[17].clone().or_else(|| found[2].clone()).unwrap_or_else(|| "Regular".into());
+    Some((family, style))
+}
+
+/// Every font on this computer (and in the app's library) that can be the
+/// interface font: one entry per family, its regular face, as (family, file),
+/// sorted by name. Read from the fonts' own name tables.
+pub fn installed_fonts() -> Vec<(String, std::path::PathBuf)> {
+    let mut dirs = font_dirs();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    dirs.push("/usr/share/fonts".into());
+    dirs.extend(library_dir());
+    let mut files = Vec::new();
+    let mut stack: Vec<(std::path::PathBuf, u8)> = dirs.into_iter().map(|d| (d, 0)).collect();
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if depth < 4 {
+                    stack.push((p, depth + 1));
+                }
+            } else if p.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "ttf" | "otf")) {
+                files.push(p);
+            }
+        }
+    }
+    let mut best: std::collections::BTreeMap<String, (u8, std::path::PathBuf)> = Default::default();
+    for p in files {
+        // The name table sits in the first part of the file: no need to read
+        // a 20 MB CJK font whole.
+        let Ok(mut f) = std::fs::File::open(&p) else { continue };
+        let mut head = Vec::new();
+        use std::io::Read;
+        if (&mut f).take(1 << 20).read_to_end(&mut head).is_err() {
+            continue;
+        }
+        let Some((family, style)) = font_names(&head) else { continue };
+        let s = style.to_ascii_lowercase();
+        let rank = if s == "regular" || s == "normal" || s == "book" || s == "roman" { 0 } else if s.contains("italic") || s.contains("oblique") { 3 } else if s.contains("bold") { 2 } else { 1 };
+        let key = family.trim().to_string();
+        if key.is_empty() || key.starts_with('.') {
+            continue;
+        }
+        match best.get(&key) {
+            Some((r, _)) if *r <= rank => {}
+            _ => {
+                best.insert(key, (rank, p));
+            }
+        }
+    }
+    best.into_iter().map(|(k, (_, p))| (k, p)).collect()
+}
+
+/// Copy a font file into the app's library and return its new path.
+pub fn add_to_library(src: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let data = std::fs::read(src).map_err(|e| format!("could not read the font: {e}"))?;
+    let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "font.ttf".into());
+    save_to_library(&name, &data)
+}
+
+fn save_to_library(name: &str, data: &[u8]) -> Result<std::path::PathBuf, String> {
+    if font_names(data).is_none() {
+        return Err("this is not a font file the app can read (.ttf or .otf)".into());
+    }
+    let dir = library_dir().ok_or("no settings folder")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let clean: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') { c } else { '_' })
+        .collect();
+    let path = dir.join(clean);
+    std::fs::write(&path, data).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// Download a font into the library: a .ttf/.otf link, or a .zip holding
+/// fonts (Google Fonts' "Download family"), whose regular face is kept.
+/// Blocking; call it off the UI thread.
+pub fn install_from_link(url: &str) -> Result<std::path::PathBuf, String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("paste a link that starts with https://".into());
+    }
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let bytes = rt.block_on(async {
+        let client = crate::engine::EngineOpts::default().build_client().map_err(|e| e.to_string())?;
+        let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("the link answered HTTP {}", resp.status().as_u16()));
+        }
+        if resp.content_length().is_some_and(|n| n > (60 << 20)) {
+            return Err("that file is too large to be a font".into());
+        }
+        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| e.to_string())
+    })?;
+    let name = url
+        .split(['?', '#'])
+        .next()
+        .and_then(|u| u.rsplit('/').next())
+        .map(|n| crate::engine::percent_decode_owned(n))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "font.ttf".into());
+    if bytes.starts_with(b"PK") {
+        // A zip of a family: its regular face (or its first font).
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("could not open the zip: {e}"))?;
+        let mut pick: Option<(u8, usize, String)> = None;
+        for i in 0..zip.len() {
+            let Ok(f) = zip.by_index(i) else { continue };
+            let n = f.name().to_string();
+            let low = n.to_ascii_lowercase();
+            if !(low.ends_with(".ttf") || low.ends_with(".otf")) {
+                continue;
+            }
+            let rank = if low.contains("regular") || low.contains("[") { 0 } else if low.contains("italic") { 2 } else { 1 };
+            if pick.as_ref().is_none_or(|(r, _, _)| rank < *r) {
+                pick = Some((rank, i, n));
+            }
+        }
+        let (_, i, n) = pick.ok_or("the zip holds no .ttf or .otf font")?;
+        let mut f = zip.by_index(i).map_err(|e| e.to_string())?;
+        let mut data = Vec::new();
+        use std::io::Read;
+        f.read_to_end(&mut data).map_err(|e| e.to_string())?;
+        let base = std::path::Path::new(&n).file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or(n);
+        return save_to_library(&base, &data);
+    }
+    let name = if name.to_ascii_lowercase().ends_with(".ttf") || name.to_ascii_lowercase().ends_with(".otf") { name } else { format!("{name}.ttf") };
+    save_to_library(&name, &bytes)
+}
+
+/// The library copy of a downloadable font, fetched the first time.
+pub fn downloadable_font(name: &str) -> Result<std::path::PathBuf, String> {
+    let (_, url) = DOWNLOADABLE_FONTS.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).ok_or("unknown font")?;
+    if let Some(dir) = library_dir() {
+        if let Some((_, p)) = installed_in(&dir).into_iter().find(|(f, _)| f.eq_ignore_ascii_case(name)) {
+            return Ok(p);
+        }
+    }
+    install_from_link(url)
+}
+
+fn installed_in(dir: &std::path::Path) -> Vec<(String, std::path::PathBuf)> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let data = std::fs::read(&p).ok()?;
+            Some((font_names(&data)?.0, p))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::*;
+
+    #[test]
+    fn reads_family_names_from_a_real_font() {
+        let data = include_bytes!("../assets/fonts/MaterialIcons-Regular.ttf");
+        let (family, style) = font_names(data).expect("name table");
+        assert_eq!(family, "Material Icons");
+        assert_eq!(style, "Regular");
+        assert!(font_names(b"not a font at all").is_none());
+    }
+
+    /// Network and the machine's own fonts: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn lists_installed_fonts_and_fetches_inter() {
+        let all = installed_fonts();
+        eprintln!("{} font families, e.g. {:?}", all.len(), all.iter().take(8).map(|(f, _)| f).collect::<Vec<_>>());
+        assert!(all.len() > 5);
+        let inter = downloadable_font("Inter").expect("Inter");
+        let (family, _) = font_names(&std::fs::read(&inter).unwrap()).unwrap();
+        eprintln!("Inter at {} = {family}", inter.display());
+        assert_eq!(family, "Inter");
+    }
+}

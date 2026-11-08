@@ -55,6 +55,11 @@ struct Settings {
     show_complete: bool,
     /// Pop a standalone IDM-style progress window when a download starts.
     progress_windows: bool,
+    /// Double-clicking a finished row opens the file instead of its details.
+    double_click_opens: bool,
+    /// The Download dialog starts at the last folder used and lists the
+    /// recent ones (issue #12); off = always the save folder above.
+    remember_folders: bool,
     /// The list's column titles without their icons.
     hide_col_icons: bool,
     /// Main window zoom, in percent (`ui_scale` in ui.json).
@@ -168,6 +173,8 @@ impl Default for Settings {
             extract_delete: false,
             show_complete: true,
             progress_windows: true,
+            double_click_opens: false,
+            remember_folders: false,
             hide_col_icons: false,
             save_dir: dirs::download_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -258,7 +265,7 @@ fn load() -> Settings {
         }
     }
     if let Some(n) = g("ui_scale").and_then(|x| x.as_u64()) {
-        s.ui_scale = n.clamp(80, 175) as u32;
+        s.ui_scale = n.clamp(UI_SCALE_MIN as u64, UI_SCALE_MAX as u64) as u32;
     }
     if let Some(b) = g("system_title_bar").and_then(|x| x.as_bool()) {
         s.system_title_bar = b;
@@ -292,6 +299,12 @@ fn load() -> Settings {
     }
     if let Some(b) = g("category_folders").and_then(|x| x.as_bool()) {
         s.category_folders = b;
+    }
+    if let Some(b) = g("double_click_opens").and_then(|x| x.as_bool()) {
+        s.double_click_opens = b;
+    }
+    if let Some(b) = g("remember_folders").and_then(|x| x.as_bool()) {
+        s.remember_folders = b;
     }
     if let Some(b) = g("speed_windows_on").and_then(|x| x.as_bool()) {
         s.speed_windows_on = b;
@@ -548,6 +561,8 @@ fn save(s: &Settings) -> bool {
     set(obj, "hide_col_icons", s.hide_col_icons.into());
     set(obj, "save_dir", s.save_dir.clone().into());
     set(obj, "category_folders", s.category_folders.into());
+    set(obj, "double_click_opens", s.double_click_opens.into());
+    set(obj, "remember_folders", s.remember_folders.into());
     set(obj, "connections_default", (s.connections_default as u64).into());
     set(obj, "speed_limit_kbps", s.speed_limit_kbps.into());
     set(obj, "user_agent", s.user_agent.clone().into());
@@ -660,6 +675,18 @@ struct SettingsApp {
     open_theme: bool,
     open_window: bool,
     open_progress: bool,
+    /// Every font family on this computer and in the app's library, read
+    /// once (off this thread) when the Font card first shows.
+    font_list: Option<Vec<(String, std::path::PathBuf)>>,
+    font_list_rx: Option<std::sync::mpsc::Receiver<Vec<(String, std::path::PathBuf)>>>,
+    /// The Font menu's search box.
+    font_filter: String,
+    /// "From a link…": the box is open, and what it holds.
+    font_link_open: bool,
+    font_link: String,
+    /// A font being downloaded (a recommended one, or from a link).
+    font_job: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    font_note: String,
     /// Browser Integration cards (Chromium family, Firefox) expanded.
     browser_open: [bool; 2],
     /// Native host registered per browser, asked when the pane first opens
@@ -804,6 +831,13 @@ pub fn run() -> eframe::Result<()> {
         open_theme: true,
         open_window: true,
         open_progress: true,
+        font_list: None,
+        font_list_rx: None,
+        font_filter: String::new(),
+        font_link_open: false,
+        font_link: String::new(),
+        font_job: None,
+        font_note: String::new(),
         browser_open: [true, false],
         host_status: None,
         open_updates: true,
@@ -814,7 +848,7 @@ pub fn run() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Download Craft Settings")
         .with_app_id(crate::platform::app_id())
-        .with_inner_size([640.0, 520.0])
+        .with_inner_size([640.0 * settings_scale(), 520.0 * settings_scale()])
         .with_min_inner_size([600.0, 430.0])
         .with_resizable(true);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
@@ -822,7 +856,7 @@ pub fn run() -> eframe::Result<()> {
     }
     eframe::run_native(
         "Settings",
-        eframe::NativeOptions { viewport, ..Default::default() },
+        crate::platform::native_options(viewport),
         Box::new(|cc| {
             crate::app::setup_fonts(cc);
             crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());
@@ -831,8 +865,29 @@ pub fn run() -> eframe::Result<()> {
     )
 }
 
+/// Smallest and largest interface size, in percent (Appearance → Interface size).
+const UI_SCALE_MIN: u32 = 75;
+const UI_SCALE_MAX: u32 = 200;
+
+/// The saved interface size as a zoom factor: Settings follows it too
+/// (issue #10), not only the main window.
+fn settings_scale() -> f32 {
+    crate::model::config_dir()
+        .and_then(|p| std::fs::read_to_string(p.join("ui.json")).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("ui_scale").and_then(|x| x.as_u64()))
+        .map(|n| n.clamp(UI_SCALE_MIN as u64, UI_SCALE_MAX as u64) as f32 / 100.0)
+        .unwrap_or(1.0)
+}
+
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // The saved interface size (what Save stored), not the slider being
+        // dragged: the window would otherwise jump under the pointer.
+        let zoom = settings_scale();
+        if (ctx.zoom_factor() - zoom).abs() > 0.001 {
+            ctx.set_zoom_factor(zoom);
+        }
         if let Some(text) = crate::i18n::take_font_text() {
             crate::fonts::ensure_text(ctx, &text);
         }
@@ -2643,49 +2698,167 @@ impl SettingsApp {
         let mut open_size = true;
         let scale = &mut self.s.ui_scale;
         card(ui, "Interface size", None, &mut open_size, |ui| {
-            egui::ComboBox::from_id_salt("ui_scale")
-                .selected_text(format!("{scale}%"))
-                .show_ui(ui, |ui| {
-                    for pct in [90u32, 100, 110, 125, 150, 175] {
-                        ui.selectable_value(scale, pct, format!("{pct}%"));
-                    }
-                });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width = (ui.available_width() - 150.0).clamp(160.0, 420.0);
+                ui.add(
+                    egui::Slider::new(scale, UI_SCALE_MIN..=UI_SCALE_MAX)
+                        .step_by(5.0)
+                        .suffix("%")
+                        .show_value(true),
+                );
+                if *scale != 100 && button(ui, "100%", false).clicked() {
+                    *scale = 100;
+                }
+            });
             ui.add_space(4.0);
-            hint(ui, "Makes the main window's text larger or smaller. Applies when you press Save.");
+            hint(ui, "Text, icons and spacing of the main window and this Settings window, from 75% to 200%. Applies when you press Save.");
         });
 
         // ---- Font: the interface typeface ----
         let mut open_font = true;
-        let font = &mut self.s.ui_font;
-        card(ui, "Font", None, &mut open_font, |ui| {
-            let shown = if font.trim().is_empty() {
+        // Every installed family, read off this thread the first time.
+        if self.font_list.is_none() && self.font_list_rx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::fonts::installed_fonts());
+            });
+            self.font_list_rx = Some(rx);
+        }
+        if let Some(list) = self.font_list_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.font_list = Some(list);
+            self.font_list_rx = None;
+        }
+        // A download finished: that font becomes the pick.
+        if let Some(res) = self.font_job.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.font_job = None;
+            match res {
+                Ok(p) => {
+                    self.s.ui_font = p.to_string_lossy().into_owned();
+                    self.font_note = "Installed. Press Save, then restart Download Craft to see it.".into();
+                    self.font_list = None;
+                }
+                Err(e) => self.font_note = format!("Could not install the font: {e}"),
+            }
+        }
+        if self.font_job.is_some() || self.font_list_rx.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        let shown = {
+            let f = self.s.ui_font.trim();
+            if f.is_empty() {
                 "Default (Segoe UI)".to_string()
+            } else if std::path::Path::new(f).is_file() {
+                std::fs::read(f)
+                    .ok()
+                    .and_then(|d| crate::fonts::font_names(&d))
+                    .map(|(family, _)| family)
+                    .unwrap_or_else(|| std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
             } else {
-                std::path::Path::new(font.trim())
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| font.clone())
-            };
+                f.to_string()
+            }
+        };
+        let mut pick: Option<String> = None;
+        let mut fetch: Option<String> = None;
+        let mut pick_file = false;
+        let mut link_go = false;
+        let busy = self.font_job.is_some();
+        let font_list = self.font_list.clone();
+        let filter = &mut self.font_filter;
+        let link_open = &mut self.font_link_open;
+        let link = &mut self.font_link;
+        let note = self.font_note.clone();
+        card(ui, "Font", None, &mut open_font, |ui| {
             ui.horizontal(|ui| {
                 egui::ComboBox::from_id_salt("ui_font")
-                    .selected_text(shown)
-                    .width(200.0)
+                    .selected_text(&shown)
+                    .width(220.0)
+                    .height(360.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(font, String::new(), "Default (Segoe UI)");
-                        for (name, _, _) in crate::fonts::UI_FONTS.iter().skip(1) {
-                            ui.selectable_value(font, name.to_string(), *name);
+                        ui.add(egui::TextEdit::singleline(filter).hint_text("Search fonts").desired_width(200.0));
+                        let q = filter.trim().to_lowercase();
+                        let hit = |name: &str| q.is_empty() || name.to_lowercase().contains(&q);
+                        if hit("default") && ui.selectable_label(shown.starts_with("Default"), "Default (Segoe UI)").clicked() {
+                            pick = Some(String::new());
+                        }
+                        ui.label(egui::RichText::new("Free fonts (downloaded once)").small().weak());
+                        for (name, _) in crate::fonts::DOWNLOADABLE_FONTS {
+                            if hit(name) && ui.selectable_label(shown == *name, *name).clicked() {
+                                fetch = Some(name.to_string());
+                            }
+                        }
+                        ui.label(egui::RichText::new("Installed on this computer").small().weak());
+                        match &font_list {
+                            None => {
+                                ui.label("Reading the fonts…");
+                            }
+                            Some(list) => {
+                                for (family, path) in list.iter().filter(|(f, _)| hit(f)) {
+                                    if ui.selectable_label(shown == *family, family).clicked() {
+                                        pick = Some(path.to_string_lossy().into_owned());
+                                    }
+                                }
+                            }
                         }
                     });
                 ui.add_space(8.0);
-                if button(ui, "Other font file…", false).clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("Font", &["ttf", "otf"]).pick_file() {
-                        *font = p.to_string_lossy().to_string();
-                    }
+                if button(ui, "Font file…", false).clicked() {
+                    pick_file = true;
+                }
+                if button(ui, "From a link…", false).clicked() {
+                    *link_open = !*link_open;
                 }
             });
+            if *link_open {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let w = (ui.available_width() - 90.0).max(160.0);
+                    input_box(ui, "font_link_in", link, w, false, false, "https://… a .ttf, .otf or a .zip of a font family");
+                    if button(ui, if busy { "Installing…" } else { "Install" }, true).clicked() && !busy {
+                        link_go = true;
+                    }
+                });
+            }
             ui.add_space(4.0);
-            hint(ui, "Takes effect the next time Download Craft starts. Scripts the font lacks (Bengali, Arabic…) still use their own fonts.");
+            if busy {
+                hint(ui, "Downloading the font…");
+            } else if !note.is_empty() {
+                hint(ui, &note);
+            }
+            hint(ui, "Any installed font, a free one downloaded once, a font file, or one from a link (kept in the app's own fonts folder). Takes effect the next time Download Craft starts; scripts the font lacks (Bengali, Arabic…) still use their own fonts.");
         });
+        if let Some(p) = pick {
+            self.s.ui_font = p;
+            self.font_note.clear();
+        }
+        if let Some(name) = fetch.filter(|_| !busy) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.font_note = format!("Downloading {name}…");
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::fonts::downloadable_font(&name));
+            });
+            self.font_job = Some(rx);
+        }
+        if pick_file {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Font", &["ttf", "otf"]).pick_file() {
+                match crate::fonts::add_to_library(&p) {
+                    Ok(saved) => {
+                        self.s.ui_font = saved.to_string_lossy().into_owned();
+                        self.font_note = "Added to the app's fonts. Press Save, then restart Download Craft to see it.".into();
+                        self.font_list = None;
+                    }
+                    Err(e) => self.font_note = format!("Could not use that file: {e}"),
+                }
+            }
+        }
+        if link_go {
+            let url = self.font_link.trim().to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.font_note = "Downloading the font…".into();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::fonts::install_from_link(&url));
+            });
+            self.font_job = Some(rx);
+        }
 
         // ---- Language: one lang/<code>.json per language ----
         let mut open_lang = true;
@@ -2810,6 +2983,24 @@ impl SettingsApp {
                 ui,
                 &mut s.category_folders,
                 "Sort into category subfolders",
+                14.0,
+                11.5,
+                true,
+            );
+            ui.add_space(1.0);
+            checkbox(
+                ui,
+                &mut s.remember_folders,
+                "Remember the last folders used",
+                14.0,
+                11.5,
+                true,
+            );
+            ui.add_space(1.0);
+            checkbox(
+                ui,
+                &mut s.double_click_opens,
+                "Double-click a finished download to open it",
                 14.0,
                 11.5,
                 true,
@@ -4153,17 +4344,93 @@ impl SettingsApp {
         hint(ui, "Download Craft itself, and the helpers it keeps for you.");
         ui.add_space(10.0);
 
+        // The update itself lives here (issue #10), driven through the main
+        // window as the About window does: it checks, installs, restarts.
+        let state = crate::about::read_state();
+        let release = crate::about::read_release();
         let mut open_updates = self.open_updates;
         let mut check = self.s.update_check_on;
+        let mut auto = crate::model::ui_pref_bool("update_auto", true);
+        let auto_was = auto;
+        let mut action: Option<&'static str> = None;
         card(ui, "Download Craft", Some(&format!("v{}", crate::model::APP_VERSION)), &mut open_updates, |ui| {
+            let next = if release.tag.is_empty() { "a new version".to_string() } else { format!("version {}", release.tag) };
+            let (line, col) = match state.phase.as_str() {
+                "checking" => ("Checking GitHub for a newer release…".to_string(), t.muted),
+                "available" => (format!("Download Craft {next} is available."), t.accent),
+                "installing" => (
+                    if state.status.is_empty() { format!("Installing {next}…") } else { state.status.clone() },
+                    t.accent,
+                ),
+                "ready" => (
+                    if state.running > 0 {
+                        format!("{next} is installed; {} download(s) still running. Restart now, or it restarts by itself when they finish.", state.running)
+                    } else {
+                        format!("{next} is installed. Restart to use it.")
+                    },
+                    t.text,
+                ),
+                "failed" => (if state.status.is_empty() { "The last check failed.".to_string() } else { state.status.clone() }, t.muted),
+                _ => (
+                    if release.newer || release.tag.is_empty() {
+                        "Not checked yet in this session.".to_string()
+                    } else {
+                        format!("You have the newest version ({}).", crate::model::APP_VERSION)
+                    },
+                    t.muted,
+                ),
+            };
+            wrapped(ui, &line, reg(11.0), col);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                match state.phase.as_str() {
+                    "available" => {
+                        if button(ui, "Update now", true).clicked() {
+                            action = Some("self_update");
+                        }
+                    }
+                    "ready" => {
+                        if button(ui, "Restart to update", true).clicked() {
+                            action = Some("restart_update");
+                        }
+                    }
+                    "installing" | "checking" => {}
+                    _ => {
+                        if button(ui, "Check now", false).clicked() {
+                            action = Some("check_update");
+                        }
+                    }
+                }
+                if !release.url.is_empty() && button(ui, "Release notes", false).clicked() {
+                    crate::platform::open_url(&release.url);
+                }
+            });
+            ui.add_space(8.0);
             switch_row(
                 ui,
                 "update_check_on",
                 &mut check,
-                "Check for updates on launch",
-                "Asks GitHub for a newer release; never downloads one by itself.",
+                "Check for updates",
+                "At launch and every six hours while the app runs.",
+            );
+            ui.add_space(6.0);
+            switch_row(
+                ui,
+                "update_auto",
+                &mut auto,
+                "Update automatically",
+                "Installs new versions in the background; restarts when no download is running.",
             );
         });
+        if let Some(a) = action {
+            crate::about::send(a);
+        }
+        if auto != auto_was {
+            crate::model::ui_pref_set_bool("update_auto", auto);
+        }
+        if matches!(state.phase.as_str(), "checking" | "installing") || action.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(400));
+        }
         self.open_updates = open_updates;
         self.s.update_check_on = check;
 

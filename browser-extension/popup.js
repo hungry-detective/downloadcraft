@@ -697,6 +697,57 @@ function jobCard({ src, name, state, chipText, chipCls, frac, indeterminate, lin
   return el;
 }
 
+// ---- drag a finished download onto a page (issue #15) ----
+// Chrome's own download bubble lets a file be dragged into an upload box;
+// so does this list. A file the browser downloaded uses Chrome's drag; one
+// the app downloaded is read from it (finished files up to 100 MB) while the
+// pointer is over its row, so the drag can carry it as a real file.
+const dragFiles = new Map(); // app id -> File | Promise
+function loadAppFile(id) {
+  if (dragFiles.has(id)) return dragFiles.get(id);
+  const p = (async () => {
+    const parts = [];
+    let offset = 0, name = "", mime = "";
+    for (;;) {
+      const r = await new Promise((res) => chrome.runtime.sendMessage({ type: "appReadFile", id, offset }, (x) => res(chrome.runtime.lastError ? null : x)));
+      if (!r || !r.ok) throw new Error((r && r.error) || "the app did not answer");
+      const bin = atob(r.data || "");
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      parts.push(bytes);
+      name = r.name; mime = r.mime;
+      offset = r.offset + bytes.length;
+      if (r.done || !bytes.length) break;
+    }
+    return new File(parts, name, { type: mime });
+  })();
+  dragFiles.set(id, p);
+  p.then((f) => dragFiles.set(id, f), () => dragFiles.delete(id));
+  return p;
+}
+function makeDraggable(el, opts) {
+  el.draggable = true;
+  el.classList.add("dragme");
+  el.title = "Drag onto a page's upload box";
+  if (opts.appId !== undefined) el.addEventListener("mouseenter", () => { loadAppFile(opts.appId).catch(() => {}); });
+  el.addEventListener("dragstart", (e) => {
+    if (opts.downloadId !== undefined && chrome.downloads && chrome.downloads.drag) {
+      e.preventDefault();
+      chrome.downloads.drag(opts.downloadId);
+      return;
+    }
+    const f = dragFiles.get(opts.appId);
+    if (f instanceof File) {
+      e.dataTransfer.effectAllowed = "copy";
+      e.dataTransfer.items.add(f);
+    } else {
+      e.preventDefault();
+      status(f ? "Getting the file ready — drag again in a moment." : "This file cannot be dragged.", f ? "" : "bad");
+      if (opts.appId !== undefined) loadAppFile(opts.appId).catch((err) => status(`Cannot drag it: ${err.message}`, "bad"));
+    }
+  });
+}
+
 function updateDlCount() {
   chrome.runtime.sendMessage({ type: "bdlList" }, (res) => {
     if (chrome.runtime.lastError || !res) return;
@@ -743,12 +794,14 @@ async function renderDownloads() {
         acts.push([SVG.folder, "Show in folder", () => chrome.runtime.sendMessage({ type: "bdlShow", downloadId: h.downloadId })]);
       }
       acts.push([SVG.trash, "Remove from history", () => chrome.runtime.sendMessage({ type: "bdlForget", id: h.id }, () => renderDownloads())]);
-      box.appendChild(jobCard({
+      const card = jobCard({
         src: `${ago(h.endedAt || h.startedAt)} · ${h.page ? new URL(h.page).hostname : "browser"}`, name: h.filename,
         state: h.state, chipText: ok ? "Done" : h.state === "cancelled" ? "Cancelled" : "Failed", chipCls: ok ? "ok" : "bad",
         line: `${(h.kind || "file").toUpperCase()}${h.size > 0 ? " · " + fmtSize(h.size) : ""}${h.note ? " · " + h.note : ""}`,
         error: ok ? "" : h.error, actions: acts,
-      }));
+      });
+      if (ok && Number.isInteger(h.downloadId)) makeDraggable(card, { downloadId: h.downloadId });
+      box.appendChild(card);
     }
     // In the app.
     const items = (app && app.items) || [];
@@ -766,14 +819,16 @@ async function renderDownloads() {
       if (it.state !== "done") acts.push([SVG.x, "Cancel", () => chrome.runtime.sendMessage({ type: "appControl", action: "cancel", id: it.id }, () => renderDownloads())]);
       let host = "";
       try { host = new URL(it.url).hostname; } catch (e) { host = ""; }
-      box.appendChild(jobCard({
+      const card = jobCard({
         src: `#${it.id} · ${host}`, name: it.name, state: it.state === "downloading" ? "running" : it.state,
         chipText: { downloading: "Downloading", queued: "Queued", paused: "Paused", done: "Done", failed: "Failed" }[it.state] || it.state,
         chipCls: { done: "ok", failed: "bad", paused: "warn", queued: "warn" }[it.state] || "",
         frac: it.state === "done" ? null : frac, indeterminate: live && !(it.total > 0),
         line: `${fmtSize(it.done) || "0 B"}${it.total > 0 ? " of " + fmtSize(it.total) : ""}${live && it.speed > 0 ? " · " + fmtSize(it.speed) + "/s" : ""}`,
         error: it.state === "failed" ? it.error : "", actions: acts,
-      }));
+      });
+      if (it.state === "done") makeDraggable(card, { appId: it.id });
+      box.appendChild(card);
     }
     $("viewDownloads").scrollTop = keepScroll;
   } finally {

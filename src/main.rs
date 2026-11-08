@@ -60,7 +60,38 @@ fn install_panic_hook() {
     }));
 }
 
+/// Set on the copy `window_result` starts after OpenGL failed.
+const RELAUNCHED: &str = "DOWNLOAD_CRAFT_RELAUNCHED";
+
+/// A window that could not open (issue #14: OpenGL on an old GPU driver)
+/// does not close without a word. On Windows every window draws with
+/// Direct3D 12 / WARP from then on, and this one starts again with it (one
+/// event loop per process, so not in this process); anywhere else, or when
+/// Direct3D failed too, the error is shown and saved.
+fn window_result(result: eframe::Result<()>) -> eframe::Result<()> {
+    let Err(e) = &result else { return result };
+    #[cfg(windows)]
+    if !crate::platform::software_renderer() {
+        eprintln!("OpenGL could not open the window ({e}); starting again with Direct3D");
+        crate::platform::remember_software_renderer();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if let Ok(exe) = crate::platform::launch_path() {
+            if std::process::Command::new(exe).args(&args).env(RELAUNCHED, "1").spawn().is_ok() {
+                return Ok(());
+            }
+        }
+    }
+    crate::platform::report_startup_failure(&e.to_string());
+    result
+}
+
 fn main() -> eframe::Result<()> {
+    // Started again by `window_result` after OpenGL failed: the copy that
+    // failed lets go of its window slot as it exits, a moment from now.
+    if std::env::var_os(RELAUNCHED).is_some() {
+        std::env::remove_var(RELAUNCHED);
+        std::thread::sleep(std::time::Duration::from_millis(800));
+    }
     // Migrate legacy `idm_rust` config (queue/settings/inbox) forward.
     model::migrate_config();
     if let Err(e)=model::secure_config_directory() { eprintln!("Could not protect application state directory: {e}"); }
@@ -74,38 +105,38 @@ fn main() -> eframe::Result<()> {
     // IDM-style standalone "Download File Info" dialog (one OS window per
     // captured download, always on top). Spawned by the native host.
     if args.iter().any(|a| a == "--confirm-download") {
-        return confirm::run();
+        return window_result(confirm::run());
     }
     // IDM-style "Download all links" picker (spawned by the native host).
     if args.iter().any(|a| a == "--links") {
-        return links::run();
+        return window_result(links::run());
     }
     // IDM-style standalone per-download progress window.
     if args.iter().any(|a| a == "--progress") {
-        return progress::run();
+        return window_result(progress::run());
     }
     // IDM-style standalone "Download complete" dialog (popped by the app when
     // a download finishes).
     if args.iter().any(|a| a == "--complete") {
-        return complete::run();
+        return window_result(complete::run());
     }
     // P3.3 companions: drop basket + mini status.
     if args.iter().any(|a| a == "--basket") {
-        return basket::run_basket();
+        return window_result(basket::run_basket());
     }
     // Standalone Settings window (two-pane, separate OS window).
     if args.iter().any(|a| a == "--settings") {
-        return settings::run();
+        return window_result(settings::run());
     }
     // "Get ready": what the app needs, with one-click fixes.
     if args.iter().any(|a| a == "--about") {
-        return about::run();
+        return window_result(about::run());
     }
     if args.iter().any(|a| a == "--setup") {
-        return setup::run();
+        return window_result(setup::run());
     }
     if args.iter().any(|a| a == "--mini") {
-        return basket::run_mini();
+        return window_result(basket::run_mini());
     }
     // Started by a one-click update: wait for the old version to close,
     // then start the window as usual.
@@ -163,23 +194,24 @@ fn main() -> eframe::Result<()> {
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
-    let options = eframe::NativeOptions {
-        viewport,
-        ..Default::default()
-    };
     // Site rules for the browser extension: newer ones from the project, at
     // most once a day, off the UI thread.
     std::thread::spawn(crate::native_host::refresh_site_rules);
-    let result = eframe::run_native(
-        crate::model::APP_NAME,
-        options,
-        Box::new(|cc| {
-            crate::app::setup_fonts(cc);
-            app::apply_theme(&cc.egui_ctx, &app::stored_theme());
-
-            Ok(Box::new(CraftApp::new(rt.clone())))
-        }),
-    );
+    let run = |options: eframe::NativeOptions| {
+        let rt = rt.clone();
+        eframe::run_native(
+            crate::model::APP_NAME,
+            options,
+            Box::new(move |cc| {
+                crate::app::setup_fonts(cc);
+                app::apply_theme(&cc.egui_ctx, &app::stored_theme());
+                Ok(Box::new(CraftApp::new(rt)))
+            }),
+        )
+    };
+    let result = run(crate::platform::native_options(viewport));
+    // The slot must be free for the copy a renderer fallback starts.
+    drop(_instance);
     crate::model::stop_heartbeat();
-    result
+    window_result(result)
 }

@@ -645,6 +645,11 @@ pub fn ext_for_mime(mime: &str) -> Option<&'static str> {
         "image/jpeg" => Some(".jpg"),
         "image/gif" => Some(".gif"),
         "image/webp" => Some(".webp"),
+        "image/avif" => Some(".avif"),
+        "image/heic" | "image/heif" => Some(".heic"),
+        "image/bmp" | "image/x-ms-bmp" => Some(".bmp"),
+        "image/tiff" => Some(".tiff"),
+        "image/x-icon" | "image/vnd.microsoft.icon" => Some(".ico"),
         "image/svg+xml" => Some(".svg"),
         "application/pdf" => Some(".pdf"),
         "application/zip" => Some(".zip"),
@@ -653,6 +658,54 @@ pub fn ext_for_mime(mime: &str) -> Option<&'static str> {
         "application/gzip" | "application/x-gzip" => Some(".gz"),
         "application/x-msdownload" | "application/octet-stream" => None,
         _ => None,
+    }
+}
+
+/// The MIME type of a file extension (`"jpg"`), for a file handed to the
+/// browser (dragging a download onto a page's upload box).
+pub fn mime_for_ext(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "wav" => "audio/wav",
+        "ogg" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "txt" => "text/plain",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }
+}
+
+/// `name` with the extension `mime` names when it has none of its own: a
+/// file served from an address without one (Civitai's original images come
+/// from `…/blobs-managed-public/7DKFBPEAVXB9VHPBCH8B5AGB30`) would otherwise
+/// be saved with no extension at all. A name that has one keeps it.
+pub fn with_mime_ext(name: &str, mime: &str) -> String {
+    let has_ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| (1..=5).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric()));
+    match ext_for_mime(mime) {
+        Some(ext) if !has_ext && !name.trim().is_empty() => format!("{}{ext}", name.trim_end_matches('.')),
+        _ => name.to_string(),
     }
 }
 
@@ -1657,6 +1710,23 @@ pub fn pick_windows_asset(v: &serde_json::Value) -> Option<String> {
         .or(win)
         .or(any)
         .map(|(_, u)| u.to_string())
+}
+
+#[cfg(test)]
+mod mime_ext_tests {
+    use super::with_mime_ext;
+
+    #[test]
+    fn a_name_without_an_extension_takes_the_mime_one() {
+        assert_eq!(with_mime_ext("7DKFBPEAVXB9VHPBCH8B5AGB30", "image/jpeg"), "7DKFBPEAVXB9VHPBCH8B5AGB30.jpg");
+        assert_eq!(with_mime_ext("photo", "image/avif; q=1"), "photo.avif");
+        assert_eq!(with_mime_ext("photo.webp", "image/jpeg"), "photo.webp");
+        assert_eq!(with_mime_ext("report.final.pdf", "application/pdf"), "report.final.pdf");
+        // "v1.2 release" has no real extension (a space and a long tail).
+        assert_eq!(with_mime_ext("v1.2 release notes", "application/pdf"), "v1.2 release notes.pdf");
+        assert_eq!(with_mime_ext("blob", "application/octet-stream"), "blob");
+        assert_eq!(with_mime_ext("", "image/png"), "");
+    }
 }
 
 #[cfg(test)]

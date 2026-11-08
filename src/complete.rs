@@ -418,10 +418,7 @@ pub fn run() -> eframe::Result<()> {
     }
     eframe::run_native(
         crate::model::APP_NAME,
-        eframe::NativeOptions {
-            viewport,
-            ..Default::default()
-        },
+        crate::platform::native_options(viewport),
         Box::new(|cc| {
             // `true`: the whole window is the concept, so Segoe UI also becomes
             // its default proportional face.

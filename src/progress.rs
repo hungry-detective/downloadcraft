@@ -595,10 +595,7 @@ pub fn run() -> eframe::Result<()> {
     }
     eframe::run_native(
         "Download Craft",
-        eframe::NativeOptions {
-            viewport,
-            ..Default::default()
-        },
+        crate::platform::native_options(viewport),
         Box::new(|cc| {
             // `true`: this whole window is the concept, so Segoe UI also
             // becomes its default proportional face.
@@ -1338,6 +1335,50 @@ impl ProgressApp {
                     DM_ACC2,
                 );
             }
+        } else if let Some(parts) = self.part_spans(item) {
+            // Part by part, as IDM draws it (issue #10): each connection's
+            // bytes fill its own stretch of the bar, so every part moving at
+            // once is visible, and a part that finished stands complete.
+            let live = self.snap.live && !matches!(item.status, Status::Paused | Status::Completed | Status::Failed(_));
+            let t = ui.input(|i| i.time) as f32;
+            for (i, (x0, x1, f)) in parts.iter().enumerate() {
+                let l = track.min.x + x0 * PROG_W;
+                let r = track.min.x + x1 * PROG_W;
+                if i > 0 {
+                    p.line_segment(
+                        [egui::pos2(l, track.min.y + 1.0), egui::pos2(l, track.max.y - 1.0)],
+                        egui::Stroke::new(1.0, pl().dm_trough),
+                    );
+                }
+                let w = (r - l) * f;
+                if w < 0.5 {
+                    continue;
+                }
+                let fill = egui::Rect::from_min_size(egui::pos2(l, track.min.y), egui::vec2(w, PROG_H));
+                dm_gradient_x(&p, fill, 2.0, DM_ACC, DM_ACC2);
+                if live && *f < 1.0 {
+                    let clip = p.with_clip_rect(fill.intersect(p.clip_rect()));
+                    let step = 12.0;
+                    let off = (t * 28.0) % step;
+                    let mut x = fill.min.x - PROG_H - step + off;
+                    while x < fill.max.x {
+                        clip.add(egui::Shape::convex_polygon(
+                            vec![
+                                egui::pos2(x, fill.max.y),
+                                egui::pos2(x + step / 2.0, fill.max.y),
+                                egui::pos2(x + step / 2.0 + PROG_H, fill.min.y),
+                                egui::pos2(x + PROG_H, fill.min.y),
+                            ],
+                            egui::Color32::from_white_alpha(34),
+                            egui::Stroke::NONE,
+                        ));
+                        x += step;
+                    }
+                }
+            }
+            if live {
+                ui.ctx().request_repaint_after(Duration::from_millis(40));
+            }
         } else if frac > 0.0 {
             let w = (PROG_W * frac).max(PROG_H);
             let fill = egui::Rect::from_min_size(track.min, egui::vec2(w, PROG_H));
@@ -1395,6 +1436,36 @@ impl ProgressApp {
                 frac * 100.0
             )
         });
+    }
+
+    /// The bar's parts as (start, end, filled), each a fraction of the file:
+    /// `None` for a single-stream download, which keeps the one filling bar.
+    fn part_spans(&self, item: &DownloadItem) -> Option<Vec<(f32, f32, f32)>> {
+        if self.snap.parts.len() < 2 || matches!(item.status, Status::Completed) {
+            return None;
+        }
+        let total = self
+            .snap
+            .parts
+            .iter()
+            .map(|(_, e, _)| e + 1)
+            .max()
+            .unwrap_or(0)
+            .max(item.total_bytes.unwrap_or(0));
+        if total == 0 {
+            return None;
+        }
+        let tf = total as f32;
+        Some(
+            self.snap
+                .parts
+                .iter()
+                .map(|(s, e, d)| {
+                    let len = (e + 1).saturating_sub(*s).max(1);
+                    (*s as f32 / tf, (e + 1) as f32 / tf, (*d as f32 / len as f32).clamp(0.0, 1.0))
+                })
+                .collect(),
+        )
     }
 
     /// Part Info section: rule, header row with the state actions, the part

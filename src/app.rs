@@ -1916,7 +1916,11 @@ fn tool_button(
         )
         .gap(12.0)
         .show(|ui| {
-            ui.label(tip);
+            // Near the window's edge the tooltip has little room, and a plain
+            // label broke into one word a line (issue #10, at ~500 px wide).
+            // Short tips stay on one line, long ones wrap at a readable width.
+            ui.set_min_width(tip.chars().count().min(42) as f32 * 6.4);
+            ui.add(egui::Label::new(tip).wrap_mode(egui::TextWrapMode::Wrap));
         });
     }
     rect
@@ -2408,6 +2412,9 @@ pub struct CraftApp {
     /// chip. (An asset URL can be missing while an update still exists.)
     update_found: bool,
     update_auto_done: bool,
+    /// When GitHub was last asked: the app often runs for days from the tray,
+    /// and a check only at launch never saw a release made meanwhile.
+    update_checked_at: Option<Instant>,
     // ---- P5: per-download speed history (EWMA input + Details graph) ----
     // Last ≤60 half-second samples per download id, pruned with tasks.
     speed_hist: std::collections::HashMap<u64, std::collections::VecDeque<f64>>,
@@ -2627,6 +2634,7 @@ impl CraftApp {
             update_state_sent: String::new(),
             update_found: false,
             update_auto_done: false,
+            update_checked_at: None,
             speed_hist: std::collections::HashMap::new(),
             phases: std::collections::HashMap::new(),
             diag_lines: Vec::new(),
@@ -3025,7 +3033,7 @@ impl CraftApp {
                     self.ui_scale = v
                         .get("ui_scale")
                         .and_then(|x| x.as_u64())
-                        .map_or(1.0, |pct| (pct.clamp(80, 175) as f32) / 100.0);
+                        .map_or(1.0, |pct| (pct.clamp(75, 200) as f32) / 100.0);
                     if let Some(arr) = v.get("columns").and_then(|c| c.as_array()) {
                         let mut order = Vec::new();
                         for item in arr {
@@ -6597,8 +6605,19 @@ impl eframe::App for CraftApp {
             self.publish_update_state();
             self.refresh_speed_limit();
             // Opt-in update check, once per session (silent unless newer).
-            if self.update_check_on && !self.update_auto_done {
+            // Then again every six hours while it runs (issue #10: a release
+            // went unnoticed until the next launch).
+            let due = self
+                .update_checked_at
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(6 * 3600));
+            if self.update_check_on
+                && (!self.update_auto_done || due)
+                && !self.update_busy
+                && self.selfupd_rx.is_none()
+                && !self.update_restart_ready
+            {
                 self.update_auto_done = true;
+                self.update_checked_at = Some(Instant::now());
                 self.start_update_check();
             }
             self.poll_self_update();
@@ -8616,18 +8635,31 @@ impl eframe::App for CraftApp {
                     .show(ui, |ui| {
                     // ---- named queues (IDM: several queues) ----
                     ui.horizontal_wrapped(|ui| {
-                        if ui.selectable_label(self.queue_sel == 0, "Main").clicked() {
+                        // One height for the tabs, the name box and the button
+                        // (issue #10: the box stood taller than its row).
+                        const ROW_H: f32 = 26.0;
+                        let tab = |ui: &mut egui::Ui, on: bool, text: String| {
+                            ui.add(egui::Button::selectable(on, text).min_size(egui::vec2(0.0, ROW_H)))
+                        };
+                        if tab(ui, self.queue_sel == 0, "Main".to_owned()).clicked() {
                             self.queue_sel = 0;
                         }
                         for i in 0..self.queues.len() {
                             let label = format!("{}{}", self.queues[i].name, if self.queues[i].running { " ▶" } else { "" });
-                            if ui.selectable_label(self.queue_sel == i + 1, label).clicked() {
+                            if tab(ui, self.queue_sel == i + 1, label).clicked() {
                                 self.queue_sel = i + 1;
                             }
                         }
-                        ui.add(egui::TextEdit::singleline(&mut self.queue_new_name).hint_text("new queue name").desired_width(120.0));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.queue_new_name)
+                                .hint_text("new queue name")
+                                .desired_width(140.0)
+                                .min_size(egui::vec2(140.0, ROW_H))
+                                .vertical_align(egui::Align::Center)
+                                .margin(egui::Margin::symmetric(8, 0)),
+                        );
                         let name = self.queue_new_name.trim().to_string();
-                        if ui.button("Add queue").clicked() && !name.is_empty() && name != "Main" && !self.queues.iter().any(|q| q.name == name) {
+                        if ui.add(egui::Button::new("Add queue").min_size(egui::vec2(0.0, ROW_H))).clicked() && !name.is_empty() && name != "Main" && !self.queues.iter().any(|q| q.name == name) {
                             self.queues.push(crate::model::QueueDef { name, max: 2, ..Default::default() });
                             self.queue_sel = self.queues.len();
                             self.queue_new_name.clear();
@@ -11014,8 +11046,18 @@ impl CraftApp {
                     }
                     if clk && self.man.take_double() {
                         // A running download opens its progress window (as
-                        // IDM does); anything else its details.
-                        let act = if self.tasks.contains_key(&id) { RowAct::ShowProgress } else { RowAct::Details };
+                        // IDM does); anything else its details, or the file
+                        // itself when Settings says so (issue #12).
+                        let finished = self.downloads.iter().any(|d| {
+                            d.id == id && d.status == crate::model::Status::Completed && d.dest_path().is_file()
+                        });
+                        let act = if self.tasks.contains_key(&id) {
+                            RowAct::ShowProgress
+                        } else if finished && crate::model::ui_pref_bool("double_click_opens", false) {
+                            RowAct::OpenFile
+                        } else {
+                            RowAct::Details
+                        };
                         self.do_row_act(act, id);
                     }
                 }
