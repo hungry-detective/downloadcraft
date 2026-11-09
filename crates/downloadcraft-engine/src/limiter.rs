@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex};
 pub struct RateLimiter {
     limit_bps: u64,
     global_bps: Option<Arc<AtomicU64>>,
+    /// This download's own live cap (0 = none), set from its progress window.
+    own_bps: Option<Arc<AtomicU64>>,
     state: Arc<Mutex<(f64, std::time::Instant)>>,
 }
 
@@ -26,6 +28,7 @@ impl RateLimiter {
         Self {
             limit_bps,
             global_bps: None,
+            own_bps: None,
             state: Arc::new(Mutex::new((limit_bps as f64, std::time::Instant::now()))),
         }
     }
@@ -35,8 +38,24 @@ impl RateLimiter {
         self
     }
 
+    /// A live cap for this download alone (bytes/s, 0 = none), on top of the
+    /// others: the lowest one wins.
+    pub fn with_own(mut self, own_bps: Option<Arc<AtomicU64>>) -> Self {
+        self.own_bps = own_bps;
+        self
+    }
+
     /// The cap in force right now (bytes/s, 0 = unlimited).
     pub fn effective_limit(&self) -> u64 {
+        let base = self.base_limit();
+        match self.own_bps.as_ref().map(|o| o.load(Ordering::SeqCst)).filter(|v| *v > 0) {
+            Some(own) if base == 0 => own,
+            Some(own) => own.min(base),
+            None => base,
+        }
+    }
+
+    fn base_limit(&self) -> u64 {
         match &self.global_bps {
             Some(g) => {
                 let v = g.load(Ordering::SeqCst);

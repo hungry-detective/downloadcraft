@@ -898,7 +898,7 @@ impl LinksApp {
             right = r.min.x - 8.0;
             let resp = ui.interact(r, egui::Id::new(("links-btn", id)), if enabled { Sense::click() } else { Sense::hover() });
             let (fill, bd, fg) = if primary {
-                (if resp.hovered() && enabled { crate::dm::DM_ACC.gamma_multiply(0.85) } else { t.primary }, t.primary, Color32::WHITE)
+                (if resp.hovered() && enabled { crate::dm::DM_ACC().gamma_multiply(0.85) } else { t.primary }, t.primary, Color32::WHITE)
             } else {
                 (if resp.hovered() && enabled { t.surface_lt } else { t.surface }, t.card_bd, t.txt)
             };

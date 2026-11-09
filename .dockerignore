@@ -1,0 +1,11 @@
+target
+target-*
+dist
+.git
+*.zip
+*.xpi
+__pycache__
+Reverse enginnering of extension thirdparty
+download-craft-animation
+idm_ext_inspect
+remade-submission

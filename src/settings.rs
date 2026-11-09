@@ -55,6 +55,9 @@ struct Settings {
     show_complete: bool,
     /// Pop a standalone IDM-style progress window when a download starts.
     progress_windows: bool,
+    /// The progress window's main bar drawn part by part (the Part Info
+    /// strip always is); off = one smooth animated bar.
+    segmented_progress_bar: bool,
     /// Double-clicking a finished row opens the file instead of its details.
     double_click_opens: bool,
     /// The Download dialog starts at the last folder used and lists the
@@ -174,6 +177,7 @@ impl Default for Settings {
             show_complete: true,
             progress_windows: true,
             double_click_opens: false,
+            segmented_progress_bar: false,
             remember_folders: false,
             hide_col_icons: false,
             save_dir: dirs::download_dir()
@@ -299,6 +303,9 @@ fn load() -> Settings {
     }
     if let Some(b) = g("category_folders").and_then(|x| x.as_bool()) {
         s.category_folders = b;
+    }
+    if let Some(b) = g("segmented_progress_bar").and_then(|x| x.as_bool()) {
+        s.segmented_progress_bar = b;
     }
     if let Some(b) = g("double_click_opens").and_then(|x| x.as_bool()) {
         s.double_click_opens = b;
@@ -562,6 +569,7 @@ fn save(s: &Settings) -> bool {
     set(obj, "save_dir", s.save_dir.clone().into());
     set(obj, "category_folders", s.category_folders.into());
     set(obj, "double_click_opens", s.double_click_opens.into());
+    set(obj, "segmented_progress_bar", s.segmented_progress_bar.into());
     set(obj, "remember_folders", s.remember_folders.into());
     set(obj, "connections_default", (s.connections_default as u64).into());
     set(obj, "speed_limit_kbps", s.speed_limit_kbps.into());
@@ -687,6 +695,8 @@ struct SettingsApp {
     /// A font being downloaded (a recommended one, or from a link).
     font_job: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     font_note: String,
+    /// Remote control's port as typed (saved when it is a valid port).
+    remote_port: String,
     /// Browser Integration cards (Chromium family, Firefox) expanded.
     browser_open: [bool; 2],
     /// Native host registered per browser, asked when the pane first opens
@@ -838,6 +848,7 @@ pub fn run() -> eframe::Result<()> {
         font_link: String::new(),
         font_job: None,
         font_note: String::new(),
+        remote_port: crate::model::ui_pref_str("remote_port", ""),
         browser_open: [true, false],
         host_status: None,
         open_updates: true,
@@ -1542,6 +1553,62 @@ fn draw_face(
         );
         face_rect(p, lr, if i == 3 { accent } else { c(line) }, clip);
     }
+}
+
+/// A look's tile: a mini main window in that look's own colours and corners,
+/// its name under it, and the accent check badge when it is the active one.
+fn look_tile(ui: &mut Ui, salt: &str, w: f32, h: f32, pal: &crate::app::Palette, name: &str, active: bool) -> Response {
+    let t = tok();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+    let resp = ui
+        .interact(rect, ui.id().with(("look_tile", salt)), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let p = ui.painter();
+    let pad = 4.0;
+    let edge = if active { t.accent } else if resp.hovered() { t.muted } else { t.border };
+    p.rect(rect, 8.0, t.input, Stroke::new(1.0, edge), StrokeKind::Inside);
+    let prev = Rect::from_min_size(
+        egui::pos2(rect.min.x + pad, rect.min.y + pad),
+        Vec2::new(w - pad * 2.0, (h - pad * 2.0 - 19.0).max(24.0)),
+    );
+    let r = (pal.radius * 0.5).clamp(1.0, 7.0);
+    p.rect_filled(prev, r, pal.bg);
+    // Header strip, sidebar, the list panel with rows, one row selected.
+    let head = Rect::from_min_size(prev.min, Vec2::new(prev.width(), 9.0));
+    p.rect_filled(head, egui::CornerRadius { nw: r as u8, ne: r as u8, sw: 0, se: 0 }, pal.header_bg);
+    let side = Rect::from_min_size(egui::pos2(prev.min.x + 3.0, head.max.y + 3.0), Vec2::new(prev.width() * 0.26, prev.height() - 15.0));
+    p.rect_filled(side, r * 0.6, pal.surface);
+    let list = Rect::from_min_max(egui::pos2(side.max.x + 3.0, side.min.y), egui::pos2(prev.max.x - 3.0, side.max.y));
+    p.rect(list, r * 0.6, pal.central_bg, Stroke::new(1.0, pal.card_bd), StrokeKind::Inside);
+    let row_h = ((list.height() - 6.0) / 4.0).max(3.0);
+    for i in 0..4 {
+        let rr = Rect::from_min_size(egui::pos2(list.min.x + 3.0, list.min.y + 3.0 + row_h * i as f32), Vec2::new(list.width() - 6.0, row_h - 2.0));
+        if i == 1 {
+            p.rect_filled(rr, r * 0.4, pal.sel_bg);
+        }
+        let tw = rr.width() * [0.55, 0.7, 0.45, 0.6][i];
+        p.rect_filled(Rect::from_min_size(egui::pos2(rr.min.x + 2.0, rr.center().y - 1.0), Vec2::new(tw, 2.0)), 1.0, pal.dim);
+    }
+    // The accent: a button in the header and a progress bar under the list.
+    p.rect_filled(Rect::from_min_size(egui::pos2(head.max.x - 18.0, head.min.y + 2.0), Vec2::new(14.0, 5.0)), r * 0.5, pal.acc);
+    let bar = Rect::from_min_size(egui::pos2(side.min.x + 3.0, side.min.y + 4.0), Vec2::new(side.width() - 6.0, 2.5));
+    p.rect_filled(bar, 1.0, pal.primary);
+    p.rect_stroke(prev, r, Stroke::new(1.0, t.border), StrokeKind::Inside);
+    if active {
+        let bc = egui::pos2(prev.max.x - 8.0, prev.max.y - 8.0);
+        p.circle_filled(bc, 7.5, t.accent);
+        let s = Stroke::new(1.6, Color32::WHITE);
+        p.line_segment([bc + Vec2::new(-3.2, -0.2), bc + Vec2::new(-1.0, 2.2)], s);
+        p.line_segment([bc + Vec2::new(-1.0, 2.2), bc + Vec2::new(3.4, -2.6)], s);
+    }
+    p.text(
+        egui::pos2(rect.min.x + pad + 3.0, rect.max.y - pad - 2.0),
+        Align2::LEFT_BOTTOM,
+        name,
+        reg(10.5),
+        if active { t.text } else { t.text2 },
+    );
+    resp
 }
 
 /// One theme tile (the mock's `.theme-tile`): a mini-window preview, the name
@@ -2646,15 +2713,33 @@ impl SettingsApp {
 
         hint(
             ui,
-            "Fonts, radius and accent stay identical — only the palette changes.",
+            "Pick a look and a mode; the window shows it as you click.",
         );
         ui.add_space(10.0);
 
         // ---- Theme: three mini-window tiles (the concept's visual picker) ----
         let current = self.s.theme.clone();
+        let (cur_look, cur_mode) = crate::skins::split(&current);
+        let (cur_look, cur_mode) = (cur_look.to_string(), cur_mode.to_string());
+        let dark_now = crate::app::theme_is_dark(ui.ctx(), &current);
         let mut picked: Option<String> = None;
         let mut open_theme = self.open_theme;
-        card(ui, "Theme", None, &mut open_theme, |ui| {
+        card(ui, "Layout", None, &mut open_theme, |ui| {
+            let gap = 8.0;
+            let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).max(72.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (key, name) in crate::skins::LOOKS {
+                    let pal = crate::skins::palette(key, dark_now);
+                    if look_tile(ui, key, tile_w, 92.0, &pal, name, cur_look == key).clicked() {
+                        picked = Some(crate::skins::join(key, &cur_mode));
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            hint(ui, "Craft: Download Craft's own layout. Ledger: a grey window, a large labelled toolbar and a list with grid lines, square corners. Petal: summary tiles and downloads as cards, round corners. All in blue; the Theme menu in the main window shows each one as you point at it.");
+        });
+        card(ui, "Mode", None, &mut open_theme, |ui| {
             let gap = 8.0;
             let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).max(72.0);
             let tile_h = 92.0;
@@ -2665,8 +2750,9 @@ impl SettingsApp {
                     ("dark", "Dark", TileKind::Dark),
                     ("light", "Light", TileKind::Light),
                 ] {
-                    if theme_tile(ui, key, tile_w, tile_h, kind, name, current == key).clicked() {
-                        picked = Some(key.to_string());
+                    let on = cur_mode == key || (key == "dark" && cur_mode == "black");
+                    if theme_tile(ui, key, tile_w, tile_h, kind, name, on).clicked() {
+                        picked = Some(crate::skins::join(&cur_look, key));
                     }
                 }
             });
@@ -2918,6 +3004,7 @@ impl SettingsApp {
         // ---- Progress windows ----
         let mut open_progress = self.open_progress;
         let mut progress_windows = self.s.progress_windows;
+        let mut segmented = self.s.segmented_progress_bar;
         card(ui, "Progress windows", None, &mut open_progress, |ui| {
             switch_row(
                 ui,
@@ -2926,9 +3013,167 @@ impl SettingsApp {
                 "Open a progress window for each download",
                 "IDM-style. Opens automatically when a download starts. Turn it off to keep downloads in the main window; right-click a row to open its window later.",
             );
+            ui.add_space(6.0);
+            switch_row(
+                ui,
+                "segmented_progress_bar",
+                &mut segmented,
+                "Show connections in the main progress bar",
+                "Off: one smooth animated bar. On: the bar fills part by part, one piece per connection. The Part Info strip below always shows the connections.",
+            );
         });
         self.open_progress = open_progress;
         self.s.progress_windows = progress_windows;
+        self.s.segmented_progress_bar = segmented;
+
+        // ---- Remote control (a phone on the same network) ----
+        let mut open_remote = true;
+        let mut on = crate::model::ui_pref_bool("remote_enabled", false);
+        let was_on = on;
+        let mut new_code = false;
+        let mut forget: Option<String> = None;
+        let port_text = &mut self.remote_port;
+        card(ui, "Remote control", None, &mut open_remote, |ui| {
+            let t = tok();
+            switch_row(
+                ui,
+                "remote_enabled",
+                &mut on,
+                "Control downloads from a phone",
+                "A page on this computer that a phone or another computer on the same network opens: see the downloads, add links and magnets, pause, resume and remove. Each device pairs once with a code.",
+            );
+            if on {
+                ui.add_space(8.0);
+                let port = port_text.trim().parse::<u16>().ok().filter(|p| *p >= 1024).unwrap_or(crate::remote::DEFAULT_PORT);
+                let mut c = field_row(ui, "remote_port", "Port", None, Some("1024 to 65535. Allow it through the firewall if Windows asks."));
+                input_box(&mut c, "remote_port_in", port_text, 90.0, true, false, &crate::remote::DEFAULT_PORT.to_string());
+                ui.add_space(6.0);
+                let mut https = crate::model::ui_pref_bool("remote_https", false);
+                switch_row(
+                    ui,
+                    "remote_https",
+                    &mut https,
+                    "Use HTTPS",
+                    "Encrypts the page with this computer's own certificate. The phone warns about it once: check that the fingerprint below matches, then continue.",
+                );
+                if https != crate::model::ui_pref_bool("remote_https", false) {
+                    crate::model::ui_pref_set_bool("remote_https", https);
+                }
+                let host = crate::remote::lan_address().unwrap_or_else(|| "this-computer".into());
+                let scheme = if https { "https" } else { "http" };
+                wrapped(ui, &format!("Open on the phone:  {scheme}://{host}:{port}/"), semi(12.0), t.text);
+                if https {
+                    if let Some(fp) = crate::remote::fingerprint() {
+                        wrapped(ui, &format!("Certificate fingerprint (SHA-256): {fp}"), reg(10.0), t.text2);
+                    }
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    match crate::remote::current_code() {
+                        Some((code, left)) => {
+                            wrapped(ui, &format!("Pairing code:  {code}   ({} min left, works once)", (left + 59) / 60), semi(12.0), t.accent);
+                        }
+                        None => {
+                            wrapped(ui, "No pairing code right now.", reg(11.5), t.text2);
+                        }
+                    }
+                    if button(ui, "New code", false).clicked() {
+                        new_code = true;
+                    }
+                });
+                let devices = crate::remote::load().devices;
+                if !devices.is_empty() {
+                    ui.add_space(6.0);
+                    hint(ui, "Paired devices:");
+                    for d in devices {
+                        ui.horizontal(|ui| {
+                            wrapped(ui, &format!("{}  ·  {}", d.name, d.added), reg(11.5), t.text);
+                            if button(ui, "Remove", false).clicked() {
+                                forget = Some(d.token_sha.clone());
+                            }
+                        });
+                    }
+                }
+                ui.add_space(4.0);
+                if !https {
+                    hint(ui, "The page is plain HTTP on your local network: use it at home or on a network you trust, or turn on HTTPS.");
+                }
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(5));
+            }
+        });
+        if on != was_on {
+            crate::model::ui_pref_set_bool("remote_enabled", on);
+            if on && crate::remote::current_code().is_none() && crate::remote::load().devices.is_empty() {
+                crate::remote::new_code();
+            }
+        }
+        if new_code {
+            crate::remote::new_code();
+        }
+        if let Some(sha) = forget {
+            crate::remote::remove_device(&sha);
+        }
+        // ---- AI assistants (MCP) ----
+        let mut open_ai = true;
+        let mut ai_on = crate::model::ui_pref_bool("mcp_enabled", true);
+        let mut ai_level = crate::model::ui_pref_str("mcp_level", "standard");
+        let (ai_on_was, ai_level_was) = (ai_on, ai_level.clone());
+        let mut copy_cfg = false;
+        let mut open_log = false;
+        card(ui, "AI assistants", None, &mut open_ai, |ui| {
+            switch_row(
+                ui,
+                "mcp_enabled",
+                &mut ai_on,
+                "Let AI assistants manage downloads",
+                "Claude, Cursor, VS Code and other MCP clients can list, add, pause and resume downloads through the program's --mcp switch. Every call is written to a log.",
+            );
+            if ai_on {
+                ui.add_space(8.0);
+                let mut c = field_row(ui, "mcp_level", "Access", None, None);
+                let names = [("read", "Look only"), ("standard", "Standard: add, pause, resume"), ("full", "Full: also remove")];
+                let shown = names.iter().find(|(k, _)| *k == ai_level).map(|(_, n)| *n).unwrap_or("Standard: add, pause, resume");
+                egui::ComboBox::from_id_salt("mcp_level_combo").selected_text(shown).width(240.0).show_ui(&mut c, |ui| {
+                    for (k, n) in names {
+                        ui.selectable_value(&mut ai_level, k.to_string(), n);
+                    }
+                });
+                ui.add_space(6.0);
+                hint(ui, "In the assistant's settings (for Claude Desktop: claude_desktop_config.json), add this server:");
+                ui.horizontal(|ui| {
+                    if button(ui, "Copy the settings", false).clicked() {
+                        copy_cfg = true;
+                    }
+                    if button(ui, "Open the log", false).clicked() {
+                        open_log = true;
+                    }
+                });
+            }
+        });
+        if ai_on != ai_on_was {
+            crate::model::ui_pref_set_bool("mcp_enabled", ai_on);
+        }
+        if ai_level != ai_level_was {
+            crate::model::ui_pref_set_str("mcp_level", &ai_level);
+        }
+        if copy_cfg {
+            if let Ok(mut cb) = arboard::Clipboard::new() {
+                let _ = cb.set_text(crate::mcp::config_snippet());
+            }
+        }
+        if open_log {
+            if let Some(p) = crate::model::config_dir().map(|d| d.join("mcp-audit.log")) {
+                if !p.exists() {
+                    let _ = std::fs::write(&p, "");
+                }
+                crate::platform::open_url(&p.to_string_lossy());
+            }
+        }
+        if let Ok(p) = self.remote_port.trim().parse::<u16>() {
+            if p >= 1024 && self.remote_port.trim() != crate::model::ui_pref_str("remote_port", "") {
+                crate::model::ui_pref_set_str("remote_port", self.remote_port.trim());
+            }
+        }
     }
 
     // ---------- Download Engine ----------
@@ -3033,6 +3278,13 @@ impl SettingsApp {
             let mut lim = s.speed_limit_kbps as f64;
             if slider_row(&mut c, "speed_limit", &mut lim, 0.0, 10000.0) {
                 s.speed_limit_kbps = lim.round() as u64;
+            }
+            // Applies at once: the main window re-reads it every two seconds.
+            let mut only_active = crate::model::ui_pref_bool("limit_only_active", false);
+            let was_active = only_active;
+            checkbox(ui, &mut only_active, "Only while I'm using the computer (full speed after a minute away)", 14.0, 11.5, true);
+            if only_active != was_active {
+                crate::model::ui_pref_set_bool("limit_only_active", only_active);
             }
             let mut c = field_row(
                 ui,
@@ -4092,6 +4344,90 @@ impl SettingsApp {
     fn pane_proxy(&mut self, ui: &mut Ui) {
         h2(ui, "Proxy / Socks");
         hint(ui, "How downloads reach the internet. yt-dlp and video downloads use the same choice.");
+        ui.add_space(10.0);
+        // ---- Network: the adapter lock (VPN only) and encrypted DNS ----
+        let mut open_net = true;
+        let mut adapter = crate::netlock::chosen();
+        let mut dns = crate::model::ui_pref_str("dns_mode", "system");
+        let (adapter_was, dns_was) = (adapter.clone(), dns.clone());
+        card(ui, "Network", None, &mut open_net, |ui| {
+            let t = tok();
+            let list = crate::netlock::adapters();
+            let mut c = field_row(ui, "net_adapter", "Network adapter", None, Some("Hold every download to one adapter, usually your VPN's. While it is not connected nothing downloads (kill switch); downloads stopped by it start again when it is back."));
+            let shown = if adapter.is_empty() { "Any (the system's choice)".to_string() } else { adapter.clone() };
+            egui::ComboBox::from_id_salt("net_adapter_combo").selected_text(shown).width(260.0).show_ui(&mut c, |ui| {
+                ui.selectable_value(&mut adapter, String::new(), "Any (the system's choice)");
+                for (name, ip) in &list {
+                    ui.selectable_value(&mut adapter, name.clone(), format!("{name}  ({ip})"));
+                }
+                if !adapter.is_empty() && !list.iter().any(|(n, _)| *n == adapter) {
+                    let cur = adapter.clone();
+                    ui.selectable_value(&mut adapter, cur.clone(), format!("{cur}  (not connected)"));
+                }
+            });
+            ui.add_space(4.0);
+            let line = crate::netlock::status_line();
+            if !line.is_empty() {
+                wrapped(ui, &line, reg(11.0), if crate::netlock::bind_ip().ok().flatten().is_some() { t.text } else { t.accent });
+            }
+            if cfg!(windows) && !adapter.is_empty() {
+                hint(ui, "Torrents listen on this adapter and wait while it is down; their connections to peers follow Windows' own routing, as most VPNs set it.");
+            }
+            ui.add_space(8.0);
+            let mut c = field_row(ui, "dns_mode", "DNS", None, Some("Who turns server names into addresses. An encrypted one keeps your network from reading or changing the answers."));
+            let shown = crate::netlock::DNS_CHOICES.iter().find(|(k, _)| *k == dns).map(|(_, n)| *n).unwrap_or("System's DNS");
+            egui::ComboBox::from_id_salt("dns_combo").selected_text(shown).width(260.0).show_ui(&mut c, |ui| {
+                for (k, n) in crate::netlock::DNS_CHOICES {
+                    ui.selectable_value(&mut dns, k.to_string(), n);
+                }
+            });
+        });
+        // ---- Torrents: sharing after the download ----
+        let mut open_seed = true;
+        let mut ratio = crate::model::ui_pref_str("seed_ratio", "0");
+        let ratio_was = ratio.clone();
+        ui.add_space(10.0);
+        card(ui, "Torrents", None, &mut open_seed, |ui| {
+            let mut c = field_row(ui, "seed_ratio", "Keep sharing until ratio", None, Some("After a torrent is complete, keep uploading to others until this many times its size went out (at most a day). 0 = stop sharing as soon as it is complete. Right-click a torrent → Choose torrent files… to download only some of its files."));
+            input_box(&mut c, "seed_ratio_in", &mut ratio, 70.0, true, false, "0");
+        });
+        if ratio != ratio_was && ratio.trim().parse::<f64>().is_ok_and(|v| (0.0..=100.0).contains(&v)) {
+            crate::model::ui_pref_set_str("seed_ratio", ratio.trim());
+        }
+        // ---- Debrid account ----
+        let mut open_debrid = true;
+        let mut svc = crate::model::ui_pref_str("debrid_service", "");
+        let mut key = crate::model::ui_pref_str("debrid_key", "");
+        let (svc_was, key_was) = (svc.clone(), key.clone());
+        ui.add_space(10.0);
+        card(ui, "Debrid account", None, &mut open_debrid, |ui| {
+            let mut c = field_row(ui, "debrid_service", "Service", None, Some("Links from file hosts (Rapidgator, 1fichier, Nitroflare, Turbobit, Katfile, Mega…) download through your account there, at full speed. Other links are not touched."));
+            let shown = crate::debrid::SERVICES.iter().find(|(k, _)| *k == svc).map(|(_, n)| *n).unwrap_or("None");
+            egui::ComboBox::from_id_salt("debrid_combo").selected_text(shown).width(200.0).show_ui(&mut c, |ui| {
+                for (k, n) in crate::debrid::SERVICES {
+                    ui.selectable_value(&mut svc, k.to_string(), n);
+                }
+            });
+            if !svc.is_empty() {
+                ui.add_space(6.0);
+                let mut c = field_row(ui, "debrid_key", "API key", None, Some("From the service's account page (Real-Debrid: real-debrid.com/apitoken). Kept in the settings file on this computer."));
+                let w = c.available_width().min(320.0);
+                input_box(&mut c, "debrid_key_in", &mut key, w, false, false, "your API key");
+            }
+        });
+        if svc != svc_was {
+            crate::model::ui_pref_set_str("debrid_service", &svc);
+        }
+        if key != key_was {
+            crate::model::ui_pref_set_str("debrid_key", key.trim());
+        }
+        // Applies at once, like the other switches here.
+        if adapter != adapter_was {
+            crate::model::ui_pref_set_str("net_adapter", &adapter);
+        }
+        if dns != dns_was {
+            crate::model::ui_pref_set_str("dns_mode", &dns);
+        }
         ui.add_space(10.0);
         let s = &mut self.s;
         let mut open = true;

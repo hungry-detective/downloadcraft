@@ -376,8 +376,8 @@ fn record_browser_download(msg: &Incoming) -> Result<(), String> {
 
 /// Queue a pause/resume/cancel order for the app (the same cmd.json the
 /// progress windows use).
-fn app_control(id: Option<u64>, action: &str) -> Result<(), String> {
-    let allowed = ["pause", "resume", "cancel", "pause_all", "resume_all"];
+pub(crate) fn app_control(id: Option<u64>, action: &str) -> Result<(), String> {
+    let allowed = ["pause", "resume", "cancel", "remove", "restart", "pause_all", "resume_all"];
     if !allowed.contains(&action) {
         return Err("unknown action".into());
     }
@@ -402,7 +402,8 @@ fn app_control(id: Option<u64>, action: &str) -> Result<(), String> {
 
 /// The app theme as the extension understands it.
 fn app_theme() -> String {
-    match crate::model::ui_pref_str("theme", "system").as_str() {
+    let theme = crate::model::ui_pref_str("theme", "system");
+    match crate::skins::split(&theme).1 {
         "light" => "light".to_string(),
         "dark" | "black" => "dark".to_string(),
         _ => "system".to_string(),
@@ -928,7 +929,7 @@ fn queue_download(msg: &Incoming) -> Result<bool, String> {
 /// it outlives this short-lived native-host process).
 fn spawn_confirm(msg: &Incoming) {
     let url = msg.url.clone().unwrap_or_default();
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+    if !(url.starts_with("http://") || url.starts_with("https://") || url.starts_with("magnet:?")) {
         return;
     }
     let Ok(exe) = crate::platform::launch_path() else {
@@ -1056,9 +1057,10 @@ pub fn run() -> eframe::Result<()> {
             }
             "download" => {
                 let url = msg.url.clone().unwrap_or_default();
-                let ok = url.starts_with("http://") || url.starts_with("https://");
+                // A magnet link downloads through BitTorrent in the app.
+                let ok = url.starts_with("http://") || url.starts_with("https://") || url.starts_with("magnet:?");
                 if !ok {
-                    write_message(&Reply::err("need http/https url"));
+                    write_message(&Reply::err("need http/https or magnet url"));
                     continue;
                 }
                 // Blob/media-source URLs are not directly downloadable by the

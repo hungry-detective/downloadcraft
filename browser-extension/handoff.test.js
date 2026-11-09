@@ -83,6 +83,8 @@ test('capture disabled or below minimum size leaves Brave in control',async()=>{
 });
 test('direct handoff accepts installers/download anchors and preserves normal navigation',()=>{
   for(const url of ['https://h/a.ZIP?token=x','https://h/a.appimage','https://h/a.exe'])assert.ok(rank.directDownloadLink(url,false));
+  for(const url of ['magnet:?xt=urn:btih:abc&dn=x','https://h/linux.iso.torrent'])assert.ok(rank.directDownloadLink(url,false));
+  assert.equal(rank.directDownloadLink('magnet:',false),false);
   assert.ok(rank.directDownloadLink('https://h/opaque?id=1',true));
   for(const url of ['https://h/watch.mp4','https://h/doc.pdf','https://h/page','blob:https://h/a','javascript:alert(1)'])assert.equal(rank.directDownloadLink(url,false),false);
 });

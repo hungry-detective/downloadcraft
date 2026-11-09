@@ -126,7 +126,7 @@ impl CompleteApp {
         // ---- file summary: 40px doc icon + two lines ----
         // Thin standard-weight outline: the 40px icon scales the 24-unit
         // viewBox, so 2.2 units used to become a chunky 3.7px stroke.
-        dm_icon(&p, at(o, PAD_X, DOC_Y, DOC_S, DOC_S), DmIcon::Doc, DM_ACC, 1.35);
+        dm_icon(&p, at(o, PAD_X, DOC_Y, DOC_S, DOC_S), DmIcon::Doc, DM_ACC(), 1.35);
         p.text(
             egui::pos2(o.x + SUM_X, o.y + DOC_Y),
             egui::Align2::LEFT_TOP,
@@ -209,7 +209,7 @@ impl CompleteApp {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if self.dont_show {
-            p.rect_filled(cbr, 3.0, DM_ACC);
+            p.rect_filled(cbr, 3.0, DM_ACC());
             dm_icon(
                 &p,
                 egui::Rect::from_center_size(cbr.center(), egui::Vec2::splat(9.0)),
@@ -250,12 +250,12 @@ impl CompleteApp {
         o: egui::Pos2,
     ) {
         let c = egui::pos2(o.x + MARK_X + MARK_S / 2.0, o.y + HDR_CY);
-        p.circle_stroke(c, 5.5, egui::Stroke::new(1.3, DM_ACC));
+        p.circle_stroke(c, 5.5, egui::Stroke::new(1.3, DM_ACC()));
         dm_icon(
             p,
             egui::Rect::from_center_size(c, egui::Vec2::splat(8.0)),
             DmIcon::Check,
-            DM_ACC,
+            DM_ACC(),
             1.6,
         );
         p.text(

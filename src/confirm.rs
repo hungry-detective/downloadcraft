@@ -86,6 +86,9 @@ pub(crate) fn load_prefs() -> UiPrefs {
             p.save_dir = s.to_string();
         }
     }
+    if p.save_dir.is_empty() && std::env::var_os("DOWNLOAD_CRAFT_DOWNLOADS").is_some_and(|v| !v.is_empty()) {
+        p.save_dir = crate::model::default_download_dir().to_string_lossy().into_owned();
+    }
     if p.save_dir.is_empty() {
         p.save_dir = dirs::download_dir()
             .map(|x| x.to_string_lossy().to_string())
@@ -377,7 +380,7 @@ fn plus_square(ui: &mut egui::Ui, rect: egui::Rect, salt: u64) -> egui::Response
     p.rect(
         rect,
         DM_RAD,
-        if r.hovered() { DM_ACC2 } else { DM_ACC },
+        if r.hovered() { DM_ACC2() } else { DM_ACC() },
         egui::Stroke::NONE,
         egui::StrokeKind::Inside,
     );
@@ -433,7 +436,7 @@ fn options_menu(
                             egui::Align2::LEFT_CENTER,
                             elide_left(o, 52),
                             reg(11.0),
-                            if o.as_str() == selected { DM_ACC } else { pl().dm_txt },
+                            if o.as_str() == selected { DM_ACC() } else { pl().dm_txt },
                         );
                         if ir.clicked() {
                             picked = Some(o.clone());
@@ -927,6 +930,20 @@ impl ConfirmApp {
 /// Ask the main app to start these ids (consumed on its next poll, or at
 /// startup when we launch it below).
 pub(crate) fn wake_ids(targets: &[u64]) {
+    request_start(targets);
+    // tasklist + cold-start spawn can take seconds (debug builds
+    // especially) — never block the dialog on it; close at once.
+    std::thread::spawn(|| {
+        if !main_app_running() {
+            launch_main_app();
+        }
+    });
+}
+
+/// Write the start request only (`wake.json`), without starting the main
+/// window: for the remote control, whose server is the running window's or
+/// the window-less server mode's, and either reads the request itself.
+pub(crate) fn request_start(targets: &[u64]) {
     if let Some(p) = wake_path() {
         let _guard = crate::model::fs_lock("wake");
         if !_guard.owned() { return; }
@@ -947,13 +964,6 @@ pub(crate) fn wake_ids(targets: &[u64]) {
             let _ = atomic_write(&p, json.as_bytes());
         }
     }
-    // tasklist + cold-start spawn can take seconds (debug builds
-    // especially) — never block the dialog on it; close at once.
-    std::thread::spawn(|| {
-        if !main_app_running() {
-            launch_main_app();
-        }
-    });
 }
 
 /// Entry point for `--confirm-download`. Never returns normally
@@ -1405,7 +1415,7 @@ impl eframe::App for ConfirmApp {
                     egui::Vec2::splat(16.0),
                 ),
                 DmIcon::Grid,
-                DM_ACC,
+                DM_ACC(),
                 0.0,
             );
             let known = !self.probing && self.probe_size.filter(|s| *s > 0).is_some();
@@ -1478,7 +1488,7 @@ impl eframe::App for ConfirmApp {
                 DmIcon::Settings,
                 14.0,
                 1.5,
-                if self.show_adv { DM_ACC } else { pl().dm_dim },
+                if self.show_adv { DM_ACC() } else { pl().dm_dim },
             );
             if r_b.hovered() || g_b.hovered() {
                 ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1653,7 +1663,7 @@ impl eframe::App for ConfirmApp {
             let d_b = ui.interact(dl_r, egui::Id::new("popup-start"), egui::Sense::click());
             let x_b = ui.interact(cancel_r, egui::Id::new("popup-cancel"), egui::Sense::click());
             btn_flat(&p, add_r, a_b.hovered(), "Add");
-            dm_gradient(&p, dl_r, DM_RAD, DM_ACC, DM_ACC2);
+            dm_gradient(&p, dl_r, DM_RAD, DM_ACC(), DM_ACC2());
             if d_b.hovered() {
                 p.rect_filled(dl_r, DM_RAD, egui::Color32::from_white_alpha(22));
             }

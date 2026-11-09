@@ -784,3 +784,84 @@ pub fn frame_unsupported() -> bool {
 pub fn frame_unsupported() -> bool {
     false
 }
+
+
+/// Seconds since the last mouse or keyboard input (0 where unknown).
+#[cfg(windows)]
+pub fn idle_secs() -> u64 {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut li = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    // SAFETY: a correctly sized struct the call fills in.
+    if unsafe { GetLastInputInfo(&mut li) } == 0 {
+        return 0;
+    }
+    let now = unsafe { GetTickCount() };
+    (now.wrapping_sub(li.dwTime) / 1000) as u64
+}
+
+#[cfg(not(windows))]
+pub fn idle_secs() -> u64 {
+    0
+}
+
+
+/// After a crash, the next start asks whether to report it: Yes opens a
+/// GitHub issue filled in with the version, the system and the crash's first
+/// lines, and the full report's folder (nothing is sent by itself).
+pub fn offer_crash_report() {
+    let Some(dir) = crate::model::config_dir().map(|d| d.join("crash-reports")) else { return };
+    let marker = dir.join("pending.txt");
+    let Ok(name) = std::fs::read_to_string(&marker) else { return };
+    let _ = std::fs::remove_file(&marker);
+    let Ok(report) = std::fs::read_to_string(dir.join(name.trim())) else { return };
+    let ask = "Download Craft closed unexpectedly the last time.
+
+Report it on GitHub? A new issue opens in your browser with the details filled in, for you to read and send (nothing is sent by itself).";
+    if !ask_yes_no(ask) {
+        return;
+    }
+    let head: String = report.lines().take(40).collect::<Vec<_>>().join("
+");
+    let title = format!("Crash in {}", crate::model::APP_VERSION);
+    let body = format!("What I was doing:
+
+
+```
+{head}
+```
+(Full report: {})", name.trim());
+    let enc = |s: &str| -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    };
+    let url = format!(
+        "https://github.com/hungry-detective/downloadcraft/issues/new?title={}&body={}",
+        enc(&title),
+        enc(&body.chars().take(5000).collect::<String>())
+    );
+    open_url(&url);
+    open_url(&dir.to_string_lossy());
+}
+
+/// A Yes/No question in a system message box (Yes on platforms without one
+/// is never assumed: they answer No).
+pub fn ask_yes_no(text: &str) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO};
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (body, title) = (wide(text), wide("Download Craft"));
+        // SAFETY: valid, NUL-terminated wide strings.
+        unsafe { MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = text;
+        false
+    }
+}

@@ -157,8 +157,10 @@
   function directDownloadLink(href, downloadAttribute) {
     try {
       const u = new URL(String(href || ""));
+      // Magnet links: the app downloads them through BitTorrent.
+      if (u.protocol === "magnet:") return /^magnet:\?/i.test(String(href));
       if (!/^https?:$/.test(u.protocol)) return false;
-      if (downloadAttribute || /\.(?:zip|7z|rar|tar|tgz|gz|bz2|xz|exe|msi|dmg|pkg|deb|rpm|appimage|iso)(?:$)/i.test(u.pathname)) return true;
+      if (downloadAttribute || /\.(?:zip|7z|rar|tar|tgz|gz|bz2|xz|exe|msi|dmg|pkg|deb|rpm|appimage|iso|torrent)(?:$)/i.test(u.pathname)) return true;
       const m = /\.([a-z0-9]{1,8})$/i.exec(u.pathname);
       return !!m && extraDirect.has(m[1].toLowerCase());
     } catch (e) { return false; }

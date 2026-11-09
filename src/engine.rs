@@ -7,6 +7,11 @@ use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt};
 
 /// Shared state between the UI thread and the download task.
 pub struct SharedState {
+    /// Where the server is and how far ("Germany · about 24 ms (near)"),
+    /// worked out beside the download (src/geo.rs).
+    pub server: Arc<std::sync::Mutex<String>>,
+    /// This download's own speed cap (bytes/s, 0 = none).
+    pub limit_bps: Arc<AtomicU64>,
     pub downloaded: AtomicU64,
     pub total: AtomicU64,
     pub has_total: AtomicBool,
@@ -74,6 +79,8 @@ pub struct SharedState {
 impl SharedState {
     pub fn new() -> Self {
         Self {
+            server: Arc::new(std::sync::Mutex::new(String::new())),
+            limit_bps: Arc::new(AtomicU64::new(0)),
             downloaded: AtomicU64::new(0),
             total: AtomicU64::new(0),
             has_total: AtomicBool::new(false),
@@ -205,6 +212,8 @@ pub struct EngineOpts {
     /// Live scheduler override (speed windows): when present, the rate
     /// limiter honors it over `speed_limit_bps` without restarts.
     pub global_limit: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// This download's own live cap (bytes/s, 0 = none): its progress window.
+    pub own_limit: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// Maximum concurrent connections to ONE host across every download
     /// (Queue v2). 0 = no extra cap. Enforced process-wide, so three
     /// simultaneous jobs cannot open 3×8 sockets to the same server.
@@ -396,6 +405,7 @@ impl Default for EngineOpts {
     fn default() -> Self {
         Self {
             speed_limit_bps: 0,
+            own_limit: None,
             timeout_secs: 60,
             max_retries: 5,
             user_agent: String::new(),
@@ -446,6 +456,11 @@ pub fn job_log_path(key: &str) -> Option<PathBuf> {
 }
 
 /// Append one line to download `key`'s log, keeping the file small.
+/// [`job_log`] for other modules (the torrent one).
+pub fn job_log_pub(key: &str, line: String) {
+    job_log(key, line)
+}
+
 pub fn job_log(key: &str, line: impl AsRef<str>) {
     let Some(path) = job_log_path(key) else { return };
     if let Some(dir) = path.parent() {
@@ -512,6 +527,12 @@ pub fn move_partial(from: &std::path::Path, to: &std::path::Path) -> bool {
     for (a, b) in pairs {
         if !a.is_file() {
             continue;
+        }
+        // The journal belongs to its file's path (the engine's resume key):
+        // re-key it for the new one, or the moved bytes are thrown away and
+        // the download starts again from 0.
+        if a.to_string_lossy().ends_with(".dcjournal") {
+            downloadcraft_engine::rekey_journal(&a, &to.to_string_lossy());
         }
         if let Some(dir) = b.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -611,8 +632,16 @@ impl EngineOpts {
             // transfer, which wrongly kills big files on slow links.
             b = b.connect_timeout(std::time::Duration::from_secs(self.timeout_secs));
         }
-        if !self.any_ip {
-            b = b.local_address(std::net::IpAddr::from([0, 0, 0, 0]));
+        // Settings → Network: held to one adapter (a VPN's), which is also
+        // the kill switch (nothing starts while it is down), and the DNS.
+        let bind = crate::netlock::bind_ip().map_err(anyhow::Error::msg)?;
+        match bind {
+            Some(ip) => b = b.local_address(ip),
+            None if !self.any_ip => b = b.local_address(std::net::IpAddr::from([0, 0, 0, 0])),
+            None => {}
+        }
+        if let Some(r) = crate::netlock::resolver(bind) {
+            b = b.dns_resolver(r);
         }
         if !self.http2 {
             b = b.http1_only();
@@ -1432,6 +1461,11 @@ pub async fn probe(
     url: &str,
 ) -> (Option<u64>, bool, Option<String>, Option<String>) {
     let dbg = std::env::var("DOWNLOAD_CRAFT_DEBUG").is_ok();
+    // A torrent's size and name come from its metadata (src/torrent.rs),
+    // not from an HTTP probe of a magnet link.
+    if crate::torrent::is_torrent(url) || crate::gallery::is_gallery(url) {
+        return (None, false, None, None);
+    }
     // A form (POST) download only exists as that POST: a GET/HEAD probe
     // would ask for something else (often the form page itself).
     if opts.browser.as_ref().is_some_and(|b| b.is_post()) {
@@ -3742,7 +3776,7 @@ async fn download_hls(
         shared.downloaded.store(seeded, Ordering::SeqCst);
     }
     let limiter = std::sync::Arc::new(
-        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()),
+        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()).with_own(opts.own_limit.clone()),
     );
     let abort = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let max_retries = opts.max_retries.max(1);
@@ -4031,7 +4065,7 @@ async fn record_live_hls(
         .await
         .map_err(|e| anyhow!(io_message(&e)))?;
     let limiter = std::sync::Arc::new(
-        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()),
+        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()).with_own(opts.own_limit.clone()),
     );
     let mut keys: std::collections::HashMap<String, [u8; 16]> =
         std::collections::HashMap::new();
@@ -4289,12 +4323,43 @@ async fn sleep_live(shared: &Arc<SharedState>, secs: u64) -> Result<()> {
 /// segment-by-segment; DASH (.mpd) likewise; `ftp://` URLs go to the
 /// plain-FTP backend.
 pub async fn download(
-    url: String, dest: PathBuf, connections: usize, opts: EngineOpts, shared: Arc<SharedState>,
+    url: String, dest: PathBuf, connections: usize, mut opts: EngineOpts, shared: Arc<SharedState>,
 ) -> Result<()> {
+    if opts.own_limit.is_none() {
+        opts.own_limit = Some(shared.limit_bps.clone());
+    }
     shared.expected_duration.store(opts.expected_duration_secs, Ordering::SeqCst);
     shared.expects_audio.store(opts.require_audio, Ordering::SeqCst);
     let log = opts.log_key.clone();
+    // Magnet links and .torrent files go to BitTorrent (src/torrent.rs).
+    if crate::torrent::is_torrent(&url) {
+        job_log(&log, format!("start: {url} (BitTorrent)"));
+        return crate::torrent::download(&url, &dest, shared, &log).await;
+    }
+    // Albums, galleries, artists' pages: every picture, through gallery-dl.
+    if crate::gallery::is_gallery(&url) {
+        job_log(&log, format!("start: {url} (gallery)"));
+        let client = opts.build_client()?;
+        return crate::gallery::download(&url, &dest, client, shared, &log).await;
+    }
+    // A file host's link through the user's debrid account (src/debrid.rs).
+    let url = if crate::debrid::applies(&url) {
+        let client = opts.build_client()?;
+        let (direct, name) = crate::debrid::unlock(&client, &url).await?;
+        job_log(&log, format!("debrid: {url} -> direct link"));
+        if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+            mutex_guard(&shared.resolved_name).replace(sanitize_filename(&n));
+        }
+        direct
+    } else {
+        url
+    };
     job_log(&log, format!("start: {url} ({connections} connections)"));
+    // The server's country and distance, for the progress window.
+    if let Ok(client) = opts.build_client() {
+        let proxied = matches!(proxy_choice(&opts.proxy_url), ProxyChoice::Pac(_) | ProxyChoice::Manual(_));
+        tokio::spawn(crate::geo::measure_owned(url.clone(), proxied, client, shared.server.clone()));
+    }
     if let Err(e) = download_inner(url.clone(), dest.clone(), connections, opts.clone(), shared.clone()).await {
         job_log(&log, format!("failed: {e:#}"));
         if let Err(e) = fallback_chain(e, &url, &dest, connections, &opts, &shared).await {
@@ -4662,7 +4727,7 @@ async fn download_inner(
             let _ = tokio::fs::remove_file(&dest).await;
         }
         let limiter = std::sync::Arc::new(
-            RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()),
+            RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()).with_own(opts.own_limit.clone()),
         );
         return crate::ftp::download_ftp(&url, &dest, &opts, shared, limiter, connections).await;
     }
@@ -5123,7 +5188,7 @@ async fn download_inner(
 
     // One shared bucket so N segments together honor the global cap.
     let limiter = std::sync::Arc::new(
-        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()),
+        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()).with_own(opts.own_limit.clone()),
     );
     // Transfer attempts (max 3 legs): fresh-link retry for refused
     // googlevideo URLs, then single-connection fallback for hosts that
@@ -7132,6 +7197,15 @@ async fn download_with_ytdlp(
             }
         }
     }
+    // Settings → Network: yt-dlp goes out through the same adapter, and does
+    // not start while it is down (the kill switch).
+    match crate::netlock::bind_ip() {
+        Err(e) => return Err(anyhow!(e)),
+        Ok(Some(ip)) => {
+            cmd.arg("--source-address").arg(ip.to_string());
+        }
+        Ok(None) => {}
+    }
     cmd.arg("--no-playlist")
         .arg("--no-warnings")
         .arg("--abort-on-unavailable-fragments")
@@ -7606,7 +7680,7 @@ async fn download_adaptive_inner(
     let a_dest = work.join("a");
     let conns = connections.clamp(1, 32);
     let limiter = std::sync::Arc::new(
-        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()),
+        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()).with_own(opts.own_limit.clone()),
     );
     let sv = Arc::new(SharedState::new());
     let sa = Arc::new(SharedState::new());
@@ -8468,7 +8542,7 @@ pub async fn download_dash(
     let v_dest = work.join("v");
     let a_dest = work.join("a");
     let limiter = std::sync::Arc::new(
-        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()),
+        RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()).with_own(opts.own_limit.clone()),
     );
     let count_v = v
         .timeline_count
@@ -9327,7 +9401,7 @@ async fn post_download(
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let limiter = Arc::new(RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()));
+    let limiter = Arc::new(RateLimiter::new(opts.speed_limit_bps).with_global(opts.global_limit.clone()).with_own(opts.own_limit.clone()));
     let config = dce::Config {
         connections: connections.clamp(1, 32),
         stall_timeout: std::time::Duration::from_secs(opts.timeout_secs.clamp(15, 120)),
@@ -9431,7 +9505,13 @@ fn sync_engine_progress(
             .collect();
         *mutex_guard(&shared.part_done) = segs.iter().map(|s| s.done).collect();
     }
-    shared.downloaded.store(progress.downloaded(), Ordering::SeqCst);
+    // Until the engine has its piece map (read from the resume journal, or
+    // planned fresh) its counter says 0: copying that would drop a download
+    // that already got 20% in the background (the Download window's early
+    // start) back to 0 in the bar and the progress window.
+    if !segs.is_empty() || progress.downloaded() > shared.downloaded.load(Ordering::SeqCst) {
+        shared.downloaded.store(progress.downloaded(), Ordering::SeqCst);
+    }
     shared.resumable.store(progress.resumable(), Ordering::SeqCst);
     if let Some(t) = progress.total().filter(|t| *t > 0) {
         shared.total.store(t, Ordering::SeqCst);

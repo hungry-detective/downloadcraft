@@ -417,8 +417,23 @@ pub fn install_menu_handler() {
             nudge_paint();
         } else if ev.id() == "tray-exit" {
             request_quit();
+        } else {
+            // The other entries (pause all, a running download…) need the
+            // app's state: queued here, done by the next frame.
+            if let Ok(mut q) = TRAY_ACTIONS.lock() {
+                q.push(ev.id().0.clone());
+            }
+            nudge_paint();
         }
     }));
+}
+
+/// Tray menu entries waiting for the frame loop.
+static TRAY_ACTIONS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The tray menu entries clicked since the last frame (their ids).
+pub fn take_actions() -> Vec<String> {
+    TRAY_ACTIONS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
 }
 
 pub fn tooltip() -> &'static str {
@@ -569,7 +584,11 @@ pub fn set_titlebar_color(rgb: (u8, u8, u8)) {
 /// read as one surface, with a fine border around the window.
 pub fn theme_caption(dark: bool) {
     set_titlebar_dark(dark);
-    set_titlebar_color(if dark { (18, 19, 26) } else { (0xEE, 0xF0, 0xF6) });
+    // The active look's own page colour (Petal: its toolbar's, which the
+    // title bar runs into).
+    let p = crate::app::pl();
+    let c = if crate::skins::active() == "petal" { p.header_bg } else { p.bg };
+    set_titlebar_color((c.r(), c.g(), c.b()));
 }
 
 /// Re-apply the last caption theme without touching the window geometry.

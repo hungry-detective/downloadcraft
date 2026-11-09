@@ -23,6 +23,17 @@ mod model;
 mod native_host;
 mod progress;
 mod settings;
+mod torrent;
+mod torrent_pick;
+mod remote;
+mod netlock;
+mod mcp;
+mod geo;
+mod gallery;
+mod debrid;
+mod server;
+mod skins;
+mod theme_files;
 mod setup;
 mod about;
 mod shaped;
@@ -54,6 +65,20 @@ fn install_panic_hook() {
         if let Some(dir) = model::config_dir() {
             let _ = std::fs::create_dir_all(&dir);
             let _ = std::fs::write(dir.join("crash.log"), &msg);
+            // Kept per crash, and offered for a report on the next start.
+            let reports = dir.join("crash-reports");
+            let _ = std::fs::create_dir_all(&reports);
+            let name = format!("crash-{}.txt", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+            let full = format!(
+                "Download Craft {} on {} {}
+
+{msg}",
+                model::APP_VERSION,
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+            let _ = std::fs::write(reports.join(&name), full);
+            let _ = std::fs::write(reports.join("pending.txt"), name);
         }
         eprintln!("{msg}");
         prev(info);
@@ -129,11 +154,44 @@ fn main() -> eframe::Result<()> {
         return window_result(settings::run());
     }
     // "Get ready": what the app needs, with one-click fixes.
+    if let Some(i) = args.iter().position(|a| a == "--torrent-files") {
+        let id = args.get(i + 1).cloned().unwrap_or_default();
+        return window_result(torrent_pick::run(&id));
+    }
     if args.iter().any(|a| a == "--about") {
         return window_result(about::run());
     }
     if args.iter().any(|a| a == "--setup") {
         return window_result(setup::run());
+    }
+    // Server mode: no window; the queue runs by itself and the phone page
+    // is served (src/server.rs).
+    // IDM's command-line switches, for scripts and tools written for it:
+    // /d URL  /p folder  /f file name  /n no questions  /a queue only  /s start queue.
+    if args.iter().skip(1).any(|a| matches!(a.to_ascii_lowercase().as_str(), "/d" | "/s")) {
+        std::process::exit(match idm_switches(&args[1..]) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        });
+    }
+    // AI assistants (MCP) start this as a program: JSON-RPC on stdin/stdout.
+    if args.iter().any(|a| a == "--mcp") {
+        mcp::run();
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--server-code") {
+        server::print_code();
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--server") {
+        if let Err(e) = server::run(&args) {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
     }
     if args.iter().any(|a| a == "--mini") {
         return window_result(basket::run_mini());
@@ -197,6 +255,8 @@ fn main() -> eframe::Result<()> {
     // Site rules for the browser extension: newer ones from the project, at
     // most once a day, off the UI thread.
     std::thread::spawn(crate::native_host::refresh_site_rules);
+    // The last run crashed: offer to report it (once per crash).
+    std::thread::spawn(crate::platform::offer_crash_report);
     let run = |options: eframe::NativeOptions| {
         let rt = rt.clone();
         eframe::run_native(
@@ -214,4 +274,57 @@ fn main() -> eframe::Result<()> {
     drop(_instance);
     crate::model::stop_heartbeat();
     window_result(result)
+}
+
+
+/// IDM-compatible switches (see `main`).
+fn idm_switches(args: &[String]) -> Result<(), String> {
+    let mut url = None;
+    let mut dir = None;
+    let mut name = None;
+    let (mut silent, mut queue_only, mut start_queue) = (false, false, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.to_ascii_lowercase().as_str() {
+            "/d" => url = it.next().cloned(),
+            "/p" => dir = it.next().cloned(),
+            "/f" => name = it.next().cloned(),
+            "/n" => silent = true,
+            "/a" => queue_only = true,
+            "/s" => start_queue = true,
+            "/q" | "/h" => {}
+            _ => {}
+        }
+    }
+    if let Some(url) = url {
+        if !model::is_download_url(&url) {
+            return Err(format!("not a download link: {url}"));
+        }
+        // Without /n (and without /a), IDM asks first: the Download window.
+        if !silent && !queue_only {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let mut c = std::process::Command::new(exe);
+            c.arg("--confirm-download").arg("--url").arg(&url);
+            if let Some(n) = &name {
+                c.arg("--filename").arg(n);
+            }
+            c.spawn().map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        let prefs = confirm::load_prefs();
+        let file = name.unwrap_or_else(|| model::filename_from_url(&url));
+        let mut item = model::DownloadItem::new(0, url, engine::sanitize_filename(&file), dir.unwrap_or(prefs.save_dir.clone()), prefs.connections);
+        let id = match model::append_to_queue(&mut item) {
+            model::AppendResult::Added(id) | model::AppendResult::AlreadyQueued(id) => id,
+            model::AppendResult::Error(e) => return Err(e),
+        };
+        if !queue_only {
+            confirm::wake_ids(&[id]);
+        }
+    }
+    if start_queue {
+        native_host::app_control(None, "resume_all")?;
+        confirm::wake_ids(&[]);
+    }
+    Ok(())
 }

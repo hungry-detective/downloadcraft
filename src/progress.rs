@@ -54,6 +54,8 @@ struct Snap {
     /// The resolution the fetched stream really has ("1280×720"), straight
     /// from the helper's chosen format. Empty while unknown.
     resolution: String,
+    /// Where the server is and how far (empty until measured).
+    server: String,
     parts: Vec<(u64, u64, u64)>, // (start, end, done)
     /// (index, count) while a helper fetches a fragmented stream, which has
     /// no size until it is done: the bar and Part Info count fragments.
@@ -88,6 +90,7 @@ fn read_snap(id: u64) -> Snap {
         .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
+    out.server = e.get("server").and_then(|x| x.as_str()).unwrap_or("").to_string();
     if let Some(arr) = e.get("parts").and_then(|x| x.as_array()) {
         for p in arr.iter().take(32) {
             let n = |i: usize| p.get(i).and_then(|x| x.as_u64()).unwrap_or(0);
@@ -119,6 +122,23 @@ fn read_ui_prefs() -> (String, String) {
         .unwrap_or("nothing")
         .to_string();
     (lim, fin)
+}
+
+/// This download's own speed limit (KB/s, 0 = none).
+fn send_cmd_limit(id: u64, kbps: u64) {
+    let Some(p) = cmd_path() else { return };
+    let _guard = crate::model::fs_lock("cmd");
+    if !_guard.owned() { return; }
+    let mut val: serde_json::Value = std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!([]));
+    if let Some(arr) = val.as_array_mut() {
+        arr.push(serde_json::json!({ "action": "limit_one", "id": id, "kbps": kbps }));
+        if let Ok(json) = serde_json::to_string_pretty(&val) {
+            let _ = crate::model::atomic_write(&p, json.as_bytes());
+        }
+    }
 }
 
 /// Command with a payload (`limit` kbps, `finish` action).
@@ -784,7 +804,7 @@ impl ProgressApp {
                 p.rect_filled(
                     egui::Rect::from_min_max(egui::pos2(r.min.x + 6.0, base_y - 2.0), egui::pos2(r.max.x - 6.0, base_y)),
                     1.0,
-                    DM_ACC2,
+                    DM_ACC2(),
                 );
             }
             if b.hovered() {
@@ -998,9 +1018,12 @@ impl ProgressApp {
             reg(13.0),
         );
         let res = item.resumable || self.snap.resumable;
+        // The server's place and distance share this line (src/geo.rs).
+        let yes_no = if res { "Yes" } else { "No" };
+        let server = self.snap.server.trim();
         row(
-            "Resume Support:",
-            if res { "Yes".into() } else { "No".into() },
+            if server.is_empty() { "Resume Support:" } else { "Resume · Server:" },
+            if server.is_empty() { yes_no.into() } else { format!("{yes_no}  ·  {server}") },
             if res { DM_OK } else { pl().dm_lbl },
             if res { semi(13.0) } else { reg(13.0) },
         );
@@ -1057,7 +1080,7 @@ impl ProgressApp {
         p.text(
             egui::pos2(o.x + PAD_X, o.y + row_y + 15.0),
             egui::Align2::LEFT_CENTER,
-            "Speed limit:",
+            "This download:",
             reg(12.0),
             pl().dm_lbl,
         );
@@ -1071,7 +1094,7 @@ impl ProgressApp {
             let on = self.limit_mb == (k == 1);
             let resp = ui.interact(r, egui::Id::new(("pg-unit", k)), egui::Sense::click());
             if on {
-                p.rect_filled(r, DM_RAD - 1.0, DM_ACC.gamma_multiply(0.9));
+                p.rect_filled(r, DM_RAD - 1.0, DM_ACC().gamma_multiply(0.9));
             } else if resp.hovered() {
                 p.rect_filled(r, DM_RAD - 1.0, pl().dm_hover2);
             }
@@ -1082,7 +1105,7 @@ impl ProgressApp {
         }
         let apply = at(o, IN_R - 76.0, row_y, 76.0, 30.0);
         let ab = ui.interact(apply, egui::Id::new("pg-apply"), egui::Sense::click());
-        dm_gradient(&p, apply, DM_RAD, DM_ACC, DM_ACC2);
+        dm_gradient(&p, apply, DM_RAD, DM_ACC(), DM_ACC2());
         p.text(apply.center(), egui::Align2::CENTER_CENTER, "Apply", semi(12.0), egui::Color32::WHITE);
         if ab.hovered() {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1093,7 +1116,7 @@ impl ProgressApp {
             let v: f64 = if txt.is_empty() { 0.0 } else { txt.parse().unwrap_or(-1.0) };
             if v >= 0.0 {
                 let kbps = (v * if self.limit_mb { 1024.0 } else { 1.0 }).round() as u64;
-                send_cmd_kv("limit", "kbps", serde_json::Value::from(kbps));
+                send_cmd_limit(self.id, kbps);
                 self.limit_known = Some(kbps);
             } else {
                 self.limit_known = None;
@@ -1140,8 +1163,8 @@ impl ProgressApp {
                 .collect();
             // A soft fill under the line: one quad (two triangles) per step.
             let mut mesh = egui::Mesh::default();
-            let fill_top = DM_ACC.gamma_multiply(0.32);
-            let fill_bot = DM_ACC.gamma_multiply(0.02);
+            let fill_top = DM_ACC().gamma_multiply(0.32);
+            let fill_bot = DM_ACC().gamma_multiply(0.02);
             for w in pts.windows(2) {
                 let base = mesh.vertices.len() as u32;
                 mesh.colored_vertex(w[0], fill_top);
@@ -1152,10 +1175,10 @@ impl ProgressApp {
                 mesh.add_triangle(base, base + 2, base + 3);
             }
             p.add(egui::Shape::mesh(mesh));
-            p.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.8, DM_ACC)));
+            p.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.8, DM_ACC())));
             if let Some(last) = pts.last() {
-                p.circle_filled(*last, 3.5, DM_ACC);
-                p.circle_stroke(*last, 5.5, egui::Stroke::new(1.0, DM_ACC.gamma_multiply(0.4)));
+                p.circle_filled(*last, 3.5, DM_ACC());
+                p.circle_stroke(*last, 5.5, egui::Stroke::new(1.0, DM_ACC().gamma_multiply(0.4)));
             }
             let now = self.speed_hist.back().copied().unwrap_or(0.0);
             p.text(
@@ -1256,13 +1279,13 @@ impl ProgressApp {
                 p.rect_filled(
                     r,
                     7.0,
-                    egui::Color32::from_rgba_unmultiplied(DM_ACC.r(), DM_ACC.g(), DM_ACC.b(), 42),
+                    egui::Color32::from_rgba_unmultiplied(DM_ACC().r(), DM_ACC().g(), DM_ACC().b(), 42),
                 );
             }
             p.rect_stroke(
                 r,
                 7.0,
-                egui::Stroke::new(1.0_f32, if sel { DM_ACC } else { pl().dm_box_bd }),
+                egui::Stroke::new(1.0_f32, if sel { DM_ACC() } else { pl().dm_box_bd }),
                 egui::StrokeKind::Inside,
             );
             if b.hovered() {
@@ -1271,13 +1294,13 @@ impl ProgressApp {
             // radio
             let rc = egui::pos2(r.min.x + 15.0, r.center().y);
             if sel {
-                p.circle_filled(rc, 6.0, DM_ACC);
+                p.circle_filled(rc, 6.0, DM_ACC());
                 p.circle_filled(rc, 2.2, egui::Color32::WHITE);
             } else {
                 p.circle_stroke(rc, 6.0, egui::Stroke::new(1.0_f32, pl().dm_box_bd));
             }
             // icon + label
-            let icol = if sel { DM_ACC } else { pl().dm_dim };
+            let icol = if sel { DM_ACC() } else { pl().dm_dim };
             p.text(
                 egui::pos2(r.min.x + 28.0, r.center().y),
                 egui::Align2::LEFT_CENTER,
@@ -1331,12 +1354,16 @@ impl ProgressApp {
                     &p,
                     egui::Rect::from_min_size(egui::pos2(l, track.min.y), egui::vec2(r - l, PROG_H)),
                     PROG_H / 2.0,
-                    DM_ACC,
-                    DM_ACC2,
+                    DM_ACC(),
+                    DM_ACC2(),
                 );
             }
-        } else if let Some(parts) = self.part_spans(item) {
-            // Part by part, as IDM draws it (issue #10): each connection's
+        } else if let Some(parts) = self
+            .part_spans(item)
+            .filter(|_| crate::model::ui_pref_bool("segmented_progress_bar", false))
+        {
+            // Optional (Settings -> Progress windows), off by default: the
+            // Part Info strip below always shows the parts. Part by part, as IDM draws it (issue #10): each connection's
             // bytes fill its own stretch of the bar, so every part moving at
             // once is visible, and a part that finished stands complete.
             let live = self.snap.live && !matches!(item.status, Status::Paused | Status::Completed | Status::Failed(_));
@@ -1355,7 +1382,7 @@ impl ProgressApp {
                     continue;
                 }
                 let fill = egui::Rect::from_min_size(egui::pos2(l, track.min.y), egui::vec2(w, PROG_H));
-                dm_gradient_x(&p, fill, 2.0, DM_ACC, DM_ACC2);
+                dm_gradient_x(&p, fill, 2.0, DM_ACC(), DM_ACC2());
                 if live && *f < 1.0 {
                     let clip = p.with_clip_rect(fill.intersect(p.clip_rect()));
                     let step = 12.0;
@@ -1385,9 +1412,9 @@ impl ProgressApp {
             let live = self.snap.live && !matches!(item.status, Status::Paused | Status::Completed | Status::Failed(_));
             if live {
                 // Soft glow under the filled part.
-                p.rect_filled(fill.expand(2.0), PROG_H / 2.0 + 2.0, DM_ACC2.gamma_multiply(0.18));
+                p.rect_filled(fill.expand(2.0), PROG_H / 2.0 + 2.0, DM_ACC2().gamma_multiply(0.18));
             }
-            dm_gradient_x(&p, fill, PROG_H / 2.0, DM_ACC, DM_ACC2);
+            dm_gradient_x(&p, fill, PROG_H / 2.0, DM_ACC(), DM_ACC2());
             if live {
                 // Diagonal stripes that keep moving and a light sheen that
                 // sweeps across: the bar reads as busy even when the

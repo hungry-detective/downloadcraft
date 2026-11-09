@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2563EB">
+<title>Download Craft Remote</title>
+<style>
+  :root {
+    --bg: #F7F7F7; --card: #FFFFFF; --line: #EBEBEB; --text: #222222; --dim: #6A6A6A;
+    --accent: #2563EB; --accent2: #3B82F6; --ok: #0A7A30; --warn: #8A4B00; --bad: #B32D0E;
+    --track: #EBEBEB; --field: #F2F2F2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0F0F10; --card: #1C1C1E; --line: #333335; --text: #F5F5F7; --dim: #C7C7CC;
+      --ok: #30D158; --warn: #FF9F0A; --bad: #FF8A70; --track: #3A3A3C; --field: #2C2C2E;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line);
+    padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+  header h1 { font-size: 17px; margin: 0; flex: 1; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
+  .dot.on { background: var(--ok); }
+  main { padding: 16px; max-width: 760px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  input { width: 100%; font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px; outline: none; }
+  input:focus { border-color: var(--accent); }
+  button { font: inherit; border: 0; border-radius: 999px; padding: 10px 16px; cursor: pointer; }
+  .primary { background: var(--accent); color: #fff; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .grow { flex: 1; min-width: 0; }
+  .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: var(--dim); font-size: 13px; margin-top: 2px; }
+  .chip { font-size: 12px; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .chip.downloading { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .chip.paused, .chip.queued { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .chip.done { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+  .chip.failed { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .bar { height: 5px; background: var(--track); border-radius: 3px; margin: 10px 0 8px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+  .acts { display: flex; gap: 6px; justify-content: flex-end; }
+  .ghost { background: var(--field); color: var(--text); padding: 8px 14px; font-size: 14px; }
+  .danger { color: var(--bad); }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; overflow-x: auto; }
+  .tabs button { background: var(--card); border: 1px solid var(--line); color: var(--text); padding: 7px 14px; font-size: 14px; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .empty { text-align: center; color: var(--dim); padding: 40px 0; }
+  .msg { color: var(--bad); font-size: 14px; min-height: 20px; margin-top: 8px; }
+  .code { letter-spacing: 6px; text-align: center; font-size: 26px; }
+</style>
+</head>
+<body>
+<header><span class="dot" id="live"></span><h1>Download Craft</h1><button class="ghost" id="pauseAll">Pause all</button></header>
+<main>
+  <section id="pairView" class="card" hidden>
+    <h2 style="margin:0 0 6px;font-size:18px">Pair this device</h2>
+    <p class="meta">On the computer, open Download Craft → Settings → Remote control and type the 6-digit code shown there.</p>
+    <input id="code" class="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+    <div style="height:10px"></div>
+    <input id="devName" placeholder="This device's name (optional)" maxlength="40">
+    <div style="height:12px"></div>
+    <button class="primary" id="pairBtn" style="width:100%">Pair</button>
+    <div class="msg" id="pairMsg"></div>
+  </section>
+  <section id="mainView" hidden>
+    <div class="card">
+      <div class="row">
+        <input id="url" class="grow" placeholder="Paste a link or a magnet link" autocomplete="off">
+        <button class="primary" id="addBtn">Add</button>
+      </div>
+      <div class="msg" id="addMsg"></div>
+    </div>
+    <div class="tabs" id="tabs">
+      <button data-f="all" class="on">All</button><button data-f="active">Active</button>
+      <button data-f="done">Finished</button><button data-f="failed">Failed</button>
+    </div>
+    <div id="list"></div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let token = localStorage.getItem("dcToken") || "";
+let filter = "all";
+let rows = [];
+
+function fmtBytes(b) {
+  if (b == null) return "?";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (i ? b.toFixed(1) : b) + " " + u[i];
+}
+async function api(path, body) {
+  const opts = { headers: { "Authorization": "Bearer " + token } };
+  if (body) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  if (r.status === 401) { token = ""; localStorage.removeItem("dcToken"); show(); throw new Error("not paired"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+function show() {
+  $("pairView").hidden = !!token;
+  $("mainView").hidden = !token;
+  $("pauseAll").hidden = !token;
+}
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function render() {
+  const list = $("list"); list.textContent = "";
+  const shown = rows.filter(r => filter === "all" ||
+    (filter === "active" && ["downloading", "queued", "paused"].includes(r.status)) ||
+    (filter === "done" && r.status === "done") || (filter === "failed" && r.status === "failed"));
+  if (!shown.length) { list.appendChild(el("div", "empty", "Nothing here")); return; }
+  const label = { downloading: "Downloading", queued: "Queued", paused: "Paused", done: "Complete", failed: "Failed" };
+  for (const r of shown) {
+    const c = el("div", "card");
+    const top = el("div", "row");
+    const info = el("div", "grow");
+    info.appendChild(el("div", "name", r.name));
+    let meta = r.status === "done" ? fmtBytes(r.total || r.done)
+      : fmtBytes(r.done) + " of " + fmtBytes(r.total) + (r.status === "downloading" && r.speed > 0 ? " · " + fmtBytes(r.speed) + "/s" : "");
+    if (r.torrent) meta += " · torrent";
+    if (r.error) meta = r.error;
+    info.appendChild(el("div", "meta", meta));
+    top.appendChild(info);
+    top.appendChild(el("span", "chip " + r.status, label[r.status] || r.status));
+    c.appendChild(top);
+    if (r.status !== "done") {
+      const bar = el("div", "bar"); const fill = el("i");
+      fill.style.width = Math.round(Math.max(0, Math.min(1, r.progress)) * 100) + "%";
+      bar.appendChild(fill); c.appendChild(bar);
+    }
+    const acts = el("div", "acts");
+    const act = (text, action, cls) => {
+      const b = el("button", "ghost " + (cls || ""), text);
+      b.onclick = async () => { b.disabled = true; try { await api("/api/control", { id: r.id, action }); await refresh(); } catch (e) { alert(e.message); } b.disabled = false; };
+      acts.appendChild(b);
+    };
+    if (r.status === "downloading") act("Pause", "pause");
+    if (r.status === "paused") act("Resume", "resume");
+    if (r.status === "queued" || r.status === "failed") act(r.status === "failed" ? "Retry" : "Start", r.status === "failed" ? "resume" : "start");
+    act("Remove", "remove", "danger");
+    c.appendChild(acts);
+    list.appendChild(c);
+  }
+}
+async function refresh() {
+  if (!token) return;
+  try { const j = await api("/api/list"); rows = j.rows || []; $("live").classList.add("on"); render(); }
+  catch (e) { $("live").classList.remove("on"); }
+}
+$("pairBtn").onclick = async () => {
+  $("pairMsg").textContent = "";
+  try {
+    const r = await fetch("/api/pair", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: $("code").value.trim(), name: $("devName").value.trim() }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    token = j.token; localStorage.setItem("dcToken", token); show(); refresh();
+  } catch (e) { $("pairMsg").textContent = e.message; }
+};
+$("addBtn").onclick = async () => {
+  const url = $("url").value.trim(); $("addMsg").textContent = "";
+  if (!url) return;
+  try { await api("/api/add", { url }); $("url").value = ""; refresh(); }
+  catch (e) { $("addMsg").textContent = e.message; }
+};
+$("url").addEventListener("keydown", (e) => { if (e.key === "Enter") $("addBtn").click(); });
+$("pauseAll").onclick = async () => { try { await api("/api/control", { action: "pause_all" }); refresh(); } catch (e) {} };
+for (const b of $("tabs").querySelectorAll("button")) {
+  b.onclick = () => { filter = b.dataset.f; for (const x of $("tabs").children) x.classList.toggle("on", x === b); render(); };
+}
+show(); refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>

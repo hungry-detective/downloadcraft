@@ -15,7 +15,10 @@ type PlatformTray = ();
 // ---------- theme ----------
 /// Unified geometry: every card, modal, field, and button across ALL
 /// windows (main, Add-download dialog, progress) uses this radius.
-pub const RADIUS: f32 = 10.0;
+/// Corner radius of panels and controls: the active look's.
+pub fn radius() -> f32 {
+    pl().radius
+}
 
 /// Unified title bar height (`main_window_titlebar.html` `.title-bar`).
 pub const TB_H: f32 = 46.0;
@@ -102,6 +105,15 @@ pub struct Palette {
     pub cg_btn_bd: egui::Color32,
     pub cg_box_txt: egui::Color32,
     pub cg_hover: egui::Color32,
+    /// The accent the dialogs' buttons and progress fills use, and the
+    /// second colour of their gradient (the same colour: a flat accent).
+    pub acc: egui::Color32,
+    pub acc2: egui::Color32,
+    /// Corner radius of panels and controls.
+    pub radius: f32,
+    /// The list's Finished and Failed status dots.
+    pub done: egui::Color32,
+    pub fail: egui::Color32,
 }
 
 pub const DARK_PAL: Palette = Palette {
@@ -113,16 +125,16 @@ pub const DARK_PAL: Palette = Palette {
     // grey: the sidebar and the list read as panels on the window.
     central_bg: egui::Color32::from_rgb(25, 26, 35),
     card_bd: egui::Color32::from_rgb(46, 48, 64),
-    primary: egui::Color32::from_rgb(124, 92, 252),
-    secondary: egui::Color32::from_rgb(184, 93, 255),
+    primary: egui::Color32::from_rgb(0x3B, 0x82, 0xF6),
+    secondary: egui::Color32::from_rgb(0x60, 0xA5, 0xFA),
     txt: egui::Color32::from_rgb(238, 238, 246),
     // Secondary text at 7:1 on the panels (was 140,142,160 — about 5:1).
     dim: egui::Color32::from_rgb(168, 171, 190),
     success: egui::Color32::from_rgb(76, 217, 100),
     warning: egui::Color32::from_rgb(255, 159, 10),
     error: egui::Color32::from_rgb(255, 69, 58),
-    sel_bg: egui::Color32::from_rgba_premultiplied(18, 14, 38, 38),
-    sel_bd: egui::Color32::from_rgb(124, 92, 252),
+    sel_bg: egui::Color32::from_rgba_premultiplied(9, 19, 37, 38),
+    sel_bd: egui::Color32::from_rgb(0x3B, 0x82, 0xF6),
     hover_bg: egui::Color32::from_rgba_premultiplied(15, 16, 19, 26),
     modal_bg: egui::Color32::from_rgb(20, 21, 29),
     modal_bd: egui::Color32::from_rgb(45, 47, 65),
@@ -153,6 +165,11 @@ pub const DARK_PAL: Palette = Palette {
     cg_btn_bd: egui::Color32::from_rgb(58, 60, 78),
     cg_box_txt: egui::Color32::from_rgb(0xcc, 0xcc, 0xcc),
     cg_hover: egui::Color32::from_rgb(36, 37, 50),
+    acc: egui::Color32::from_rgb(0x3b, 0x82, 0xf6),
+    acc2: egui::Color32::from_rgb(0x25, 0x63, 0xEB),
+    radius: 10.0,
+    done: egui::Color32::from_rgb(0x34, 0xd3, 0x99),
+    fail: egui::Color32::from_rgb(0xf8, 0x71, 0x71),
 };
 
 pub const LIGHT_PAL: Palette = Palette {
@@ -162,16 +179,16 @@ pub const LIGHT_PAL: Palette = Palette {
     header_bg: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
     central_bg: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
     card_bd: egui::Color32::from_rgb(0xC8, 0xCD, 0xDC),
-    primary: egui::Color32::from_rgb(124, 92, 252),
-    secondary: egui::Color32::from_rgb(154, 62, 226),
+    primary: egui::Color32::from_rgb(0x25, 0x63, 0xEB),
+    secondary: egui::Color32::from_rgb(0x1D, 0x4E, 0xD8),
     txt: egui::Color32::from_rgb(0x20, 0x24, 0x33),
     // Secondary text at 7:1 on white (was 5F6778, about 5.6:1).
     dim: egui::Color32::from_rgb(0x4A, 0x51, 0x60),
     success: egui::Color32::from_rgb(0x1A, 0xA9, 0x4B),
     warning: egui::Color32::from_rgb(0xB4, 0x6A, 0x05),
     error: egui::Color32::from_rgb(0xD9, 0x2B, 0x1E),
-    sel_bg: egui::Color32::from_rgba_premultiplied(18, 13, 36, 36),
-    sel_bd: egui::Color32::from_rgb(124, 92, 252),
+    sel_bg: egui::Color32::from_rgba_premultiplied(5, 14, 33, 36),
+    sel_bd: egui::Color32::from_rgb(0x25, 0x63, 0xEB),
     hover_bg: egui::Color32::from_rgba_premultiplied(1, 2, 3, 18),
     modal_bg: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
     modal_bd: egui::Color32::from_rgb(0xD5, 0xD9, 0xE6),
@@ -200,6 +217,11 @@ pub const LIGHT_PAL: Palette = Palette {
     cg_btn_bd: egui::Color32::from_rgb(0xC3, 0xC8, 0xD4),
     cg_box_txt: egui::Color32::from_rgb(0x2E, 0x33, 0x40),
     cg_hover: egui::Color32::from_rgb(0xE9, 0xEC, 0xF3),
+    acc: egui::Color32::from_rgb(0x25, 0x63, 0xEB),
+    acc2: egui::Color32::from_rgb(0x3B, 0x82, 0xF6),
+    radius: 10.0,
+    done: egui::Color32::from_rgb(0x34, 0xd3, 0x99),
+    fail: egui::Color32::from_rgb(0xf8, 0x71, 0x71),
 };
 
 thread_local! {
@@ -317,7 +339,14 @@ pub fn visuals_for(theme: &str) -> egui::Visuals {
 /// palette right now? "system" follows the OS and falls back to dark when the
 /// platform reports no theme.
 pub fn theme_is_dark(ctx: &egui::Context, theme: &str) -> bool {
-    match theme {
+    // A Base16 scheme is dark or light by itself.
+    let (look, _) = crate::skins::split(theme);
+    if look.starts_with("user.") {
+        if let Some(d) = crate::theme_files::load(look).and_then(|t| t.fixed_dark()) {
+            return d;
+        }
+    }
+    match crate::skins::split(theme).1 {
         "light" => false,
         "dark" | "black" => true,
         _ => !matches!(
@@ -333,7 +362,9 @@ pub fn theme_is_dark(ctx: &egui::Context, theme: &str) -> bool {
 /// this once at start-up, so they all agree on the theme.
 pub fn apply_theme(ctx: &egui::Context, theme: &str) {
     let dark = theme_is_dark(ctx, theme);
-    set_palette(if dark { DARK_PAL } else { LIGHT_PAL });
+    let (look, mode) = crate::skins::split(theme);
+    let pal = crate::skins::palette(look, dark);
+    set_palette(pal);
     // Pin egui's own preference: with the default (`System`) an OS theme flip
     // would swap in egui's stock visuals for the other theme, while every
     // hand-painted surface kept OUR palette. Pinned, `set_visuals` below
@@ -344,10 +375,12 @@ pub fn apply_theme(ctx: &egui::Context, theme: &str) {
     } else {
         egui::ThemePreference::Light
     });
-    ctx.set_visuals(if theme == "black" {
+    ctx.set_visuals(if look == "craft" && mode == "black" {
         black_visuals()
+    } else if dark {
+        visuals_dark(&pal)
     } else {
-        visuals_for(if dark { "dark" } else { "light" })
+        visuals_light(&pal)
     });
     apply_widget_theme(ctx);
 }
@@ -387,7 +420,7 @@ pub fn apply_widget_theme(ctx: &egui::Context) {
         &mut style.visuals.widgets.active,
         &mut style.visuals.widgets.open,
     ] {
-        w.corner_radius = egui::CornerRadius::same(RADIUS as u8);
+        w.corner_radius = egui::CornerRadius::same(radius() as u8);
     }
     style.text_styles.insert(
         egui::TextStyle::Body,
@@ -466,6 +499,8 @@ const MI_CHECK: &str = "\u{e5ca}";
 /// same group (indented to line up with the ticked one).
 const POPUP_CHECK: &str = "\u{1}";
 const POPUP_INDENT: &str = "\u{2}";
+/// A menu section's heading row ("Mode", "Layout").
+const POPUP_HEAD: &str = "\u{3}";
 const MI_FOLDER_OPEN: &str = "\u{e2c8}";
 const MI_INFO: &str = "\u{e88e}";
 const MI_REPLAY: &str = "\u{e042}";
@@ -473,6 +508,11 @@ const MI_TRANSFORM: &str = "\u{e428}";
 const MI_UNARCHIVE: &str = "\u{e169}";
 const MI_PLAYLIST_ADD: &str = "\u{e03b}";
 const MI_LINK: &str = "\u{e157}";
+const MI_DELETE_SWEEP: &str = "\u{e16c}";
+/// playlist_play: the queue's Start.
+const MI_QUEUE_PLAY: &str = "\u{e05f}";
+const MI_VIEW_LIST: &str = "\u{e8ef}";
+const MI_ALARM: &str = "\u{e855}";
 const MI_REFRESH: &str = "\u{e5d5}";
 const MI_VERIFIED: &str = "\u{e8e8}";
 const MI_DELETE_FOREVER: &str = "\u{e92b}";
@@ -714,7 +754,7 @@ fn icon_btn(ui: &mut egui::Ui, glyph: &str, tip: &str) -> egui::Response {
         [30.0, 30.0],
         egui::Button::new(egui::RichText::new(glyph).size(16.0).color(pl().dim))
             .fill(egui::Color32::TRANSPARENT)
-            .corner_radius(RADIUS),
+            .corner_radius(radius()),
     )
     .on_hover_text(tip)
 }
@@ -987,15 +1027,15 @@ fn mbutton(
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
     let p = ui.painter();
     if primary {
-        p.rect_filled(rect, RADIUS, egui::Color32::from_rgb(108, 62, 220));
+        p.rect_filled(rect, radius(), pl().acc);
     } else {
-        p.rect_filled(rect, RADIUS, pl().surface);
+        p.rect_filled(rect, radius(), pl().surface);
         if man.hover(&rect) {
-            p.rect_filled(rect, RADIUS, pl().surface_lt);
+            p.rect_filled(rect, radius(), pl().surface_lt);
         }
         p.rect_stroke(
             rect,
-            RADIUS,
+            radius(),
             egui::Stroke::new(1.0, pl().modal_bd),
             egui::StrokeKind::Inside,
         );
@@ -1140,7 +1180,7 @@ fn mslider(
         p.circle_filled(
             egui::pos2(kx, ty),
             9.0,
-            egui::Color32::from_rgba_unmultiplied(124, 92, 252, 40),
+            wash(pl().primary, 40),
         );
     }
     p.circle_filled(egui::pos2(kx, ty), 7.0, pl().primary);
@@ -1846,6 +1886,27 @@ fn dragged_width(col: SortCol, start_w: f32, dx: f32) -> f32 {
 
 /// Uniform toolbar metrics: every action button shares one height.
 const TOOL_H: f32 = 32.0;
+/// Ledger's toolbar buttons: a large glyph over the label.
+const LEDGER_TOOL_H: f32 = 54.0;
+/// Petal's: a smaller glyph over a small label.
+const PETAL_TOOL_H: f32 = 42.0;
+
+/// Ledger gives every toolbar action a colour of its own.
+fn ledger_icon_color(icon: &str) -> egui::Color32 {
+    let dark = pl().txt.r() > 128;
+    let c = match icon {
+        MI_ADD | MI_PLAY_CIRCLE => 0x2E9E44,
+        MI_PAUSE_CIRCLE => 0xD98200,
+        MI_STOP_CIRCLE => 0xC42B1C,
+        MI_REORDER => 0x0078D4,
+        MI_PUBLIC => 0x8250DF,
+        MI_QUEUE_PLAY => 0x0078D4,
+        MI_STOP => 0xC42B1C,
+        _ => if dark { 0xB0B0B0 } else { 0x5F5F5F },
+    };
+    let col = egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+    if dark { mix(col, egui::Color32::WHITE, 0.25) } else { col }
+}
 /// Gap between toolbar buttons (`.toolbar { gap: 4px }`).
 const TOOL_GAP: f32 = 4.0;
 
@@ -1875,10 +1936,63 @@ fn tool_button(
     } else {
         ui.painter().layout_no_wrap(label.to_owned(), font.clone(), pl().txt).size().x
     };
-    let w = if label.is_empty() { TOOL_H } else { 10.0 + 16.0 + 7.0 + label_w + 12.0 };
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, TOOL_H), egui::Sense::hover());
+    let look = crate::skins::active();
+    let ledger = look == "ledger" || look == "petal";
+    let w = if look == "petal" {
+        let lw = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(11.0), pl().txt).size().x;
+        if label.is_empty() { PETAL_TOOL_H } else { (lw + 14.0).max(46.0) }
+    } else if ledger {
+        if label.is_empty() { LEDGER_TOOL_H } else { (label_w + 16.0).max(58.0) }
+    } else if label.is_empty() {
+        TOOL_H
+    } else {
+        10.0 + 16.0 + 7.0 + label_w + 12.0
+    };
+    let h = if look == "petal" { PETAL_TOOL_H } else if ledger { LEDGER_TOOL_H } else { TOOL_H };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+    // Screen readers (Narrator, NVDA): the button's name, though it is painted.
+    let spoken = if label.is_empty() { tip.to_string() } else { label.to_string() };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &spoken));
     let hov = enabled && man.hover(&rect);
     let p = ui.painter();
+    if ledger {
+        // A flat button: a pale wash and a hairline under the pointer, a
+        // coloured glyph over its label.
+        if hov {
+            if look == "petal" {
+                p.rect_filled(rect, 10.0, pl().surface_lt);
+            } else {
+                p.rect(rect, 2.0, pl().surface_lt, egui::Stroke::new(1.0_f32, pl().sel_bd.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+            }
+        }
+        let ic = if !enabled {
+            pl().dim.gamma_multiply(0.5)
+        } else if look == "petal" {
+            // Petal: every glyph in the text's ink, as Craft draws them
+            // (black on light, white on dark); only Add download is blue.
+            pl().txt
+        } else {
+            // Ledger too: the text's ink (black on light, white on dark).
+            let _ = ledger_icon_color;
+            pl().txt
+        };
+        let tc = if enabled { pl().txt } else { pl().dim.gamma_multiply(0.6) };
+        if label.is_empty() {
+            p.text(rect.center(), egui::Align2::CENTER_CENTER, icon.to_string(), crate::fonts::icon(26.0), ic);
+        } else {
+            let (isz, lsz, iy, ly) = if look == "petal" { (17.0, 11.0, 14.0, 8.0) } else { (26.0, 11.0, 20.0, 10.0) };
+            p.text(egui::pos2(rect.center().x, rect.min.y + iy), egui::Align2::CENTER_CENTER, icon.to_string(), crate::fonts::icon(isz), ic);
+            p.text(egui::pos2(rect.center().x, rect.max.y - ly), egui::Align2::CENTER_CENTER, label.to_string(), egui::FontId::proportional(lsz), tc);
+        }
+        if enabled && !tip.is_empty() && hov {
+            egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), ui.id().with(("toolbar_tip", label)), egui::PopupAnchor::Pointer)
+                .gap(12.0)
+                .show(|ui| {
+                    ui.label(tip);
+                });
+        }
+        return rect;
+    }
     if hov {
         p.rect_filled(rect, 8.0, pl().surface_lt);
     }
@@ -1931,6 +2045,27 @@ fn tool_button(
 /// up in the accent colour (a soft breathing tint) so the user knows where to
 /// click, instead of a banner pushing the list down.
 fn add_url_button(ui: &mut egui::Ui, man: &ManState, hot: bool) -> egui::Rect {
+    match crate::skins::active() {
+        "ledger" => return tool_button(ui, man, MI_ADD, crate::i18n::t("Add URL"), true, if hot { "A download link is on the clipboard: click to add it" } else { "Add a download by URL" }),
+        "petal" => {
+            // A filled pill in the accent: the one loud control.
+            let label = crate::i18n::t("Add download").to_string();
+            let font = egui::FontId::proportional(13.0);
+            let lw = ui.painter().layout_no_wrap(label.clone(), font.clone(), egui::Color32::WHITE).size().x;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0 + 18.0 + 8.0 + lw + 18.0, TOOL_H + 4.0), egui::Sense::hover());
+            let hov = man.hover(&rect);
+            let p = ui.painter();
+            let fill = if hov { pl().acc2 } else { pl().acc };
+            p.rect_filled(rect, rect.height() / 2.0, fill);
+            if hot {
+                p.rect_stroke(rect.expand(2.5), rect.height() / 2.0 + 2.5, egui::Stroke::new(2.0_f32, pl().acc.gamma_multiply(0.45)), egui::StrokeKind::Outside);
+            }
+            p.text(egui::pos2(rect.min.x + 25.0, rect.center().y), egui::Align2::CENTER_CENTER, MI_ADD, crate::fonts::icon(18.0), egui::Color32::WHITE);
+            p.text(egui::pos2(rect.min.x + 42.0, rect.center().y), egui::Align2::LEFT_CENTER, label, font, egui::Color32::WHITE);
+            return rect;
+        }
+        _ => {}
+    }
     let label = crate::i18n::t("Add URL").to_string();
     let font = egui::FontId::proportional(12.0);
     let label_w = ui.painter().layout_no_wrap(label.clone(), font.clone(), egui::Color32::WHITE).size().x;
@@ -2097,6 +2232,13 @@ enum ToolId {
     StopSel,
     /// Toolbar "Delete": remove the checked rows (dimmed while none is checked).
     Delete,
+    /// Petal: show downloads as cards / as the table.
+    ViewCards,
+    ViewTable,
+    /// Petal: import a list of links (File → Import).
+    Batch,
+    /// Petal: take every finished download off the list.
+    ClearDone,
 }
 
 /// Manual hit-test targets. Layout records (kind, rect) every frame;
@@ -2194,6 +2336,8 @@ enum RowAct {
     Convert(u8),
     Details,
     VerifyChecksum,
+    /// A torrent's "Choose files" window.
+    TorrentFiles,
 }
 
 struct ZipPick {
@@ -2343,6 +2487,21 @@ pub struct CraftApp {
     startup_maintenance_rx: std::sync::mpsc::Receiver<Vec<String>>,
     theme: String,
     theme_applied: String,
+    /// The theme the Theme menu is pointing at, shown live until the
+    /// pointer leaves it.
+    theme_preview: Option<String>,
+    /// The row a Shift+click range starts from (the last plain or Ctrl click).
+    sel_anchor: Option<u64>,
+    /// The row the arrow keys are on.
+    sel_anchor_cursor: Option<u64>,
+    /// The remote control's server while it is switched on (Settings).
+    remote: Option<crate::remote::Handle>,
+    /// Settings → Network's status-bar line ("Via VPN (10.8.0.2)"),
+    /// refreshed with the remote check every two seconds.
+    net_line: String,
+    remote_checked: Option<Instant>,
+    /// Petal shows the table instead of cards (its view switch).
+    petal_table: bool,
     /// The main window is moved into the middle of the work area once, on the
     /// first frame where egui knows the screen geometry.
     placement_done: bool,
@@ -2350,6 +2509,10 @@ pub struct CraftApp {
     /// and 24 px is the OS's missing "double-click the caption" gesture.
     tb_press: Option<(std::time::Instant, egui::Pos2)>,
     tray: Option<PlatformTray>,
+    /// What the tray menu lists now (running downloads and percentages,
+    /// the autostart tick): it is rebuilt only when this changes.
+    tray_sig: String,
+    tray_checked: Option<Instant>,
     details_id: Option<u64>,
     /// The "Refresh download address" window, for one row.
     refresh_dlg: Option<RefreshDlg>,
@@ -2583,9 +2746,18 @@ impl CraftApp {
             startup_maintenance_rx,
             theme: "dark".to_string(),
             theme_applied: String::new(),
+            theme_preview: None,
+            sel_anchor: None,
+            sel_anchor_cursor: None,
+            remote: None,
+            net_line: String::new(),
+            remote_checked: None,
+            petal_table: crate::model::ui_pref_bool("petal_table", false),
             placement_done: false,
             tb_press: None,
             tray: None,
+            tray_sig: String::new(),
+            tray_checked: None,
             details_id: None,
             refresh_dlg: None,
             probing: false,
@@ -2782,6 +2954,7 @@ impl CraftApp {
                     "resumable": task.shared.resumable.load(Ordering::SeqCst),
                     "phase": self.phases.get(id).cloned().unwrap_or_default(),
                     "resolution": resolution,
+                    "server": task.shared.server.lock().map(|g| g.clone()).unwrap_or_default(),
                     "parts": parts,
                     "fragments": [
                         task.shared.frag_index.load(Ordering::SeqCst),
@@ -2818,6 +2991,15 @@ impl CraftApp {
                 "pause" => self.pause(id),
                 "resume" => self.resume(id),
                 "cancel" => self.cancel_task(id),
+                // The phone remote's Remove (the file stays).
+                "remove" => self.remove(id),
+                // A torrent's new choice of files: start it again with it.
+                "restart" => {
+                    if self.tasks.contains_key(&id) {
+                        self.cancel_task(id);
+                        self.start(id);
+                    }
+                }
                 "pause_all" => self.stop_all(),
                 "self_update" => {
                     self.update_auto = false;
@@ -2832,6 +3014,19 @@ impl CraftApp {
                     }
                 }
                 "resume_all" => self.start_queue(),
+                // A progress window's limit for its own download.
+                "limit_one" => {
+                    if let Some(k) = c.get("kbps").and_then(|x| x.as_u64()) {
+                        if let Some(t) = self.tasks.get(&id) {
+                            t.shared.limit_bps.store(k * 1024, Ordering::SeqCst);
+                        }
+                        if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+                            d.limit_kbps = k;
+                        }
+                        self.save_queue();
+                        self.push_log(if k == 0 { format!("#{id}: no speed limit of its own.") } else { format!("#{id}: limited to {k} KB/s.") });
+                    }
+                }
                 "limit" => {
                     if let Some(k) = c.get("kbps").and_then(|x| x.as_u64()) {
                         self.speed_limit_kbps = k;
@@ -3324,17 +3519,50 @@ impl CraftApp {
             23 => self.start_queue(),
             24 => self.stop_queue(),
             14 => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            19 | 20 | 21 | 22 => {
-                self.theme = match act {
-                    19 => "system",
-                    20 => "dark",
-                    21 => "black",
-                    _ => "light",
+            38 => {
+                if let Some(p) = rfd::FileDialog::new().add_filter("Theme", &["json", "yaml", "yml"]).pick_file() {
+                    match crate::theme_files::add(&p) {
+                        Ok(key) => {
+                            let (_, mode) = crate::skins::split(&self.theme);
+                            self.theme = crate::skins::join(&key, mode);
+                            self.save_ui_state();
+                            self.push_log("Theme added.");
+                        }
+                        Err(e) => self.push_log(format!("Add a theme file: {e}")),
+                    }
                 }
-                .to_string();
+            }
+            39 => {
+                if let Some(d) = crate::theme_files::folder() {
+                    open_path(&d, false);
+                }
+            }
+            19..=22 | 26..=28 | 40..=59 => {
+                self.theme = Self::theme_for_act(&self.theme, act);
+                self.theme_preview = None;
                 self.save_ui_state();
             }
             _ => {}
+        }
+    }
+
+    /// The theme key after Theme-menu entry `act`: a mode keeps the look,
+    /// a look keeps the mode.
+    fn theme_for_act(theme: &str, act: u8) -> String {
+        let (look, mode) = crate::skins::split(theme);
+        match act {
+            19 => crate::skins::join(look, "system"),
+            20 => crate::skins::join(look, "dark"),
+            21 => crate::skins::join(look, "black"),
+            22 => crate::skins::join(look, "light"),
+            26 => crate::skins::join("craft", mode),
+            27 => crate::skins::join("ledger", mode),
+            28 => crate::skins::join("petal", mode),
+            40..=59 => crate::theme_files::list()
+                .get((act - 40) as usize)
+                .map(|e| crate::skins::join(&e.key, mode))
+                .unwrap_or_else(|| theme.to_string()),
+            _ => theme.to_string(),
         }
     }
 
@@ -3363,10 +3591,34 @@ impl CraftApp {
             ],
             2 => vec![("Open Queues".into(), 8), ("Settings".into(), 9)],
             3 => vec![
+                ("Mode".into(), 0),
                 ("System".into(), 19),
                 ("Dark".into(), 20),
                 ("Light".into(), 22),
-            ],
+                (String::new(), 0),
+                ("Layout".into(), 0),
+                ("Craft".into(), 26),
+                ("Ledger".into(), 27),
+                ("Petal".into(), 28),
+            ]
+            .into_iter()
+            .chain({
+                // Theme files from the themes folder, then managing them.
+                let files = crate::theme_files::list();
+                let mut v: Vec<(String, u8)> = Vec::new();
+                if !files.is_empty() {
+                    v.push((String::new(), 0));
+                    v.push(("Theme files".into(), 0));
+                    for (i, e) in files.iter().enumerate() {
+                        v.push((e.name.clone(), 40 + i as u8));
+                    }
+                }
+                v.push((String::new(), 0));
+                v.push(("Add a theme file…".into(), 38));
+                v.push(("Open themes folder".into(), 39));
+                v
+            })
+            .collect(),
             _ => vec![("Get ready…".into(), 25), ("About".into(), 10)],
         }
     }
@@ -3425,6 +3677,7 @@ impl CraftApp {
                     open_path(&d.dest_path(), true);
                 }
             }
+            RowAct::TorrentFiles => crate::torrent_pick::spawn(id),
             RowAct::OpenFile => {
                 if let Some(d) = self.downloads.iter().find(|d| d.id == id) {
                     open_path(&d.dest_path(), false);
@@ -4103,7 +4356,10 @@ impl CraftApp {
         // The global limit travels live too: tasks start without a frozen
         // copy of it, so changing it (progress window, slider, Unlimited)
         // reaches downloads already running instead of only the next ones.
-        let global = Some(self.speed_limit_kbps * 1024).filter(|v| *v > 0);
+        // "Only while I'm using the computer": after a minute without mouse
+        // or keyboard, full speed.
+        let away = crate::model::ui_pref_bool("limit_only_active", false) && crate::platform::idle_secs() >= 60;
+        let global = Some(self.speed_limit_kbps * 1024).filter(|v| *v > 0 && !away);
         let v = match (global, window) {
             (Some(g), Some(w)) => g.min(w),
             (Some(g), None) => g,
@@ -4714,6 +4970,7 @@ impl CraftApp {
         shared
             .downloaded
             .store(item.downloaded_bytes, Ordering::SeqCst);
+        shared.limit_bps.store(item.limit_kbps * 1024, Ordering::SeqCst);
         let url = item.url.clone();
         let dest = item.dest_path();
         let conns = item.connections;
@@ -4741,6 +4998,7 @@ impl CraftApp {
             overwrite_existing: item.overwrite_existing,
             quality_pref: item.quality_pref.clone(),
             global_limit: Some(self.speed_limit_live.clone()),
+            own_limit: Some(shared.limit_bps.clone()),
             per_host_conns: self.per_host_conns,
             browser: item.browser.clone(),
             ytdlp_visitor_data: String::new(),
@@ -5010,6 +5268,15 @@ impl CraftApp {
         let mut urls: Vec<String> = Vec::new();
         for f in dropped {
             if let Some(p) = f.path {
+                // A .torrent file dropped on the window downloads through
+                // BitTorrent, from the file itself.
+                if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("torrent")) {
+                    let s = p.to_string_lossy().into_owned();
+                    if !urls.contains(&s) {
+                        urls.push(s);
+                    }
+                    continue;
+                }
                 for u in crate::basket::urls_from_dropped(&p) {
                     if !urls.contains(&u) {
                         urls.push(u);
@@ -5018,7 +5285,7 @@ impl CraftApp {
             }
         }
         match urls.len() {
-            0 => self.push_log("Nothing to download in the dropped file (drop .url shortcuts or text lists of links)."),
+            0 => self.push_log("Nothing to download in the dropped file (drop .torrent files, .url shortcuts or text lists of links)."),
             1 => {
                 self.add_file = filename_from_url(&urls[0]);
                 self.add_url = urls.remove(0);
@@ -5193,6 +5460,64 @@ impl CraftApp {
                 }
             }
         }
+        // Keyboard control: arrows move through the list (Shift extends the
+        // selection), Home/End jump, Ctrl+N adds a download, and Ctrl +/-/0
+        // change the interface size, as in a browser.
+        let (up, down, home, end, shift, new, zin, zout, zreset) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::Home),
+                i.key_pressed(egui::Key::End),
+                i.modifiers.shift,
+                i.modifiers.command && i.key_pressed(egui::Key::N),
+                i.modifiers.command && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals)),
+                i.modifiers.command && i.key_pressed(egui::Key::Minus),
+                i.modifiers.command && i.key_pressed(egui::Key::Num0),
+            )
+        });
+        if new {
+            self.do_menu_act(ctx, 1);
+            return;
+        }
+        if zin || zout || zreset {
+            let pct = (self.ui_scale * 100.0).round() as i64;
+            let pct = if zreset { 100 } else if zin { pct + 10 } else { pct - 10 }.clamp(75, 200);
+            self.ui_scale = pct as f32 / 100.0;
+            crate::model::ui_pref_set_u64("ui_scale", pct as u64);
+            return;
+        }
+        if up || down || home || end {
+            let order = self.visible_ids();
+            if order.is_empty() {
+                return;
+            }
+            let cur = self.sel_anchor_cursor.and_then(|c| order.iter().position(|x| *x == c));
+            let next = match (cur, up, down, home) {
+                (_, _, _, true) => 0,
+                (_, _, _, _) if end => order.len() - 1,
+                (Some(i), true, _, _) => i.saturating_sub(1),
+                (Some(i), _, true, _) => (i + 1).min(order.len() - 1),
+                (None, _, _, _) => 0,
+                (Some(i), _, _, _) => i,
+            };
+            let target = order[next];
+            if shift {
+                let anchor = self.sel_anchor.filter(|a| order.contains(a)).unwrap_or(target);
+                let (a, b) = (order.iter().position(|x| *x == anchor).unwrap_or(next), next);
+                let span: std::collections::HashSet<u64> = order[a.min(b)..=a.max(b)].iter().copied().collect();
+                for d in self.downloads.iter_mut() {
+                    d.selected = span.contains(&d.id);
+                }
+            } else {
+                for d in self.downloads.iter_mut() {
+                    d.selected = d.id == target;
+                }
+                self.sel_anchor = Some(target);
+            }
+            self.sel_anchor_cursor = Some(target);
+            return;
+        }
         let ids = self.selected_ids();
         if ids.is_empty() {
             return;
@@ -5267,6 +5592,464 @@ impl CraftApp {
     }
 
     /// Pause everything right now and stop the queue pump.
+    /// Start, stop or move the remote control's server to follow Settings
+    /// (checked every two seconds).
+    fn remote_tick(&mut self) {
+        if self.remote_checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+            return;
+        }
+        self.remote_checked = Some(Instant::now());
+        if crate::model::ui_pref_bool("limit_only_active", false) {
+            self.refresh_speed_limit();
+        }
+        // The adapter lock: its line, and downloads its kill switch stopped
+        // start again once the adapter is back.
+        self.net_line = crate::netlock::status_line();
+        if matches!(crate::netlock::bind_ip(), Ok(Some(_))) {
+            let back: Vec<u64> = self
+                .downloads
+                .iter()
+                .filter(|d| matches!(&d.status, Status::Failed(e) if e.contains(crate::netlock::NOT_CONNECTED)))
+                .map(|d| d.id)
+                .collect();
+            for id in back {
+                self.push_log(format!("The network adapter is back: starting #{id} again."));
+                self.resume(id);
+            }
+        }
+        let on = crate::model::ui_pref_bool("remote_enabled", false);
+        let port = crate::model::ui_pref_str("remote_port", "")
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|p| *p >= 1024)
+            .unwrap_or(crate::remote::DEFAULT_PORT);
+        let https = crate::remote::https_on();
+        match (&self.remote, on) {
+            (Some(h), true) if h.port == port && h.https == https => {}
+            (_, true) => {
+                self.remote = None;
+                self.remote = Some(crate::remote::Handle::start(&self.rt, port));
+                self.push_log(format!("Remote control is on (port {port})."));
+            }
+            (Some(_), false) => {
+                self.remote = None;
+                self.push_log("Remote control is off.");
+            }
+            (None, false) => {}
+        }
+    }
+
+    /// Petal's toolbar: a full-width strip under the menus, every action a
+    /// glyph over its label, groups split by hairlines, and the rose
+    /// "Add download" pill at the far right.
+    fn petal_toolbar(&mut self, ctx: &egui::Context) {
+        let n_checked = self.selected_ids().len();
+        let idle = self.tasks.is_empty();
+        let has_done = self.downloads.iter().any(|d| matches!(d.status, Status::Completed));
+        let has_paused = self.downloads.iter().any(|d| matches!(d.status, Status::Paused | Status::Queued | Status::Failed(_)));
+        let t = |s: &str| crate::i18n::t(s).to_string();
+        let table = self.petal_table;
+        egui::TopBottomPanel::top("petal_toolbar")
+            .exact_height(PETAL_TOOL_H + 12.0)
+            .frame(egui::Frame::new().fill(pl().header_bg).inner_margin(egui::Margin::symmetric(12, 6)))
+            .show(ctx, |ui| {
+                let full = ui.max_rect();
+                ui.painter().hline((full.min.x - 12.0)..=(full.max.x + 12.0), full.max.y + 5.5, egui::Stroke::new(1.0_f32, pl().card_bd));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+                    let groups: [Vec<(ToolId, &str, String, bool)>; 4] = [
+                        vec![
+                            (ToolId::AddUrl, MI_LINK, t("Add URL"), true),
+                            (ToolId::Batch, MI_PLAYLIST_ADD, t("Batch"), true),
+                        ],
+                        vec![
+                            (ToolId::ResumeSel, MI_PLAY, t("Resume"), has_paused || n_checked > 0),
+                            (ToolId::StopSel, MI_PAUSE, t("Pause"), !idle),
+                            (ToolId::StopAll, MI_PAUSE_CIRCLE, t("Pause all"), !idle),
+                        ],
+                        vec![
+                            (ToolId::Delete, MI_DELETE, t("Delete"), n_checked > 0),
+                            (ToolId::ClearDone, MI_DELETE_SWEEP, t("Clear done"), has_done),
+                        ],
+                        vec![
+                            (ToolId::Settings, MI_TUNE, t("Options"), true),
+                            (ToolId::Queues, MI_ALARM, t("Scheduler"), true),
+                            (ToolId::Grabber, MI_PUBLIC, t("Grabber"), true),
+                            (ToolId::StartQueue, MI_PLAY_CIRCLE, t("Start queue"), true),
+                            (ToolId::StopQueue, MI_STOP_CIRCLE, t("Stop queue"), !idle),
+                        ],
+                    ];
+                    // The view switch and the pill keep their room; tools
+                    // that do not fit drop off the end (all are in the menus).
+                    let pill_w = 16.0 + 18.0 + 8.0 + ui.painter().layout_no_wrap(t("Add download"), egui::FontId::proportional(13.0), pl().txt).size().x + 18.0;
+                    let room = ui.available_width() - pill_w - 84.0 - 16.0;
+                    let mut used = 0.0;
+                    let mut full_row = true;
+                    'groups: for (gi, group) in groups.iter().enumerate() {
+                        if gi > 0 {
+                            if used + 60.0 > room {
+                                break;
+                            }
+                            let (sep, _) = ui.allocate_exact_size(egui::vec2(11.0, PETAL_TOOL_H), egui::Sense::hover());
+                            ui.painter().vline(sep.center().x, (sep.min.y + 8.0)..=(sep.max.y - 8.0), egui::Stroke::new(1.0_f32, pl().card_bd));
+                            used += 13.0;
+                        }
+                        for (id, icon, label, enabled) in group.iter() {
+                            let lw = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(11.0), pl().txt).size().x;
+                            if used + (lw + 14.0).max(46.0) > room {
+                                full_row = false;
+                                break 'groups;
+                            }
+                            let r = tool_button(ui, &self.man, icon, label, *enabled, "");
+                            used += r.width() + 2.0;
+                            self.hits.push((HitKind::Tool(*id), r));
+                        }
+                    }
+                    let _ = full_row;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // View switch: cards | table, in a soft trough.
+                        let (sw, _) = ui.allocate_exact_size(egui::vec2(76.0, 32.0), egui::Sense::hover());
+                        let p = ui.painter();
+                        p.rect_filled(sw, 10.0, pl().surface_lt);
+                        let halves = [
+                            (egui::Rect::from_min_size(sw.min + egui::vec2(3.0, 3.0), egui::vec2(34.0, 26.0)), MI_GRID, !table, ToolId::ViewCards),
+                            (egui::Rect::from_min_size(sw.min + egui::vec2(39.0, 3.0), egui::vec2(34.0, 26.0)), MI_VIEW_LIST, table, ToolId::ViewTable),
+                        ];
+                        for (r, icon, on, id) in halves {
+                            if on {
+                                p.rect_filled(r, 8.0, pl().central_bg);
+                            }
+                            let c = if on || self.man.hover(&r) { pl().txt } else { pl().dim };
+                            p.text(r.center(), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), c);
+                            self.hits.push((HitKind::Tool(id), r));
+                        }
+                        ui.add_space(12.0);
+                        let r = add_url_button(ui, &self.man, self.clipboard_url.is_some());
+                        self.hits.push((HitKind::Tool(ToolId::AddUrl), r));
+                    });
+                });
+            });
+    }
+
+    /// Petal's sidebar: flush with the window (no card), a Library section
+    /// (all, running, unfinished, finished, failed) and the categories, each
+    /// with a coloured glyph and its count; the open one sits in a soft pill.
+    #[allow(clippy::too_many_arguments)]
+    fn petal_sidebar(
+        &mut self,
+        ctx: &egui::Context,
+        n_all: usize,
+        n_active: usize,
+        n_incomplete: usize,
+        n_done: usize,
+        n_failed: usize,
+        cat_n: &std::collections::HashMap<&str, usize>,
+    ) {
+        let t = |s: &str| crate::i18n::t(s).to_string();
+        let rgb = |c: u32| egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+        let dark = pl().txt.r() > 128;
+        // One ink for every glyph, as in Craft.
+        let _ = (rgb, dark);
+        let tone = |_c: u32| pl().txt;
+        let library: Vec<(&str, &str, String, usize, egui::Color32)> = vec![
+            ("All", MI_GET_APP, t("All downloads"), n_all, pl().txt),
+            ("Downloading", MI_ARROW_DOWN, t("Downloading"), n_active, tone(0x0A84FF)),
+            ("Unfinished", MI_SCHEDULE, t("Unfinished"), n_incomplete, tone(0xD97706)),
+            ("Completed", MI_CHECK_CIRCLE, t("Finished"), n_done, tone(0x16A34A)),
+            ("Failed", MI_CANCEL, t("Failed"), n_failed, tone(0xDC2626)),
+        ];
+        let cats: Vec<(&str, &str, String, egui::Color32)> = vec![
+            ("Compressed", MI_ARCHIVE, t("Compressed"), tone(0xEA580C)),
+            ("Document", MI_DOC, t("Documents"), tone(0x2563EB)),
+            ("Music", MI_MUSIC, t("Music"), tone(0xC026D3)),
+            ("Apps", MI_GRID, t("Programs"), tone(0x16A34A)),
+            ("Video", MI_SLIDESHOW, t("Video"), tone(0xDC2626)),
+            ("Image", MI_IMAGE, t("Pictures"), tone(0x0891B2)),
+        ];
+        let cur = self.filter.clone();
+        egui::SidePanel::left("petal_side")
+            .resizable(false)
+            .exact_width(200.0)
+            .frame(egui::Frame::new().fill(pl().header_bg).inner_margin(egui::Margin { left: 10, right: 10, top: 10, bottom: 10 }))
+            .show(ctx, |ui| {
+                let full = ui.max_rect();
+                ui.painter().vline(full.max.x + 9.5, (full.min.y - 10.0)..=(full.max.y + 10.0), egui::Stroke::new(1.0_f32, pl().card_bd));
+                ui.spacing_mut().item_spacing.y = 1.0;
+                egui::ScrollArea::vertical().id_salt("petal_side_scroll").auto_shrink([false, false]).show(ui, |ui| {
+                    let mut row = |ui: &mut egui::Ui, key: &str, icon: &str, label: &str, n: usize, col: egui::Color32| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
+                        let on = cur == key || (key == "Unfinished" && cur == "Incomplete");
+                        let hov = self.man.hover(&r);
+                        let p = ui.painter();
+                        if on {
+                            p.rect_filled(r, 8.0, pl().surface_lt);
+                        } else if hov {
+                            p.rect_filled(r, 8.0, pl().hover_bg);
+                        }
+                        p.text(egui::pos2(r.min.x + 18.0, r.center().y), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), col);
+                        let font = if on { crate::fonts::semi(12.5) } else { egui::FontId::proportional(12.5) };
+                        p.text(egui::pos2(r.min.x + 36.0, r.center().y), egui::Align2::LEFT_CENTER, label, font, pl().txt);
+                        p.text(egui::pos2(r.max.x - 10.0, r.center().y), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(11.0), pl().dim);
+                        self.hits.push((HitKind::SideRow(key.to_string()), r));
+                    };
+                    let head = |ui: &mut egui::Ui, title: &str| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::hover());
+                        ui.painter().text(egui::pos2(r.min.x + 10.0, r.center().y + 1.0), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.0), pl().dim);
+                    };
+                    head(ui, &t("Library"));
+                    for (key, icon, label, n, col) in &library {
+                        row(ui, key, icon, label, *n, *col);
+                    }
+                    ui.add_space(6.0);
+                    head(ui, &t("Categories"));
+                    for (key, icon, label, col) in &cats {
+                        let n = cat_n.get(key).copied().unwrap_or(0);
+                        row(ui, key, icon, label, n, *col);
+                    }
+                });
+            });
+    }
+
+    /// Petal's summary tiles: speed, active, queued and finished, each a
+    /// card with its number large and a tinted glyph.
+    fn petal_tiles(&mut self, ui: &mut egui::Ui) {
+        let speed: f64 = self.downloads.iter().map(|d| d.speed_bps).sum();
+        let count = |f: fn(&Status) -> bool| self.downloads.iter().filter(|d| f(&d.status)).count();
+        let active = count(|s| matches!(s, Status::Downloading));
+        let queued = count(|s| matches!(s, Status::Queued | Status::Paused));
+        let done = count(|s| matches!(s, Status::Completed));
+        // Idle: a zero in the same unit, not a dash.
+        let sp = if speed > 0.0 { format_speed(speed) } else { "0 KB/s".to_string() };
+        let (sv, su) = sp.split_once(' ').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((sp.clone(), String::new()));
+        let t = |s: &str| crate::i18n::t(s).to_string();
+        let tiles = [
+            (t("Speed"), sv, su, MI_SPEED, pl().txt),
+            (t("Active"), active.to_string(), t("downloading"), MI_ARROW_DOWN, pl().txt),
+            (t("Queued"), queued.to_string(), t("waiting"), MI_SCHEDULE, pl().txt),
+            (t("Finished"), done.to_string(), t("done"), MI_CHECK_CIRCLE, pl().txt),
+        ];
+        let gap = 16.0;
+        let w = ((ui.available_width() - 12.0 - gap * 3.0) / 4.0).max(90.0);
+        let h = 62.0;
+        let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::hover());
+        let p = ui.painter();
+        for (i, (title, val, unit, icon, tint)) in tiles.into_iter().enumerate() {
+            let r = egui::Rect::from_min_size(egui::pos2(row.min.x + 12.0 + i as f32 * (w + gap), row.min.y), egui::vec2(w, h));
+            p.rect(r, radius(), pl().central_bg, egui::Stroke::new(1.0_f32, pl().card_bd), egui::StrokeKind::Inside);
+            p.text(egui::pos2(r.min.x + 14.0, r.min.y + 15.0), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.0), pl().dim);
+            let g = p.layout_no_wrap(val, egui::FontId::proportional(19.0), pl().txt);
+            let vw = g.size().x;
+            p.galley(egui::pos2(r.min.x + 14.0, r.max.y - 15.0 - g.size().y / 2.0 - 1.0), g, pl().txt);
+            p.text(egui::pos2(r.min.x + 19.0 + vw, r.max.y - 15.0), egui::Align2::LEFT_CENTER, unit, egui::FontId::proportional(10.5), pl().dim);
+            let c = egui::pos2(r.max.x - 22.0, r.min.y + 21.0);
+            p.circle_filled(c, 12.0, wash(tint, 22));
+            p.text(c, egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(14.0), tint);
+        }
+        ui.add_space(8.0);
+    }
+
+    /// Petal's list: every download a card (file badge, name, size and
+    /// category, a state chip, a progress bar while it runs, a line of
+    /// figures, and its actions). Click selects, right-click the menu,
+    /// double-click as in the table: the same hits the table records.
+    fn petal_cards(&mut self, ui: &mut egui::Ui, ids: &[u64]) {
+        modern_scrollbars(ui);
+        let body_h = (ui.available_height() - 4.0).max(80.0);
+        egui::ScrollArea::vertical()
+            .id_salt("dl_cards")
+            .max_height(body_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let view = ui.clip_rect();
+                for &id in ids {
+                    let Some(d) = self.downloads.iter().find(|d| d.id == id) else { continue };
+                    let running = matches!(d.status, Status::Downloading);
+                    let with_bar = running || matches!(d.status, Status::Paused);
+                    let h = if with_bar { 80.0 } else { 68.0 };
+                    let (outer, oresp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h + 6.0), egui::Sense::hover());
+                    let spoken = format!("{}, {}, {}%", d.filename, d.status.label(), (d.progress() * 100.0) as u32);
+                    oresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, d.selected, &spoken));
+                    let r = egui::Rect::from_min_size(outer.min + egui::vec2(24.0, 6.0), egui::vec2(outer.width() - 40.0, h));
+                    if !r.intersects(view) {
+                        continue;
+                    }
+                    let p = ui.painter().clone();
+                    let hov = self.man.hover(&r);
+                    let (chip, chip_c) = match &d.status {
+                        Status::Downloading => (crate::i18n::t("Downloading").to_string(), pl().acc),
+                        Status::Paused => (crate::i18n::t("Paused").to_string(), pl().warning),
+                        Status::Queued => (crate::i18n::t("Queued").to_string(), pl().dim),
+                        Status::Completed => (crate::i18n::t("Complete").to_string(), pl().done),
+                        Status::Failed(_) => (crate::i18n::t("Failed").to_string(), pl().fail),
+                    };
+                    let edge = if d.selected { pl().acc } else if hov { pl().dim.gamma_multiply(0.5) } else { pl().card_bd };
+                    let fill = if d.selected { mix(pl().central_bg, pl().acc, 0.06) } else { pl().central_bg };
+                    p.rect(r, radius(), fill, egui::Stroke::new(if d.selected { 2.0 } else { 1.0 }, edge), egui::StrokeKind::Inside);
+                    self.hits.push((HitKind::Row(id), r.intersect(view)));
+                    // File badge.
+                    let cat = d.category().to_string();
+                    let badge = egui::Rect::from_min_size(r.min + egui::vec2(12.0, 11.0), egui::vec2(34.0, 34.0));
+                    p.rect_filled(badge, 8.0, wash(chip_c, 36));
+                    line_icon(&p, badge.center(), 16.0, &cat, chip_c);
+                    // Name, then size and category.
+                    let tx = badge.max.x + 12.0;
+                    let chip_font = egui::FontId::proportional(10.5);
+                    let cw = p.layout_no_wrap(chip.clone(), chip_font.clone(), chip_c).size().x + 24.0;
+                    let name_w = (r.max.x - 12.0 - cw - 12.0 - tx).max(40.0);
+                    let name = truncate_to_width(&p, &d.filename, egui::FontId::proportional(13.0), pl().txt, name_w);
+                    crate::shaped::draw(&p, egui::pos2(tx, badge.min.y + 8.0), egui::Align2::LEFT_CENTER, &name, egui::FontId::proportional(13.0), pl().txt);
+                    let size = d.total_bytes.map(format_bytes).unwrap_or_else(|| "--".into());
+                    p.text(egui::pos2(tx, badge.min.y + 26.0), egui::Align2::LEFT_CENTER, format!("{size} · {}", crate::i18n::t(&cat)), egui::FontId::proportional(11.0), pl().dim);
+                    // State chip.
+                    let cr = egui::Rect::from_min_size(egui::pos2(r.max.x - 12.0 - cw, r.min.y + 10.0), egui::vec2(cw, 20.0));
+                    p.rect_filled(cr, 10.0, wash(chip_c, 34));
+                    p.circle_filled(egui::pos2(cr.min.x + 11.0, cr.center().y), 3.0, chip_c);
+                    p.text(egui::pos2(cr.min.x + 19.0, cr.center().y), egui::Align2::LEFT_CENTER, chip, chip_font, chip_c);
+                    // Progress bar while it runs or waits half-done.
+                    // Figures and buttons on the card's last line.
+                    let mut line_y = r.max.y - 13.0;
+                    if with_bar {
+                        let bar = egui::Rect::from_min_size(egui::pos2(r.min.x + 12.0, badge.max.y + 6.0), egui::vec2(r.width() - 24.0, 4.0));
+                        p.rect_filled(bar, 2.0, pl().track);
+                        let f = d.progress().clamp(0.0, 1.0);
+                        if f > 0.0 {
+                            p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2((bar.width() * f).max(4.0), 4.0)), 2.0, if running { pl().acc } else { pl().warning });
+                        }
+                        line_y = bar.max.y + 11.0;
+                    }
+                    // Figures.
+                    let figures = match &d.status {
+                        Status::Downloading => {
+                            // Speed and time left only once they are known.
+                            let mut parts = vec![format!("{}%", (d.progress() * 100.0) as u32)];
+                            if d.speed_bps > 0.0 {
+                                parts.push(format_speed(d.speed_bps));
+                            }
+                            let eta = format_eta(d);
+                            if !eta.trim().is_empty() && eta.trim() != "-" && eta.trim() != "--" {
+                                parts.push(eta);
+                            }
+                            parts.join("  ·  ")
+                        }
+                        Status::Paused => format!("{}%  ·  {}", (d.progress() * 100.0) as u32, crate::i18n::t("Paused")),
+                        Status::Completed => format!("{}  ·  {}", crate::i18n::t("Completed"), relative_time(&d.created_at)),
+                        Status::Failed(e) => e.chars().take(80).collect(),
+                        Status::Queued => crate::i18n::t("Waiting in the queue").to_string(),
+                    };
+                    let fx = if with_bar { r.min.x + 12.0 } else { tx };
+                    let fw = (r.max.x - fx - 100.0).max(40.0);
+                    let figures = truncate_to_width(&p, &figures, egui::FontId::proportional(11.5), pl().dim, fw);
+                    p.text(egui::pos2(if with_bar { r.min.x + 12.0 } else { tx }, line_y), egui::Align2::LEFT_CENTER, figures, egui::FontId::proportional(11.0), pl().dim);
+                    // Actions: pause/resume (or open), folder, remove.
+                    let acts: [(&str, RowAct); 3] = [
+                        match &d.status {
+                            Status::Downloading => (MI_PAUSE, RowAct::Pause),
+                            Status::Completed => (MI_OPEN, RowAct::OpenFile),
+                            _ => (MI_PLAY, RowAct::Resume),
+                        },
+                        (MI_FOLDER_OPEN, RowAct::OpenFolder),
+                        (MI_CANCEL, RowAct::Remove),
+                    ];
+                    for (k, (icon, act)) in acts.into_iter().enumerate() {
+                        let b = egui::Rect::from_center_size(egui::pos2(r.max.x - 22.0 - (2 - k) as f32 * 26.0, line_y), egui::vec2(24.0, 22.0));
+                        let bh = self.man.hover(&b);
+                        if bh {
+                            p.rect_filled(b, 6.0, pl().surface_lt);
+                        }
+                        p.text(b.center(), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(15.0), if bh { pl().txt } else { pl().dim });
+                        self.hits.push((HitKind::CtxItem(act, id), b.intersect(view)));
+                    }
+                }
+                ui.add_space(10.0);
+            });
+    }
+
+    /// Tray menu: act on what was clicked, and keep its list of running
+    /// downloads (and the tooltip's speed) current, checked twice a second.
+    #[cfg(windows)]
+    fn tray_tick(&mut self, ctx: &egui::Context) {
+        for id in crate::tray::take_actions() {
+            match id.as_str() {
+                "tray-pause-all" => self.stop_all(),
+                "tray-resume-all" => {
+                    let ids: Vec<u64> = self
+                        .downloads
+                        .iter()
+                        .filter(|d| matches!(d.status, Status::Paused | Status::Queued))
+                        .map(|d| d.id)
+                        .collect();
+                    for id in ids {
+                        self.resume(id);
+                    }
+                }
+                "tray-clip" => {
+                    let text = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).unwrap_or_default();
+                    crate::tray::show();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.do_menu_act(ctx, 1);
+                    let t = text.trim();
+                    if is_download_url(t) {
+                        self.add_url = t.to_string();
+                    } else {
+                        self.push_log("The clipboard holds no download link.");
+                    }
+                }
+                "tray-folder" => open_path(std::path::Path::new(&self.add_dir), false),
+                "tray-update" => crate::about::spawn(),
+                "tray-autostart" => {
+                    self.start_with_windows = !self.start_with_windows;
+                    crate::autostart::sync(self.start_with_windows);
+                    self.save_ui_state();
+                    self.tray_sig.clear();
+                }
+                other => {
+                    if let Some(n) = other.strip_prefix("tray-dl-").and_then(|n| n.parse::<u64>().ok()) {
+                        let _ = Self::spawn_progress(n);
+                    }
+                }
+            }
+        }
+        if self.tray.is_none() || self.tray_checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(500)) {
+            return;
+        }
+        self.tray_checked = Some(Instant::now());
+        let running: Vec<(u64, String)> = self
+            .downloads
+            .iter()
+            .filter(|d| matches!(d.status, Status::Downloading))
+            .map(|d| {
+                let pct = d
+                    .total_bytes
+                    .filter(|t| *t > 0)
+                    .map(|t| format!("{}%", (d.downloaded_bytes.min(t) * 100 / t)))
+                    .unwrap_or_else(|| format_bytes(d.downloaded_bytes));
+                let mut name: String = d.filename.chars().take(40).collect();
+                if d.filename.chars().count() > 40 {
+                    name.push('…');
+                }
+                (d.id, format!("{name}  —  {pct}"))
+            })
+            .collect();
+        let sig = format!("{:?}{}", running, self.start_with_windows);
+        if sig == self.tray_sig {
+            return;
+        }
+        self.tray_sig = sig;
+        if let Some(tray) = &self.tray {
+            tray.set_menu(Some(Box::new(tray_menu(&running, self.start_with_windows))));
+            let speed: f64 = self.downloads.iter().map(|d| d.speed_bps).sum();
+            let tip = if running.is_empty() {
+                crate::tray::tooltip().to_string()
+            } else {
+                format!("{} — {} {}, {}", crate::tray::tooltip(), running.len(), crate::i18n::t("downloading"), format_speed(speed))
+            };
+            let _ = tray.set_tooltip(Some(tip));
+        }
+    }
+
     fn stop_all(&mut self) {
         self.queue_running = false;
         let ids: Vec<u64> = self.tasks.keys().copied().collect();
@@ -5429,9 +6212,9 @@ impl CraftApp {
                     // must mean the bytes are actually on disk.
                     // Merged (video+audio) deliveries are exempt: muxing
                     // rewrites the container, so sizes are not comparable.
-                    let landed = std::fs::metadata(d.dest_path())
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    // A torrent of several files lands as a folder: its
+                    // files together are what arrived.
+                    let landed = crate::model::size_on_disk(&d.dest_path());
                     let adaptive = d.pair_url.starts_with("http")
                         || task.shared.merged.load(Ordering::SeqCst);
                     // A merge the engine finished (both legs at their servers'
@@ -6435,6 +7218,41 @@ fn notify(title: &str, body: &str) {
         .show();
 }
 
+/// The tray's menu: the running downloads with their percentages (a click
+/// opens that download's progress window), then the everyday actions.
+#[cfg(windows)]
+fn tray_menu(running: &[(u64, String)], autostart: bool) -> tray_icon::menu::Menu {
+    use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+    let t = |s: &str| crate::i18n::t(s).to_string();
+    let menu = Menu::new();
+    if running.is_empty() {
+        let _ = menu.append(&MenuItem::with_id("tray-none", t("No downloads running"), false, None));
+    } else {
+        for (id, label) in running.iter().take(10) {
+            let _ = menu.append(&MenuItem::with_id(format!("tray-dl-{id}"), label, true, None));
+        }
+        if running.len() > 10 {
+            let _ = menu.append(&MenuItem::with_id("tray-more", format!("+{} more", running.len() - 10), false, None));
+        }
+    }
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append_items(&[
+        &MenuItem::with_id("tray-pause-all", t("Pause all"), !running.is_empty(), None),
+        &MenuItem::with_id("tray-resume-all", t("Resume all"), true, None),
+        &MenuItem::with_id("tray-clip", t("Add the link on the clipboard"), true, None),
+        &MenuItem::with_id("tray-folder", t("Open download folder"), true, None),
+    ]);
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&MenuItem::with_id("tray-update", t("Check for updates"), true, None));
+    let _ = menu.append(&CheckMenuItem::with_id("tray-autostart", t("Start with Windows"), true, autostart, None));
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append_items(&[
+        &MenuItem::with_id("tray-show", t("Show Download Craft"), true, None),
+        &MenuItem::with_id("tray-exit", t("Exit"), true, None),
+    ]);
+    menu
+}
+
 /// Build the system tray icon (uses the bundled app icon).
 #[cfg(windows)]
 fn build_tray() -> Option<tray_icon::TrayIcon> {
@@ -6443,10 +7261,7 @@ fn build_tray() -> Option<tray_icon::TrayIcon> {
         .to_rgba8();
     let (w, h) = (img.width(), img.height());
     let icon = tray_icon::Icon::from_rgba(img.into_raw(), w, h).ok()?;
-    let menu = tray_icon::menu::Menu::new();
-    let show = tray_icon::menu::MenuItem::with_id("tray-show", "Show Download Craft", true, None);
-    let exit = tray_icon::menu::MenuItem::with_id("tray-exit", "Exit", true, None);
-    menu.append_items(&[&show, &exit]).ok()?;
+    let menu = tray_menu(&[], false);
     // Menu clicks are acted on as they arrive (see `tray::install_menu_handler`),
     // so Show and Exit work even if the frame loop has gone to sleep.
     crate::tray::install_menu_handler();
@@ -6484,7 +7299,9 @@ fn clipboard_watch(tx: std::sync::mpsc::Sender<String>) {
 }
 
 // Column widths.
-const CHECK_W: f32 = 32.0;
+/// The list's left gutter (it held a tick box per row; rows are now picked
+/// with click, Ctrl+click and Shift+click, as in a file manager).
+const CHECK_W: f32 = 6.0;
 const SIZE_W: f32 = 96.0;
 const STATUS_W: f32 = 104.0;
 const SPEED_W: f32 = 74.0;
@@ -6711,13 +7528,16 @@ impl eframe::App for CraftApp {
 
         // theme (re-applied when the user switches it, and while "system"
         // follows the OS: the resolved key carries the OS's answer)
-        let resolved = format!("{}:{}", self.theme, theme_is_dark(ctx, &self.theme));
+        // A look the Theme menu is pointing at shows until the pointer
+        // leaves it (set again by the menu each frame it stays).
+        let shown = self.theme_preview.take().unwrap_or_else(|| self.theme.clone());
+        let resolved = format!("{}:{}", shown, theme_is_dark(ctx, &shown));
         if self.theme_applied != resolved {
-            apply_theme(ctx, &self.theme);
+            apply_theme(ctx, &shown);
             // The native title bar follows the app theme (Windows otherwise
             // keeps it dark for as long as the OS itself is dark), in a shade
             // of its own: the page colour made it look like there was none.
-            crate::tray::theme_caption(theme_is_dark(ctx, &self.theme));
+            crate::tray::theme_caption(theme_is_dark(ctx, &shown));
             self.theme_applied = resolved;
         }
 
@@ -6764,6 +7584,9 @@ impl eframe::App for CraftApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
         }
+        #[cfg(windows)]
+        self.tray_tick(ctx);
+        self.remote_tick();
         // Another launch (Start menu, pinned shortcut) asked us to come
         // forward. Only this thread can win the foreground lock, so the
         // request sat in a flag until now instead of raising from the listener.
@@ -6838,9 +7661,11 @@ impl eframe::App for CraftApp {
         // the resize strips. Dropdowns still render at the end of update
         // (topmost).
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        // Petal's title bar continues into its toolbar strip: one colour.
+        let title_fill = if crate::skins::active() == "petal" { pl().header_bg } else { pl().bg };
         egui::TopBottomPanel::top("titlebar")
             .exact_height(TB_H)
-            .frame(egui::Frame::new().fill(pl().bg).inner_margin(egui::Margin {
+            .frame(egui::Frame::new().fill(title_fill).inner_margin(egui::Margin {
                 left: 12,
                 right: 8,
                 top: 0,
@@ -7198,6 +8023,9 @@ impl eframe::App for CraftApp {
                     if total_speed > 0.0 {
                         left.push_str(&format!("   ↓ {}", format_speed(total_speed)));
                     }
+                    if !self.net_line.is_empty() {
+                        left.push_str(&format!("   ·   {}", self.net_line));
+                    }
                     ui.label(egui::RichText::new(left).size(10.5).color(pl().dim));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let q = if self.queue_running { "running" } else { "idle" };
@@ -7211,6 +8039,11 @@ impl eframe::App for CraftApp {
         // The concept draws the sidebar as its own bordered card inset from the
         // window edge (`.sidebar`): scrolling nav rows on top, a ruled footer
         // pinned to the bottom.
+        let petal = crate::skins::active() == "petal";
+        if petal {
+            self.petal_toolbar(ctx);
+            self.petal_sidebar(ctx, n_all, n_active, n_incomplete, n_done, n_failed, &cat_n);
+        } else {
         egui::SidePanel::left("cats")
             .resizable(false)
             .exact_width(198.0)
@@ -7237,7 +8070,7 @@ impl eframe::App for CraftApp {
                 egui::Frame::new()
                     .fill(pl().central_bg)
                     .stroke(egui::Stroke::new(1.0_f32, pl().card_bd))
-                    .corner_radius(RADIUS)
+                    .corner_radius(radius())
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -7379,24 +8212,66 @@ impl eframe::App for CraftApp {
                     });
             });
 
+        }
+
         // ================= main area (toolbar + list, beside the sidebar) =================
         // The workspace is its own bordered card (`.content-area`), inset by the
         // same 12px gutter as the sidebar card.
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(pl().bg).inner_margin(egui::Margin {
-                left: 6,
-                right: 12,
-                top: 12,
-                bottom: 12,
+            .frame(egui::Frame::new().fill(pl().bg).inner_margin(if petal {
+                egui::Margin::ZERO
+            } else {
+                egui::Margin {
+                    left: 6,
+                    right: 12,
+                    top: 12,
+                    bottom: 12,
+                }
             }))
             .show(ctx, |ui| {
+                if petal {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            ui.set_width(ui.available_width() - 12.0);
+                            self.petal_tiles(ui);
+                        });
+                    });
+                    if self.petal_table {
+                        ui.add_space(4.0);
+                    }
+                    let ids = self.visible_ids();
+                    if self.petal_table {
+                        // fall through to the table below, inset like the cards
+                    } else if ids.is_empty() {
+                        ui.add_space(60.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new(MI_CLOUD_DL).font(crate::fonts::icon(48.0)).color(pl().dim));
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("No downloads here").size(14.0).color(pl().dim));
+                        });
+                    } else {
+                        self.petal_cards(ui, &ids);
+                    }
+                    if !self.petal_table {
+                        return;
+                    }
+                }
                 let avail = ui.available_size();
                 let (outer, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
+                // Petal's table sits in the page's gutter like its cards.
+                let outer = if petal {
+                    egui::Rect::from_min_max(outer.min + egui::vec2(24.0, 4.0), outer.max - egui::vec2(16.0, 12.0))
+                } else {
+                    outer
+                };
                 // One card for the toolbar and the list, a hairline between
                 // them (the toolbar's height is known once it has laid out).
                 ui.painter().rect(
                     outer,
-                    RADIUS,
+                    radius(),
                     pl().central_bg,
                     egui::Stroke::new(1.0_f32, pl().card_bd),
                     egui::StrokeKind::Inside,
@@ -7414,6 +8289,8 @@ impl eframe::App for CraftApp {
                 // add a phantom gap around the column header.
                 ui.spacing_mut().item_spacing.y = 0.0;
                 // ---- toolbar card: Add URL, the actions, Settings ----
+                // (Petal has its own strip at the top: none here.)
+                if !petal {
                 // Manual routing: paint (+record hit); process_hits acts.
                 let n_checked = self.selected_ids().len();
                 let mut tools: Vec<(ToolId, &str, &str, bool, &str)> = Vec::new();
@@ -7423,6 +8300,10 @@ impl eframe::App for CraftApp {
                 tools.push((ToolId::Delete, MI_DELETE, crate::i18n::t("Delete"), n_checked > 0, crate::i18n::t("Remove the checked rows from the list")));
                 tools.push((ToolId::Queues, MI_REORDER, crate::i18n::t("Queues"), true, crate::i18n::t("Queues: start, stop, schedule (also in Tasks)")));
                 tools.push((ToolId::Grabber, MI_PUBLIC, crate::i18n::t("Grabber"), true, crate::i18n::t("Collect file links from a web page")));
+                if crate::skins::active() == "ledger" {
+                    tools.push((ToolId::StartQueue, MI_QUEUE_PLAY, crate::i18n::t("Start Queue"), true, crate::i18n::t("Start the main queue")));
+                    tools.push((ToolId::StopQueue, MI_STOP, crate::i18n::t("Stop Queue"), !self.tasks.is_empty(), crate::i18n::t("Stop the main queue")));
+                }
                 ui.add_space(7.0);
                 ui.horizontal(|ui| {
                     ui.add_space(7.0);
@@ -7430,16 +8311,26 @@ impl eframe::App for CraftApp {
                     // A narrow window: the buttons drop their labels, then
                     // the last ones go (Queues and Grabber are also in the
                     // Tasks / Tools menus), so nothing runs into Settings.
-                    let room = ui.available_width() - (TOOL_H + 8.0 + TOOL_GAP) - 6.0;
+                    let sq = if crate::skins::active() == "ledger" { LEDGER_TOOL_H } else { TOOL_H };
+                    let room = ui.available_width() - (sq + 8.0 + TOOL_GAP) - 6.0;
                     let font = egui::FontId::proportional(12.0);
                     let label_w = |l: &str| ui.painter().layout_no_wrap(l.to_owned(), font.clone(), pl().txt).size().x;
-                    let add_w = 12.0 + 16.0 + 7.0 + label_w(crate::i18n::t("Add URL")) + 14.0;
+                    let add_w = match crate::skins::active() {
+                        // Petal's pill says "Add download" and is wider.
+                        "petal" => 16.0 + 18.0 + 8.0 + label_w(crate::i18n::t("Add download")) * 1.1 + 18.0,
+                        "ledger" => (label_w(crate::i18n::t("Add URL")) + 16.0).max(58.0),
+                        _ => 12.0 + 16.0 + 7.0 + label_w(crate::i18n::t("Add URL")) + 14.0,
+                    };
                     let sep_w = 13.0 + TOOL_GAP;
-                    let full: f32 = tools.iter().map(|t| 10.0 + 16.0 + 7.0 + label_w(t.2) + 12.0 + TOOL_GAP).sum();
+                    let ledger_tb = crate::skins::active() == "ledger";
+                    let full: f32 = tools
+                        .iter()
+                        .map(|t| if ledger_tb { (label_w(t.2) + 16.0).max(58.0) } else { 10.0 + 16.0 + 7.0 + label_w(t.2) + 12.0 } + TOOL_GAP)
+                        .sum();
                     let icons_only = add_w + TOOL_GAP + sep_w + full > room;
                     let mut fit = tools.len();
                     if icons_only {
-                        while fit > 0 && add_w + TOOL_GAP + sep_w + fit as f32 * (TOOL_H + TOOL_GAP) > room {
+                        while fit > 0 && add_w + TOOL_GAP + sep_w + fit as f32 * (sq + TOOL_GAP) > room {
                             fit -= 1;
                         }
                     }
@@ -7470,6 +8361,7 @@ impl eframe::App for CraftApp {
                     egui::Stroke::new(1.0_f32, pl().card_bd),
                 );
                 ui.add_space(1.0);
+                }
                 // A link found on the clipboard is surfaced on the toolbar's
                 // Add URL button (see `add_url_button`), not as a banner here:
                 // the banner pushed the whole list down by a row.
@@ -7499,14 +8391,19 @@ impl eframe::App for CraftApp {
                             );
                         });
                     });
+                } else if crate::skins::active() == "petal" {
+                    self.petal_cards(ui, &ids);
                 } else {
                     // ---- fully manual table: explicit geometry for header
                     // and rows + manual pointer routing (no egui hit-test) ----
                     // Column metrics follow `main_window.html`: contiguous
                     // columns (no gutters), Name left-aligned, every numeric
                     // column right-aligned, and one rule under the header.
-                    const ROW_H: f32 = 34.0;
-                    const HDR_H: f32 = 30.0;
+                    // Ledger: a compact list with grid lines, as desktop
+                    // download managers have it.
+                    let ledger = crate::skins::active() == "ledger";
+                    let row_h: f32 = if ledger { 26.0 } else { 34.0 };
+                    let hdr_h: f32 = if ledger { 26.0 } else { 30.0 };
                     let cols = self.col_order.clone();
                     // The always-visible vertical bar keeps its own strip.
                     let avail_w = ui.available_width() - SB_SPACE;
@@ -7557,50 +8454,57 @@ impl eframe::App for CraftApp {
                     let hdr_top = ui.cursor().min;
                     let hdr_clip = egui::Rect::from_min_size(
                         hdr_top,
-                        egui::vec2(ui.available_width(), HDR_H),
+                        egui::vec2(ui.available_width(), hdr_h),
                     )
                     .intersect(ui.clip_rect());
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), HDR_H), egui::Sense::hover());
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), hdr_h), egui::Sense::hover());
                     let mut hdr_ui = ui.new_child(
                         egui::UiBuilder::new()
                             .max_rect(egui::Rect::from_min_size(
                                 egui::pos2(hdr_top.x - self.list_hoff, hdr_top.y),
-                                egui::vec2(total_w + 40.0, HDR_H),
+                                egui::vec2(total_w + 40.0, hdr_h),
                             ))
                             .layout(egui::Layout::left_to_right(egui::Align::Center)),
                     );
                     hdr_ui.set_clip_rect(hdr_clip);
+                    if ledger {
+                        // One filled band behind every title, the check
+                        // column and the strip past the last column too.
+                        ui.painter().rect_filled(hdr_clip, 0.0, pl().central_bg);
+                    }
                     hdr_ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         let (cr, _) = ui.allocate_exact_size(
-                            egui::vec2(CHECK_W, HDR_H),
+                            egui::vec2(CHECK_W, hdr_h),
                             egui::Sense::hover(),
                         );
                         // The row layout can push cells below the band's top;
                         // every cell is put on the band so its title sits in
                         // the middle.
-                        let cr = egui::Rect::from_min_size(egui::pos2(cr.min.x, hdr_top.y), egui::vec2(cr.width(), HDR_H));
-                        paint_check(
-                            ui.painter(),
-                            egui::Rect::from_center_size(cr.center(), egui::vec2(13.0, 13.0)),
-                            all_sel,
-                            self.man.hover(&cr),
-                        );
-                        self.hits.push((HitKind::HdrCheck, cr.intersect(hdr_clip)));
+                        let _ = (cr, all_sel);
                         for (ci, col) in cols.iter().enumerate() {
                             let w = col_ws[ci];
                             let (r, _) = ui.allocate_exact_size(
-                                egui::vec2(w, HDR_H),
+                                egui::vec2(w, hdr_h),
                                 egui::Sense::hover(),
                             );
-                            let r = egui::Rect::from_min_size(egui::pos2(r.min.x, hdr_top.y), egui::vec2(w, HDR_H));
+                            let r = egui::Rect::from_min_size(egui::pos2(r.min.x, hdr_top.y), egui::vec2(w, hdr_h));
                             let sorted = self.sort_col == *col;
                             let arrow = if sorted {
                                 if self.sort_asc { " ▲" } else { " ▼" }
                             } else {
                                 ""
                             };
-                            let txt = format!("{}{}", col.title().to_uppercase(), arrow);
+                            let txt = if ledger {
+                                format!("{}{}", col.title(), arrow)
+                            } else {
+                                format!("{}{}", col.title().to_uppercase(), arrow)
+                            };
+                            if ledger {
+                                // A filled header band with a divider per column.
+                                ui.painter().rect_filled(r, 0.0, pl().central_bg);
+                                ui.painter().vline(r.max.x - 0.5, r.y_range(), egui::Stroke::new(1.0_f32, pl().card_bd));
+                            }
                             let color = if self.man.hover(&r) || sorted {
                                 pl().txt
                             } else {
@@ -7638,7 +8542,7 @@ impl eframe::App for CraftApp {
                                 // dragged.
                                 let zr = egui::Rect::from_min_size(
                                     egui::pos2(r.max.x - 4.0, r.min.y),
-                                    egui::vec2(8.0, HDR_H),
+                                    egui::vec2(8.0, hdr_h),
                                 );
                                 let dragging = matches!(self.resize_cap,
                                     Some(ResizeCap::Col { col: c, .. }) if c == *col);
@@ -7646,7 +8550,7 @@ impl eframe::App for CraftApp {
                                     ui.painter().rect_filled(
                                         egui::Rect::from_min_size(
                                             egui::pos2(r.max.x - 1.5, r.min.y + 5.0),
-                                            egui::vec2(3.0, HDR_H - 10.0),
+                                            egui::vec2(3.0, hdr_h - 10.0),
                                         ),
                                         1.5,
                                         pl().primary,
@@ -7655,7 +8559,7 @@ impl eframe::App for CraftApp {
                                     ui.painter().rect_filled(
                                         egui::Rect::from_min_size(
                                             egui::pos2(r.max.x - 0.5, r.min.y + 8.0),
-                                            egui::vec2(1.0, HDR_H - 16.0),
+                                            egui::vec2(1.0, hdr_h - 16.0),
                                         ),
                                         0.0,
                                         pl().card_bd,
@@ -7685,7 +8589,7 @@ impl eframe::App for CraftApp {
                                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                                 .show(ui, |ui| {
                                     // Rows are flush: the list's rhythm comes
-                                    // from ROW_H plus the faint row rule, not
+                                    // from row_h plus the faint row rule, not
                                     // from the style's 10px item spacing.
                                     ui.spacing_mut().item_spacing.y = 0.0;
                                     // A row that is scrolled out of sight still
@@ -7753,16 +8657,28 @@ impl eframe::App for CraftApp {
                                             )
                                         };
                                         // Row spacer = hit + paint rect.
-                                        let (rrect, _) = ui.allocate_exact_size(
-                                            egui::vec2(total_w, ROW_H),
+                                        let (rrect, rresp) = ui.allocate_exact_size(
+                                            egui::vec2(total_w, row_h),
                                             egui::Sense::hover(),
                                         );
-                                        let hl = rrect.shrink2(egui::vec2(2.0, 1.0));
+                                        // What a screen reader says for the row.
+                                        let spoken = format!("{fname}, {}, {}%", st.label(), (prog * 100.0) as u32);
+                                        rresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, sel, &spoken));
+                                        let hl = if ledger { rrect } else { rrect.shrink2(egui::vec2(2.0, 1.0)) };
+                                        let hr_ = if ledger { 0.0 } else { 6.0 };
                                         if sel {
                                             // The tint alone marks the selection (no outline).
-                                            ui.painter().rect_filled(hl, 6.0, pl().sel_bg);
+                                            ui.painter().rect_filled(hl, hr_, pl().sel_bg);
                                         } else if self.man.hover(&rrect) {
-                                            ui.painter().rect_filled(hl, 6.0, pl().hover_bg);
+                                            ui.painter().rect_filled(hl, hr_, pl().hover_bg);
+                                        }
+                                        if ledger {
+                                            // Grid lines between the columns.
+                                            let mut gx = rrect.min.x + CHECK_W;
+                                            for w in &col_ws {
+                                                gx += *w;
+                                                ui.painter().vline(gx - 0.5, rrect.y_range(), egui::Stroke::new(1.0_f32, pl().card_bd.gamma_multiply(0.6)));
+                                            }
                                         }
                                         // `.downloads td { border-bottom: 1px
                                         // solid rgba(30,41,59,.5) }` — with the
@@ -7773,28 +8689,10 @@ impl eframe::App for CraftApp {
                                             rrect.max.y,
                                             egui::Stroke::new(
                                                 1.0_f32,
-                                                pl().card_bd.gamma_multiply(0.55),
+                                                pl().card_bd.gamma_multiply(if ledger { 0.8 } else { 0.55 }),
                                             ),
                                         );
                                         self.hits.push((HitKind::Row(id), rrect.intersect(view)));
-                                        // Manual select checkbox.
-                                        let cb = egui::Rect::from_center_size(
-                                            egui::pos2(
-                                                rrect.min.x + CHECK_W / 2.0,
-                                                rrect.center().y,
-                                            ),
-                                            egui::vec2(13.0, 13.0),
-                                        );
-                                        paint_check(
-                                            ui.painter(),
-                                            cb,
-                                            sel,
-                                            self.man.hover(&cb.expand(4.0)),
-                                        );
-                                        self.hits.push((
-                                            HitKind::RowCheck(id),
-                                            cb.expand(6.0).intersect(view),
-                                        ));
                                 // Cells painted at explicit sub-rects: pure
                                 // paint, no widgets, no cursor use — the row
                                 // spacer above already advanced the cursor.
@@ -7804,7 +8702,7 @@ impl eframe::App for CraftApp {
                                     let w = col_ws[ci];
                                     let crect = egui::Rect::from_min_size(
                                         egui::pos2(x, rrect.min.y),
-                                        egui::vec2(w, ROW_H),
+                                        egui::vec2(w, row_h),
                                     );
                                     match col {
                                         SortCol::Name => {
@@ -7844,10 +8742,10 @@ impl eframe::App for CraftApp {
                                                 );
                                             }
                                             Status::Completed => {
-                                                status_dot_at(&p, crect, crate::i18n::t("Finished"), egui::Color32::from_rgb(0x34, 0xd3, 0x99));
+                                                status_dot_at(&p, crect, crate::i18n::t("Finished"), pl().done);
                                             }
                                             Status::Failed(_) => {
-                                                status_dot_at(&p, crect, crate::i18n::t("Failed"), egui::Color32::from_rgb(0xf8, 0x71, 0x71));
+                                                status_dot_at(&p, crect, crate::i18n::t("Failed"), pl().fail);
                                             }
                                         },
                                         SortCol::Speed => {
@@ -8132,7 +9030,7 @@ impl eframe::App for CraftApp {
                             egui::Vec2::splat(16.0),
                         ),
                         DmIcon::Grid,
-                        DM_ACC,
+                        DM_ACC(),
                         0.0,
                     );
                     let known = !pbusy && psize.filter(|s| *s > 0).is_some();
@@ -8254,7 +9152,7 @@ impl eframe::App for CraftApp {
                             egui::Vec2::splat(16.0),
                         );
                         if self.add_overwrite {
-                            p.rect_filled(cbx, 4.0, DM_ACC);
+                            p.rect_filled(cbx, 4.0, DM_ACC());
                             dm_icon(
                                 &p,
                                 egui::Rect::from_center_size(cbx.center(), egui::Vec2::splat(12.0)),
@@ -8289,7 +9187,7 @@ impl eframe::App for CraftApp {
                         egui::pos2(add_btn.max.x + 8.0, add_btn.min.y),
                         egui::vec2(140.0, 36.0),
                     );
-                    dm_gradient(&p, dl_btn, DM_RAD, DM_ACC, DM_ACC2);
+                    dm_gradient(&p, dl_btn, DM_RAD, DM_ACC(), DM_ACC2());
                     if self.man.hover(&dl_btn) {
                         p.rect_filled(dl_btn, DM_RAD, egui::Color32::from_white_alpha(22));
                     }
@@ -9884,17 +10782,35 @@ impl CraftApp {
                 out.push((String::new(), None));
                 continue;
             }
+            // A section heading: drawn small and dim, not clickable.
+            if act == 0 {
+                out.push((format!("{POPUP_HEAD}{label}"), None));
+                continue;
+            }
             let mut text = label.clone();
             if menu == 3 {
-                let key = match act {
-                    19 => "system",
-                    20 => "dark",
-                    22 => "light",
-                    _ => "",
+                let (look, mode) = crate::skins::split(&self.theme);
+                let (key, cur) = match act {
+                    19 => ("system", mode),
+                    20 => ("dark", mode),
+                    22 => ("light", mode),
+                    26 => ("craft", look),
+                    27 => ("ledger", look),
+                    28 => ("petal", look),
+                    40..=59 => {
+                        let files = crate::theme_files::list();
+                        match files.get((act - 40) as usize) {
+                            Some(e) if e.key == look => (look, look),
+                            Some(_) => ("x", "y"),
+                            None => ("", ""),
+                        }
+                    }
+                    _ => ("", ""),
                 };
                 // Marked here, drawn as a tick icon by `render_popup` (the
                 // text font has no check mark glyph: it showed as a box).
-                if !key.is_empty() && self.theme == key {
+                let cur = if cur == "black" { "dark" } else { cur };
+                if !key.is_empty() && cur == key {
                     text = format!("{POPUP_CHECK}{text}");
                 } else if !key.is_empty() {
                     text = format!("{POPUP_INDENT}{text}");
@@ -10539,7 +11455,7 @@ impl CraftApp {
                         1.0_f32,
                         pl().modal_bd,
                     ))
-                    .corner_radius(RADIUS)
+                    .corner_radius(radius())
                     .inner_margin(egui::Margin::same(6))
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
@@ -10550,12 +11466,30 @@ impl CraftApp {
                                 ui.add_space(3.0);
                                 continue;
                             }
+                            if let Some(head) = label.strip_prefix(POPUP_HEAD) {
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(width - 12.0, 22.0), egui::Sense::hover());
+                                ui.painter().text(
+                                    egui::pos2(r.min.x + 10.0, r.center().y + 2.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    head,
+                                    egui::FontId::proportional(10.5),
+                                    pl().dim,
+                                );
+                                continue;
+                            }
                             let (r, _) = ui.allocate_exact_size(
                                 egui::vec2(width - 12.0, H),
                                 egui::Sense::hover(),
                             );
                             if self.man.hover(&r) {
                                 ui.painter().rect_filled(r, 4.0, pl().surface_lt);
+                                // The Theme menu shows each look and mode
+                                // live while the pointer is on it.
+                                if area_id == "drop_menu" {
+                                    if let Some(HitKind::MenuItem(a @ (19..=22 | 26..=28 | 40..=59))) = hit {
+                                        self.theme_preview = Some(Self::theme_for_act(&self.theme, a));
+                                    }
+                                }
                             }
                             let (checked, label) = match label.strip_prefix(POPUP_CHECK) {
                                 Some(rest) => (Some(true), rest.to_string()),
@@ -10635,6 +11569,9 @@ impl CraftApp {
             item("Pause", MI_PAUSE, "", Pause),
             item("Redownload", MI_REPLAY, "", Redownload),
         ]);
+        if crate::torrent::is_torrent(&d.url) {
+            v.push(item("Choose torrent files…", MI_PLAYLIST_ADD, "", TorrentFiles));
+        }
         const MEDIA: &[&str] = &["mp4", "mkv", "webm", "mov", "avi", "flv", "wmv", "m4v", "ts", "3gp", "mp3", "m4a", "aac", "opus", "ogg", "wav", "flac", "wma"];
         const AUDIO: &[&str] = &["mp3", "m4a", "aac", "opus", "ogg", "wav", "flac", "wma"];
         if matches!(d.status, Status::Completed) && MEDIA.contains(&ext.as_str()) {
@@ -10920,6 +11857,16 @@ impl CraftApp {
                             ToolId::StopQueue | ToolId::StopAll => {}
                             ToolId::Queues => self.show_queues = true,
                             ToolId::Settings => Self::open_settings_window(),
+                            ToolId::ViewCards => {
+                                self.petal_table = false;
+                                crate::model::ui_pref_set_bool("petal_table", false);
+                            }
+                            ToolId::ViewTable => {
+                                self.petal_table = true;
+                                crate::model::ui_pref_set_bool("petal_table", true);
+                            }
+                            ToolId::Batch => self.do_menu_act(ctx, 11),
+                            ToolId::ClearDone => self.do_menu_act(ctx, 7),
                             ToolId::Grabber => {
                                 self.grab_notice.clear();
                                 self.show_grabber = true;
@@ -11040,8 +11987,32 @@ impl CraftApp {
                             open_ctx = Some((id, p));
                         }
                     } else if clk {
-                        for d in self.downloads.iter_mut() {
-                            d.selected = d.id == id;
+                        // Click picks one row; Ctrl+click adds or removes
+                        // it; Shift+click picks every row from the last
+                        // clicked one to this one, in the list's order.
+                        let m = ctx.input(|i| i.modifiers);
+                        if m.command {
+                            if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+                                d.selected = !d.selected;
+                            }
+                            self.sel_anchor = Some(id);
+                        } else if m.shift {
+                            let order = self.visible_ids();
+                            let anchor = self.sel_anchor.filter(|a| order.contains(a)).unwrap_or(id);
+                            let (a, b) = (
+                                order.iter().position(|x| *x == anchor).unwrap_or(0),
+                                order.iter().position(|x| *x == id).unwrap_or(0),
+                            );
+                            let span: std::collections::HashSet<u64> = order[a.min(b)..=a.max(b)].iter().copied().collect();
+                            for d in self.downloads.iter_mut() {
+                                d.selected = span.contains(&d.id);
+                            }
+                        } else {
+                            for d in self.downloads.iter_mut() {
+                                d.selected = d.id == id;
+                            }
+                            self.sel_anchor = Some(id);
+                            self.sel_anchor_cursor = Some(id);
                         }
                     }
                     if clk && self.man.take_double() {

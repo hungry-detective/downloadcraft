@@ -1,7 +1,7 @@
-//! # downloadcraft-engine
+﻿//! # downloadcraft-engine
 //!
-//! A multi-connection HTTP(S) download engine — the one inside
-//! [Download Craft](https://github.com/hungry-detective/downloadcraft) — built
+//! A multi-connection HTTP(S) download engine â€” the one inside
+//! [Download Craft](https://github.com/hungry-detective/downloadcraft) â€” built
 //! on `tokio` and `reqwest`, free to use in your own downloader (MIT).
 //!
 //! What makes it fast and robust:
@@ -26,7 +26,7 @@
 //!   original URL, then through your own refresh hook (for example "resolve
 //!   the video page again"), keeping everything downloaded so far.
 //! - **Checks every reply.** Wrong `Content-Range`, a different file size, an
-//!   HTML error page instead of the file — all caught before they corrupt it.
+//!   HTML error page instead of the file â€” all caught before they corrupt it.
 //!
 //! ```no_run
 //! use downloadcraft_engine::{Control, Downloader, Job, Progress};
@@ -81,7 +81,7 @@ pub type EventFn = Arc<dyn Fn(&Event) + Send + Sync>;
 /// Tuning knobs. `Config::default()` suits most servers.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Most connections one download may use (1–32). Default 8.
+    /// Most connections one download may use (1â€“32). Default 8.
     pub connections: usize,
     /// Never split a segment into parts smaller than this. Default 1 MiB.
     pub min_split: u64,
@@ -98,8 +98,8 @@ pub struct Config {
     /// Flush data to disk before each journal save (crash safety at the
     /// cost of some disk syncs). Default true.
     pub durable: bool,
-    /// Reopen a connection running below `slow_ratio` × the median speed for
-    /// this long. `None` disables it. Default 15 s.
+    /// Reopen a connection running below `slow_ratio` Ã— the median speed for
+    /// this long. `None` disables it. Default 1.5 s.
     pub slow_restart_after: Option<Duration>,
     pub slow_ratio: f64,
     /// Fail when the server sends an HTML page instead of the file (unless
@@ -124,7 +124,7 @@ impl Default for Config {
             max_retries: 8,
             journal_interval: Duration::from_secs(3),
             durable: true,
-            slow_restart_after: Some(Duration::from_secs(15)),
+            slow_restart_after: Some(Duration::from_millis(1500)),
             slow_ratio: 0.2,
             reject_html: true,
             write_buffer: 512 * 1024,
@@ -326,9 +326,9 @@ impl std::fmt::Display for Event {
                 }
             }
             Event::RangesUnsupported => write!(f, "server ignores ranges: one connection, no resume"),
-            Event::Retry { worker, error } => write!(f, "connection {worker}: {error} — retrying"),
+            Event::Retry { worker, error } => write!(f, "connection {worker}: {error} â€” retrying"),
             Event::ConnectionsReduced { to, reason } => write!(f, "using {to} connection(s): {reason}"),
-            Event::SlowRestart { worker } => write!(f, "connection {worker} was very slow — reopened"),
+            Event::SlowRestart { worker } => write!(f, "connection {worker} was very slow â€” reopened"),
             Event::UrlRefreshed { url } => write!(f, "link refreshed: {url}"),
             Event::Restarted { reason } => write!(f, "starting over: {reason}"),
         }
@@ -391,6 +391,20 @@ pub fn data_path(dest: &Path) -> PathBuf {
 }
 
 /// Where a job's resume journal lives.
+/// Point a resume journal at a new key (the job's `resume_key`, or its URL),
+/// keeping every byte it records: for a partial download moved to another
+/// file name before it continues (the Download window's early start, which
+/// downloads into a scratch folder). Returns whether a journal was rewritten.
+pub fn rekey_journal(journal: &Path, new_key: &str) -> bool {
+    match journal::Journal::load(journal) {
+        Some(mut j) if j.key != new_key => {
+            j.key = new_key.to_string();
+            j.save(journal).is_ok()
+        }
+        _ => false,
+    }
+}
+
 pub fn journal_path(dest: &Path) -> PathBuf {
     journal_path_in(dest, None)
 }
@@ -478,7 +492,7 @@ impl Downloader {
         self
     }
 
-    /// Every connection holds a permit of this semaphore while it runs — a
+    /// Every connection holds a permit of this semaphore while it runs â€” a
     /// cap on connections to one server across many downloads.
     pub fn connection_gate(mut self, gate: Arc<tokio::sync::Semaphore>) -> Self {
         self.gate = Some(gate);

@@ -1846,8 +1846,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg.type === "captureLink") {
       const cfg = await settings();
-      if (!cfg.autoCapture || !/^https?:\/\//i.test(msg.url || "") || hostBlocked(msg.url,cfg.blockHosts)
-          || !typeAllowed(cfg, msg.filename, msg.url)) return {ok:false};
+      const magnet = /^magnet:\?/i.test(msg.url || "");
+      if (!cfg.autoCapture || !(magnet || /^https?:\/\//i.test(msg.url || "")) || (!magnet && hostBlocked(msg.url,cfg.blockHosts))
+          || (!magnet && !typeAllowed(cfg, msg.filename, msg.url))) return {ok:false};
       const ok = await sendToHost(msg.url,msg.filename,{pageUrl:msg.pageUrl,referer:msg.pageUrl});
       // A failed direct handoff must replay in Brave without recapture.
       markSeen(msg.url,null);

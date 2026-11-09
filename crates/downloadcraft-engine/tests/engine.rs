@@ -411,6 +411,40 @@ async fn a_partial_moved_to_a_new_name_resumes_there() {
 }
 
 #[tokio::test]
+async fn a_partial_keyed_by_its_path_resumes_after_a_rekeyed_move() {
+    // The app keys a journal by the file's path. The Download window's early
+    // start writes under a scratch path; moved to the real name, the journal
+    // must be re-keyed, or the bytes are thrown away and it starts over.
+    let srv = Server::start(Behaviour { size: 6 * MIB, rate: 1024 * 1024, ..Default::default() }).await;
+    let first = tmp("pre-path-start");
+    let dest = tmp("pre-path-final");
+    let dl = Downloader::new(reqwest::Client::new()).config(quick());
+    let control = Arc::new(Control::default());
+    let progress = Arc::new(Progress::default());
+    let (c, pr) = (control.clone(), progress.clone());
+    tokio::spawn(async move {
+        while pr.downloaded() < 512 * 1024 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        c.cancel();
+    });
+    let job = Job::new(srv.url("/f"), &first).size_hint(Some(6 * MIB as u64), true).resume_key(first.to_string_lossy());
+    assert!(matches!(dl.download(job, progress.clone(), control).await.unwrap_err(), Error::Cancelled));
+    let had = progress.downloaded();
+    for (a, b) in [
+        (downloadcraft_engine::data_path(&first), downloadcraft_engine::data_path(&dest)),
+        (downloadcraft_engine::journal_path(&first), downloadcraft_engine::journal_path(&dest)),
+    ] {
+        std::fs::rename(a, b).unwrap();
+    }
+    assert!(downloadcraft_engine::rekey_journal(&downloadcraft_engine::journal_path(&dest), &dest.to_string_lossy()));
+    let job = Job::new(srv.url("/f"), &dest).size_hint(Some(6 * MIB as u64), true).resume_key(dest.to_string_lossy());
+    let out = get(&dl, job).await.unwrap();
+    assert!(out.resumed >= had.min(512 * 1024), "resumed {} of {had}", out.resumed);
+    assert_eq!(std::fs::read(&dest).unwrap(), body(6 * MIB, 1));
+}
+
+#[tokio::test]
 async fn a_changed_file_is_not_stitched_onto_old_bytes() {
     let srv = Server::start(Behaviour { size: 4 * MIB, rate: 1024 * 1024, ..Default::default() }).await;
     let dest = tmp("changed");

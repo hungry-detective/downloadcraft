@@ -143,6 +143,10 @@ struct Run {
     cap: AtomicUsize,
     last_cut: Mutex<Instant>,
     live: AtomicUsize,
+    /// Most connections seen receiving data at the same time.
+    proven: AtomicUsize,
+    /// Fastest one connection has gone in this run (bytes/s).
+    best_speed: Mutex<f64>,
     peak: AtomicUsize,
     ranges_ok: AtomicBool,
     single: AtomicBool,
@@ -232,6 +236,15 @@ impl Run {
                 && (s.streaming.load(Ordering::SeqCst)
                     || lock(&s.last_byte).is_some_and(|t| t.elapsed() < HEALTHY_WINDOW))
         })
+    }
+
+    /// Other connections receiving data right now.
+    fn streaming_count(&self, me: usize) -> usize {
+        lock(&self.stats)
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| *i != me && s.active.load(Ordering::SeqCst) && s.streaming.load(Ordering::SeqCst))
+            .count()
     }
 
     fn others_connecting(&self, me: usize) -> bool {
@@ -510,6 +523,8 @@ async fn run_once(
         last_cut: Mutex::new(Instant::now()),
         live: AtomicUsize::new(0),
         peak: AtomicUsize::new(0),
+        proven: AtomicUsize::new(0),
+        best_speed: Mutex::new(0.0),
         ranges_ok: AtomicBool::new(ranges_ok),
         single: AtomicBool::new(false),
         stats: Mutex::new(Vec::new()),
@@ -634,24 +649,44 @@ fn measure(run: &Run, cfg: &crate::Config, last: &mut Vec<u64>, dt: Duration) {
     last.resize(stats.len(), 0);
     speeds.resize(stats.len(), 0.0);
     let secs = dt.as_secs_f64().max(0.001);
+    let streaming = stats.iter().filter(|s| s.active.load(Ordering::SeqCst) && s.streaming.load(Ordering::SeqCst)).count();
+    run.proven.fetch_max(streaming, Ordering::SeqCst);
     for (i, s) in stats.iter().enumerate() {
         let b = s.bytes.load(Ordering::SeqCst);
         let inst = (b - last[i]) as f64 / secs;
         last[i] = b;
-        speeds[i] = if speeds[i] == 0.0 { inst } else { 0.6 * speeds[i] + 0.4 * inst };
+        speeds[i] = if speeds[i] == 0.0 { inst } else { 0.4 * speeds[i] + 0.6 * inst };
     }
+    let best = speeds.iter().copied().fold(0.0_f64, f64::max);
+    lock(&run.map).set_speeds(speeds.clone(), best);
+    let best = {
+        let mut b = lock(&run.best_speed);
+        *b = b.max(best);
+        *b
+    };
     let Some(after) = cfg.slow_restart_after else { return };
     let active: Vec<usize> = (0..stats.len()).filter(|&i| stats[i].active.load(Ordering::SeqCst)).collect();
-    if active.len() < 3 {
+    if active.is_empty() {
         return;
     }
-    let mut v: Vec<f64> = active.iter().map(|&i| speeds[i]).collect();
-    v.sort_by(|a, b| a.total_cmp(b));
-    let median = v[v.len() / 2];
+    // Compared with the others while there are enough of them, else with
+    // the fastest this download has gone (the last two crawling alone).
+    // Never below half the best: when every connection still running is a
+    // crawling one, their own median would call none of them slow.
+    let median = if active.len() >= 3 {
+        let mut v: Vec<f64> = active.iter().map(|&i| speeds[i]).collect();
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    } else {
+        0.0
+    }
+    .max(best * 0.5);
     if median <= 0.0 {
         return;
     }
-    let big = 4 * run.dl.config.min_split.max(64 * 1024);
+    // Anything a crawling connection holds past half a megabyte is worth a
+    // fresh connection (the file waits for its slowest part).
+    let big = 512 * 1024;
     let m = lock(&run.map);
     for &i in &active {
         let s = &stats[i];
@@ -746,6 +781,12 @@ async fn worker(run: Arc<Run>, w: usize) {
             lock(&run.map).claim(w, &|i| speeds.get(i).copied().unwrap_or(0.0))
         };
         let Some(claim) = claim else { break };
+        // A new request can run at a very different speed (another server
+        // slot, another path): its speed is measured afresh, or a connection
+        // fast on its last piece hides that its new one crawls.
+        if let Some(v) = lock(&run.speeds).get_mut(w) {
+            *v = 0.0;
+        }
         run.emit(Event::Connecting { worker: w, from: claim.pos, to: claim.end });
         *lock(&stat.started) = Instant::now();
         stat.restart.store(false, Ordering::SeqCst);
@@ -796,6 +837,18 @@ async fn worker(run: Arc<Run>, w: usize) {
             }
             Err(Fail::Throttled { status, retry_after }) => {
                 let cap = run.cap.load(Ordering::SeqCst);
+                // "Busy" while other connections are receiving data is the
+                // server's per-client limit: settle on the ones that work
+                // (halving on every refusal fell to one connection).
+                let working = run.streaming_count(w);
+                if working > 0 {
+                    // Never below what the server has already served at
+                    // once: a connection asking for its next piece is often
+                    // refused only because its last one is not closed yet.
+                    let allowed = working.max(run.proven.load(Ordering::SeqCst));
+                    run.reduce_cap(allowed, format!("the server allows {allowed} connection(s) (HTTP {status})"));
+                    break;
+                }
                 if cap > 1 {
                     run.reduce_cap(cap / 2, format!("the server is throttling (HTTP {status})"));
                 } else if run.note_failure(false, format!("server is throttling (HTTP {status})"), w).is_none() {

@@ -115,10 +115,10 @@ fn queue_path() -> std::path::PathBuf {
         .join("queue.json")
 }
 
-fn load_queue() -> anyhow::Result<Vec<DownloadItem>> {
+pub(crate) fn load_queue() -> anyhow::Result<Vec<DownloadItem>> {
     crate::model::read_queue_items(&queue_path()).map_err(anyhow::Error::msg)
 }
-fn save_queue(items: &[DownloadItem]) -> anyhow::Result<()> {
+pub(crate) fn save_queue(items: &[DownloadItem]) -> anyhow::Result<()> {
     let path=queue_path();
     if let Some(parent)=path.parent() { std::fs::create_dir_all(parent)?; }
     crate::model::atomic_write(&path,serde_json::to_string_pretty(items)?.as_bytes())?;
@@ -157,7 +157,7 @@ fn global_opts() -> EngineOpts {
     o
 }
 
-fn opts_for(item: &DownloadItem, limit_bps: u64) -> EngineOpts {
+pub(crate) fn opts_for(item: &DownloadItem, limit_bps: u64) -> EngineOpts {
     let mut o = global_opts();
     o.speed_limit_bps = limit_bps;
     o.timeout_secs = item.eff_timeout(o.timeout_secs);

@@ -14,7 +14,17 @@ use std::sync::{Mutex, OnceLock};
 
 /// Languages that ship inside the program; a file with the same code in a
 /// `lang` folder adds to and overrides them.
-const BUILTIN: &[(&str, &str)] = &[("bn", include_str!("../lang/bn.json"))];
+const BUILTIN: &[(&str, &str)] = &[
+    ("bn", include_str!("../lang/bn.json")),
+    ("es", include_str!("../lang/es.json")),
+    ("fr", include_str!("../lang/fr.json")),
+    ("de", include_str!("../lang/de.json")),
+    ("pt", include_str!("../lang/pt.json")),
+    ("ru", include_str!("../lang/ru.json")),
+    ("hi", include_str!("../lang/hi.json")),
+    ("zh", include_str!("../lang/zh.json")),
+    ("id", include_str!("../lang/id.json")),
+];
 
 struct Lang {
     code: String,

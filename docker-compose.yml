@@ -1,0 +1,16 @@
+# Download Craft server mode. `docker compose up -d`, then `docker compose logs`
+# for the address and the pairing code to type on the phone.
+services:
+  downloadcraft:
+    image: ghcr.io/hungry-detective/downloadcraft:latest
+    # or build it here: `build: .`
+    container_name: downloadcraft
+    restart: unless-stopped
+    ports:
+      - "8765:8765"   # remote control page
+      - "6881:6881"   # torrents (peers connect here)
+    volumes:
+      - ./data:/data             # settings, queue, paired devices
+      - ./downloads:/downloads   # finished files
+    environment:
+      DOWNLOAD_CRAFT_MAX: "3"    # downloads at a time

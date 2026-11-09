@@ -23,8 +23,18 @@ pub const DM_W: f32 = 562.0;
 /// Card height with the advanced panel closed — the concept's exact size.
 pub const DM_H: f32 = 253.0;
 
-pub const DM_ACC: egui::Color32 = egui::Color32::from_rgb(0x3b, 0x82, 0xf6);
-pub const DM_ACC2: egui::Color32 = egui::Color32::from_rgb(0x8b, 0x5c, 0xf6);
+/// The active look's accent (blue in Download Craft's own), and the second
+/// colour of its gradient (violet; the flat looks repeat the accent).
+#[allow(non_snake_case)]
+#[inline]
+pub fn DM_ACC() -> egui::Color32 {
+    crate::app::pl().acc
+}
+#[allow(non_snake_case)]
+#[inline]
+pub fn DM_ACC2() -> egui::Color32 {
+    crate::app::pl().acc2
+}
 pub const DM_OK: egui::Color32 = egui::Color32::from_rgb(0x22, 0xc5, 0x5e);
 /// "Connecting..." amber (#eab308).
 pub const DM_YEL: egui::Color32 = egui::Color32::from_rgb(0xea, 0xb3, 0x08);
@@ -131,7 +141,7 @@ pub fn dm_field(
 pub fn dm_mark(p: &egui::Painter, r: egui::Rect) {
     let s = r.width() / 24.0;
     let m = |x: f32, y: f32| egui::pos2(r.min.x + x * s, r.min.y + y * s);
-    let st = egui::Stroke::new(2.0 * s, DM_ACC);
+    let st = egui::Stroke::new(2.0 * s, DM_ACC());
     p.circle_stroke(m(12.0, 12.0), 9.0 * s, st);
     p.line_segment([m(12.0, 8.0), m(12.0, 15.0)], st);
     p.line_segment([m(8.5, 11.5), m(12.0, 15.0)], st);
@@ -579,7 +589,7 @@ pub fn slider(
     p.rect_filled(
         egui::Rect::from_min_size(track.min, egui::vec2(track_w * frac, 4.0)),
         2.0,
-        DM_ACC,
+        DM_ACC(),
     );
     let kx = track_x + track_w * frac;
     if hovered {
@@ -589,13 +599,13 @@ pub fn slider(
             egui::Color32::from_rgba_unmultiplied(59, 130, 246, 50),
         );
     }
-    p.circle_filled(egui::pos2(kx, ty), 6.0, DM_ACC);
+    p.circle_filled(egui::pos2(kx, ty), 6.0, DM_ACC());
 }
 
 /// Concept checkbox (16px): accent fill plus a white tick when checked.
 pub fn dm_check(p: &egui::Painter, r: egui::Rect, checked: bool) {
     if checked {
-        p.rect_filled(r, 4.0, DM_ACC);
+        p.rect_filled(r, 4.0, DM_ACC());
         dm_icon(
             p,
             egui::Rect::from_center_size(r.center(), egui::Vec2::splat(12.0)),

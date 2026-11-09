@@ -1463,7 +1463,7 @@
         .tt{font-weight:600;font-size:13.5px;color:#fff}
         .ms{color:#b9bccb;margin-top:1px;word-break:break-word}
         .act{flex:none;border:0;border-radius:9px;padding:8px 14px;font:600 12.5px "Segoe UI",system-ui,sans-serif;
-          color:#fff;background:linear-gradient(135deg,#6c7cff,#8b5cf6);cursor:pointer;box-shadow:0 4px 14px rgba(108,124,255,.35)}
+          color:#fff;background:linear-gradient(135deg,#3b82f6,#2563eb);cursor:pointer;box-shadow:0 4px 14px rgba(37,99,235,.35)}
         .act:hover{filter:brightness(1.1)}
         .x{flex:none;width:26px;height:26px;border:0;border-radius:8px;background:transparent;color:#8d90a3;
           cursor:pointer;font-size:16px;line-height:1}

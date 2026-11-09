@@ -38,6 +38,10 @@ pub(crate) struct Segment {
     pub owner: Option<usize>,
 }
 
+
+/// Smallest part a crawling connection's tail is split into near the end.
+const ENDGAME_MIN: u64 = 256 * 1024;
+
 impl Segment {
     pub fn remaining(&self) -> u64 {
         self.end.saturating_sub(self.pos)
@@ -58,9 +62,20 @@ pub(crate) struct SegmentMap {
     next_id: u64,
     min_split: u64,
     total: Option<u64>,
+    /// Each worker's last measured speed and the fastest any worker has
+    /// reached in this run (bytes/s): what "crawling" is judged against once
+    /// the fast connections have finished their parts.
+    speeds: Vec<f64>,
+    best_speed: f64,
 }
 
 impl SegmentMap {
+    /// The latest speeds (from the monitor, once a second).
+    pub fn set_speeds(&mut self, speeds: Vec<f64>, best: f64) {
+        self.speeds = speeds;
+        self.best_speed = self.best_speed.max(best);
+    }
+
     /// One segment covering the whole file (or an open-ended one).
     pub fn whole(total: Option<u64>, min_split: u64) -> Self {
         let mut m = Self::empty(total, min_split);
@@ -111,7 +126,7 @@ impl SegmentMap {
     }
 
     fn empty(total: Option<u64>, min_split: u64) -> Self {
-        Self { segs: Vec::new(), next_id: 0, min_split: min_split.max(1), total }
+        Self { segs: Vec::new(), next_id: 0, min_split: min_split.max(1), total, speeds: Vec::new(), best_speed: 0.0 }
     }
 
     fn push(&mut self, start: u64, end: u64, owner: Option<usize>) -> u64 {
@@ -188,7 +203,10 @@ impl SegmentMap {
 
     /// Number of segments a new worker could split or take right now.
     pub fn claimable(&self) -> bool {
-        self.has_unowned_work() || self.best_split(&|_| 0.0).is_some()
+        let sp = |i: usize| self.speeds.get(i).copied().unwrap_or(0.0);
+        self.has_unowned_work()
+            || self.best_split(&|_| 0.0, self.min_split, false).is_some()
+            || self.best_split(&sp, ENDGAME_MIN.min(self.min_split), true).is_some()
     }
 
     /// Unfinished `[written, end)` ranges for the resume journal.
@@ -218,10 +236,15 @@ impl SegmentMap {
             s.pos = s.written;
             return Some(Claim { id: s.id, pos: s.pos, end: s.end });
         }
-        // 2. Help the slowest finisher.
-        let id = self.best_split(speed)?;
-        let min = self.min_split;
-        let avg = self.average_speed(speed);
+        // 2. Help the slowest finisher. Near the end, when no part is big
+        // enough for an ordinary split, a part held by a crawling connection
+        // is still split down to ENDGAME_MIN: otherwise the whole file waits
+        // for its slowest connection.
+        let (id, min) = match self.best_split(speed, self.min_split, false) {
+            Some(id) => (id, self.min_split),
+            None => (self.best_split(speed, ENDGAME_MIN.min(self.min_split), true)?, ENDGAME_MIN.min(self.min_split)),
+        };
+        let avg = self.average_speed(speed).max(speed(worker)).max(self.best_speed * 0.5);
         let s = self.get_mut(id)?;
         let rem = s.remaining();
         let owner_speed = s.owner.map(speed).unwrap_or(0.0);
@@ -232,10 +255,14 @@ impl SegmentMap {
         } else {
             rem / 2
         };
-        let keep = keep.clamp(min, rem - min);
+        // A crawling owner may keep less than a usual part: what it holds
+        // is what the whole file ends up waiting for.
+        let crawl = owner_speed > 0.0 && avg > 0.0 && owner_speed < avg * 0.5;
+        let keep_min = if crawl { ALIGN.max(64 * 1024).min(min) } else { min };
+        let keep = keep.clamp(keep_min, rem - min);
         let mut mid = s.pos + keep;
         let aligned = mid - mid % ALIGN;
-        if aligned >= s.pos + min && s.end - aligned >= min {
+        if aligned >= s.pos + keep_min && s.end - aligned >= min {
             mid = aligned;
         }
         let old_end = s.end;
@@ -257,18 +284,30 @@ impl SegmentMap {
 
     /// The owned segment with the longest expected finish time that is big
     /// enough to split.
-    fn best_split(&self, speed: &dyn Fn(usize) -> f64) -> Option<u64> {
+    fn best_split(&self, speed: &dyn Fn(usize) -> f64, min: u64, only_slow: bool) -> Option<u64> {
         if self.total.is_none() {
             return None;
         }
-        let min = self.min_split;
+        // Judged against the fastest speed seen too: once the fast
+        // connections are done, the crawling ones are all that is left.
+        let avg = self.average_speed(speed).max(self.best_speed * 0.5);
         self.segs
             .iter()
             .filter(|s| s.owner.is_some() && s.end != OPEN_END && s.remaining() >= 2 * min)
+            // Endgame: only owners well below the average speed (a measured
+            // crawl), so a healthy tail is not cut into needless requests.
+            .filter(|s| {
+                !only_slow || {
+                    let v = s.owner.map(speed).unwrap_or(0.0);
+                    avg > 0.0 && v > 0.0 && v < avg * 0.5
+                }
+            })
             .map(|s| {
                 let v = s.owner.map(speed).unwrap_or(0.0);
-                // Unmeasured owners count as slow-but-alive: rank by size.
-                let eta = if v > 0.0 { s.remaining() as f64 / v } else { s.remaining() as f64 };
+                // Unmeasured owners are ranked at the average speed: in
+                // seconds like the rest (bytes would outrank any of them).
+                let v = if v > 0.0 { v } else if avg > 0.0 { avg } else { 1.0 };
+                let eta = s.remaining() as f64 / v;
                 (s.id, eta, s.remaining())
             })
             .max_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)))

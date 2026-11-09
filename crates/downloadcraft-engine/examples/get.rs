@@ -48,10 +48,14 @@ async fn main() {
         }
     });
 
+    let t0 = Instant::now();
     let downloader = Downloader::new(reqwest::Client::new())
         .config(Config { connections, ..Config::default() })
-        .on_event(Arc::new(|e| {
-            if !matches!(e, downloadcraft_engine::Event::Connecting { .. }) {
+        .on_event(Arc::new(move |e| {
+            // DCE_TRACE=1 prints every event with the time since the start.
+            if std::env::var_os("DCE_TRACE").is_some() {
+                eprintln!("{:7.3} {e}", t0.elapsed().as_secs_f64());
+            } else if !matches!(e, downloadcraft_engine::Event::Connecting { .. }) {
                 eprintln!("\n{e}");
             }
         }));

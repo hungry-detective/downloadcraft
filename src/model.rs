@@ -191,6 +191,10 @@ pub struct DownloadItem {
     pub total_bytes: Option<u64>,
     pub downloaded_bytes: u64,
     pub status: Status,
+    /// This download's own speed limit (KB/s, 0 = none), set from its
+    /// progress window; kept for later runs.
+    #[serde(default)]
+    pub limit_kbps: u64,
     #[serde(default)]
     pub speed_bps: f64,
     pub created_at: DateTime<Local>,
@@ -456,6 +460,7 @@ impl DownloadItem {
             total_bytes: None,
             downloaded_bytes: 0,
             status: Status::Queued,
+            limit_kbps: 0,
             speed_bps: 0.0,
             created_at: Local::now(),
             connections: connections.clamp(1, 32),
@@ -592,6 +597,27 @@ pub fn format_eta(item: &DownloadItem) -> String {
 /// skipped in favor of an earlier meaningful segment; otherwise a
 /// timestamped default.
 pub fn filename_from_url(raw: &str) -> String {
+    if crate::gallery::is_gallery(raw) {
+        return crate::gallery::folder_name(raw);
+    }
+    // Torrents: the magnet's own name (dn=), or the .torrent file's name
+    // without ".torrent"; the real name arrives with the metadata.
+    if crate::torrent::is_torrent(raw) {
+        if let Some(n) = crate::torrent::magnet_name(raw) {
+            return crate::engine::sanitize_filename(&n);
+        }
+        let last = raw.trim().split(['?', '#']).next().unwrap_or("").rsplit(['/', '\\']).next().unwrap_or("");
+        let stem = last.strip_suffix(".torrent").or_else(|| last.strip_suffix(".TORRENT")).unwrap_or(last);
+        return if stem.is_empty() || stem.starts_with("magnet:") {
+            "Torrent".to_string()
+        } else {
+            crate::engine::sanitize_filename(stem)
+        };
+    }
+    filename_from_url_plain(raw)
+}
+
+fn filename_from_url_plain(raw: &str) -> String {
     const PLACEHOLDERS: &[&str] = &[
         "videoplayback", "watch", "play", "player", "download", "media",
         "api", "v", "video", "audio", "file", "get", "stream", "content",
@@ -756,6 +782,14 @@ fn percent_decode(s: &str) -> String {
 
 pub fn is_download_url(s: &str) -> bool {
     let t = s.trim();
+    // Magnet links and .torrent files/links download through BitTorrent.
+    if crate::torrent::is_torrent(t) {
+        return t.len() < 8192;
+    }
+    // "gallery:<address>" asks for gallery-dl on any site it knows.
+    if let Some(rest) = t.strip_prefix("gallery:") {
+        return (rest.starts_with("http://") || rest.starts_with("https://")) && rest.len() < 2048;
+    }
     // FTPS: `ftps://` (implicit on 990, else explicit) and `ftpes://`.
     (t.starts_with("http://")
         || t.starts_with("https://")
@@ -764,6 +798,18 @@ pub fn is_download_url(s: &str) -> bool {
         || t.starts_with("ftpes://"))
         && t.len() < 2048
         && !t.contains(' ')
+}
+
+/// Bytes at `path`: a file's length, or every file under a folder (a
+/// torrent of several files is saved as one).
+pub fn size_on_disk(path: &std::path::Path) -> u64 {
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => m.len(),
+        Ok(m) if m.is_dir() => std::fs::read_dir(path)
+            .map(|rd| rd.flatten().map(|e| size_on_disk(&e.path())).sum())
+            .unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// Public product name shown everywhere in the UI.
@@ -775,11 +821,19 @@ const LEGACY_SLUG: &str = "idm_rust";
 
 /// App config directory, e.g. `%APPDATA%/download_craft`.
 pub fn config_dir() -> Option<std::path::PathBuf> {
+    // Server mode (Docker) keeps its settings, queue and pairings in a
+    // folder of its own.
+    if let Some(d) = std::env::var_os("DOWNLOAD_CRAFT_DATA").filter(|v| !v.is_empty()) {
+        return Some(std::path::PathBuf::from(d));
+    }
     dirs::config_dir().map(|p| p.join(APP_SLUG))
 }
 
 /// Default destination when the OS has no configured Downloads directory.
 pub fn default_download_dir() -> std::path::PathBuf {
+    if let Some(d) = std::env::var_os("DOWNLOAD_CRAFT_DOWNLOADS").filter(|v| !v.is_empty()) {
+        return std::path::PathBuf::from(d);
+    }
     dirs::download_dir().or_else(|| dirs::home_dir().map(|p| p.join("Downloads")))
         .unwrap_or_else(|| std::path::PathBuf::from("Downloads"))
 }
@@ -924,6 +978,25 @@ pub fn ui_pref_set_bool(key: &str, value: bool) {
     obj.insert(key.to_string(), serde_json::Value::Bool(value));
     if let Ok(json) = serde_json::to_string_pretty(&v) {
         let _ = atomic_write(&p, json.as_bytes());
+    }
+}
+
+/// Merge one number into ui.json (the interface size from Ctrl +/-).
+pub fn ui_pref_set_u64(key: &str, value: u64) {
+    let _guard = fs_lock("ui-settings");
+    if !_guard.owned() {
+        return;
+    }
+    let Some(p) = config_dir().map(|d| d.join("ui.json")) else { return };
+    let mut v: serde_json::Value = std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(key.to_string(), serde_json::json!(value));
+        if let Ok(json) = serde_json::to_string_pretty(&v) {
+            let _ = atomic_write(&p, json.as_bytes());
+        }
     }
 }
 

@@ -67,6 +67,12 @@ mod tests {
         let j = Journal::new("https://x/a.bin", 100, Some("\"e\"".into()), None, vec![(10, 20), (50, 100)]);
         j.save(&p).unwrap();
         assert_eq!(Journal::load(&p), Some(j));
+        // A partial moved to another name keeps its bytes under the new key.
+        assert!(crate::rekey_journal(&p, "C:/Downloads/a.bin"));
+        let moved = Journal::load(&p).unwrap();
+        assert_eq!(moved.key, "C:/Downloads/a.bin");
+        assert_eq!(moved.remaining, vec![(10, 20), (50, 100)]);
+        assert!(!crate::rekey_journal(&p, "C:/Downloads/a.bin"));
         std::fs::write(&p, b"{not json").unwrap();
         assert_eq!(Journal::load(&p), None);
         let _ = std::fs::remove_dir_all(dir);
