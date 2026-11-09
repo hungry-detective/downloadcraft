@@ -135,6 +135,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          # Only the packages: the Docker build's own record is an artifact
+          # too, and it is not a zip that unpacks.
+          pattern: DownloadCraft-*
           merge-multiple: true
       - name: Publish release and packages
         env:
