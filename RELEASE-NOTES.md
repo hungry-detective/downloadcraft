@@ -101,7 +101,35 @@
     15.8 s. A crawling connection is noticed within a second or two, and a
     free connection takes over its remaining part.
 
-# Download Craft 0.9.15
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.9.16-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.9.16-windows-x64-portable.zip` and run `download_craft.exe`.
+
+**macOS 12+.** Unzip `DownloadCraft-0.9.16-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.9.16_amd64.deb`; Fedora: install
+`downloadcraft-0.9.16-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.9.16-x86_64.AppImage`.
+
+**Browser extensions.** Chrome, Edge and Brave: extract the Chrome ZIP and load
+the extracted folder in `chrome://extensions`. Firefox: load
+`DownloadCraft-Firefox-0.9.16.xpi` from
+`about:debugging#/runtime/this-firefox`.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.9.16`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+
+# Earlier: Download Craft 0.9.15
 
 ## What's new
 
@@ -145,27 +173,3 @@
 - **Better Linux window grouping:** the main app and its dialogs appear under
   one desktop application icon.
 - **Improved video filenames:** resolved titles replace generic CDN names.
-
-## Install
-
-**Windows 10/11.** Extract `DownloadCraft-0.9.15-windows-x64-portable.zip` and run
-`download_craft.exe` — nothing to install.
-
-**macOS 12+.** Unzip `DownloadCraft-0.9.15-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.9.15_amd64.deb`; Fedora: install
-`downloadcraft-0.9.15-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.9.15-x86_64.AppImage`.
-
-**Browser extensions.** Chrome, Edge and Brave: extract the Chrome ZIP and load
-the extracted folder in `chrome://extensions`. Firefox: load
-`DownloadCraft-Firefox-0.9.15.xpi` from
-`about:debugging#/runtime/this-firefox`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
-
-Your queue and settings carry over between versions.

@@ -1599,7 +1599,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "download_craft"
-version = "0.9.15"
+version = "0.9.16"
 dependencies = [
  "ab_glyph",
  "anyhow",
