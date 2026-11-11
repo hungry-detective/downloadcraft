@@ -86,7 +86,7 @@ fn install_panic_hook() {
 }
 
 /// Set on the copy `window_result` starts after OpenGL failed.
-const RELAUNCHED: &str = "DOWNLOAD_CRAFT_RELAUNCHED";
+pub(crate) const RELAUNCHED: &str = "DOWNLOAD_CRAFT_RELAUNCHED";
 
 /// A window that could not open (issue #14: OpenGL on an old GPU driver)
 /// does not close without a word. On Windows every window draws with
@@ -263,6 +263,7 @@ fn main() -> eframe::Result<()> {
             crate::model::APP_NAME,
             options,
             Box::new(move |cc| {
+                crate::platform::guard_gpu(cc);
                 crate::app::setup_fonts(cc);
                 app::apply_theme(&cc.egui_ctx, &app::stored_theme());
                 Ok(Box::new(CraftApp::new(rt)))

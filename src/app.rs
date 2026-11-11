@@ -464,6 +464,8 @@ pub(crate) const MI_CLOUD_DL: &str = "\u{e2c0}";
 pub(crate) const MI_PAUSE: &str = "\u{e034}";
 pub(crate) const MI_COPY: &str = "\u{e14d}";
 pub(crate) const MI_PUBLIC: &str = "\u{e80b}";
+/// Torrents (Petal's "Add torrent"): peers in a network.
+const MI_MAGNET: &str = "\u{e9f4}";
 pub(crate) const MI_DELETE: &str = "\u{e872}";
 // ---- icons added for the main-window redesign (main_window.html) ----
 /// Plus (toolbar "Add URL").
@@ -771,8 +773,16 @@ fn status_bar_at(p: &egui::Painter, rect: egui::Rect, text: &str, frac: f32, col
     let short = text.split_whitespace().next().unwrap_or(text);
     let text = if full > x1 - x0 && short.ends_with('%') { short } else { text };
     let shown = truncate_to_width(p, text, font.clone(), color, x1 - x0);
-    p.text(egui::pos2(x0, rect.center().y - 5.0), egui::Align2::LEFT_CENTER, shown, font, color);
-    let bar = egui::Rect::from_min_max(egui::pos2(x0, rect.center().y + 7.0), egui::pos2(x1, rect.center().y + 10.0));
+    // Centred under the header like the dot statuses ("● Finished"), with
+    // a bar as wide as its words (at least 56 px), not the whole column.
+    let tw = p.layout_no_wrap(shown.clone(), font.clone(), color).size().x;
+    let cx = rect.center().x;
+    p.text(egui::pos2(cx, rect.center().y - 5.0), egui::Align2::CENTER_CENTER, shown, font, color);
+    let bw = tw.max(56.0).min(x1 - x0);
+    let bar = egui::Rect::from_min_max(
+        egui::pos2(cx - bw / 2.0, rect.center().y + 7.0),
+        egui::pos2(cx + bw / 2.0, rect.center().y + 10.0),
+    );
     p.rect_filled(bar, 1.5, pl().surface_lt);
     let fw = (bar.width() * frac.clamp(0.0, 1.0)).max(if frac > 0.0 { 3.0 } else { 0.0 });
     if fw > 0.0 {
@@ -1890,6 +1900,25 @@ const TOOL_H: f32 = 32.0;
 const LEDGER_TOOL_H: f32 = 54.0;
 /// Petal's: a smaller glyph over a small label.
 const PETAL_TOOL_H: f32 = 42.0;
+/// Petal's download cards: the narrowest a grid card gets, its height, and
+/// the gap between cards (both ways).
+const PETAL_CARD_MIN_W: f32 = 300.0;
+const PETAL_CARD_H: f32 = 124.0;
+const PETAL_CARD_GAP: f32 = 14.0;
+
+/// Petal's file badges: one tint per category (as in its sidebar).
+fn petal_category_tint(cat: &str) -> egui::Color32 {
+    let rgb = |c: u32| egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+    match cat {
+        "Compressed" => rgb(0xEA8A0C),
+        "Document" => rgb(0x3B82F6),
+        "Music" => rgb(0xC026D3),
+        "Apps" | "Programs" => rgb(0x16A34A),
+        "Video" => rgb(0xE11D48),
+        "Image" => rgb(0x0891B2),
+        _ => pl().dim,
+    }
+}
 
 /// Ledger gives every toolbar action a colour of its own.
 fn ledger_icon_color(icon: &str) -> egui::Color32 {
@@ -1909,6 +1938,82 @@ fn ledger_icon_color(icon: &str) -> egui::Color32 {
 }
 /// Gap between toolbar buttons (`.toolbar { gap: 4px }`).
 const TOOL_GAP: f32 = 4.0;
+
+/// A toolbar glyph centred at `c`, `size` px: the icon font's, except the
+/// torrent magnet, which the font does not have and is drawn here.
+fn draw_tool_glyph(p: &egui::Painter, c: egui::Pos2, icon: &str, size: f32, color: egui::Color32) {
+    if icon == MI_MAGNET {
+        draw_magnet(p, c, size, color);
+    } else {
+        p.text(c, egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(size), color);
+    }
+}
+
+/// A horseshoe magnet, poles down, as in the usual torrent / magnet-link
+/// sign: a thick U with the pole tips marked off.
+fn draw_magnet(p: &egui::Painter, c: egui::Pos2, size: f32, color: egui::Color32) {
+    let k = size / 24.0;
+    let th = 4.2 * k; // limb thickness
+    let r = 7.0 * k; // centre-line radius of the bend
+    let top = c.y - 2.5 * k; // centre of the bend
+    let foot = c.y + 9.0 * k; // bottom of the poles
+    let stroke = egui::Stroke::new(th, color);
+    // The bend: a half circle over the top.
+    let n = 18;
+    let arc: Vec<egui::Pos2> = (0..=n)
+        .map(|i| {
+            let a = std::f32::consts::PI * (i as f32 / n as f32);
+            egui::pos2(c.x - r * a.cos(), top - r * a.sin())
+        })
+        .collect();
+    p.add(egui::Shape::line(arc, stroke));
+    // The two limbs, then a small gap, then the pole tips (drawn apart,
+    // so the mark reads on any toolbar colour).
+    let tip = 3.6 * k;
+    let gap = 1.6 * k;
+    for x in [c.x - r, c.x + r] {
+        p.line_segment([egui::pos2(x, top), egui::pos2(x, foot - tip - gap)], stroke);
+        p.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x - th / 2.0, foot - tip), egui::pos2(x + th / 2.0, foot)),
+            0.6 * k,
+            color,
+        );
+    }
+}
+
+/// Toolbar label sizes: Craft's label beside its glyph, Ledger's and
+/// Petal's under it.
+const CRAFT_TOOL_FONT: f32 = 11.0;
+const STACKED_TOOL_FONT: f32 = 11.0;
+
+/// Craft's toolbar this frame: labels under small glyphs (a window too
+/// narrow for its labels beside the glyphs), instead of glyphs alone.
+static CRAFT_STACKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Craft's stacked buttons: a small glyph over a small label.
+const CRAFT_STACKED_H: f32 = 44.0;
+
+fn craft_stacked() -> bool {
+    CRAFT_STACKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The width of a labelled toolbar button in the active look (what
+/// [`tool_button`] allocates), so a toolbar can tell whether every button
+/// fits with its label before it draws any.
+fn tool_w(ui: &egui::Ui, label: &str) -> f32 {
+    let look = crate::skins::active();
+    let stacked = look == "craft" && craft_stacked();
+    let size = if look == "craft" && !stacked { CRAFT_TOOL_FONT } else { STACKED_TOOL_FONT };
+    let lw = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), pl().txt).size().x;
+    match look {
+        "petal" => (lw + 14.0).max(46.0),
+        "ledger" => (lw + 12.0).max(48.0),
+        _ if stacked => (lw + 12.0).max(44.0),
+        // Glyph centred at 13, label from 24, 8 px after it: compact
+        // enough that every label fits beside its glyph at the default
+        // window width.
+        _ => 24.0 + lw + 8.0,
+    }
+}
 
 /// Toolbar button: icon above label, content-sized width, uniform height.
 /// Manual-input version: reserves space, paints (hover from caller),
@@ -1930,25 +2035,30 @@ fn tool_button(
 ) -> egui::Rect {
     // Icon beside the label, 32 px tall; an empty label makes an icon-only
     // square (Settings at the far end).
-    let font = egui::FontId::proportional(12.0);
-    let label_w = if label.is_empty() {
-        0.0
-    } else {
-        ui.painter().layout_no_wrap(label.to_owned(), font.clone(), pl().txt).size().x
-    };
+    let font = egui::FontId::proportional(CRAFT_TOOL_FONT);
     let look = crate::skins::active();
-    let ledger = look == "ledger" || look == "petal";
-    let w = if look == "petal" {
-        let lw = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(11.0), pl().txt).size().x;
-        if label.is_empty() { PETAL_TOOL_H } else { (lw + 14.0).max(46.0) }
+    let craft_stack = look == "craft" && craft_stacked();
+    let ledger = look == "ledger" || look == "petal" || craft_stack;
+    let w = if !label.is_empty() {
+        tool_w(ui, label)
+    } else if craft_stack {
+        CRAFT_STACKED_H
+    } else if look == "petal" {
+        PETAL_TOOL_H
     } else if ledger {
-        if label.is_empty() { LEDGER_TOOL_H } else { (label_w + 16.0).max(58.0) }
-    } else if label.is_empty() {
-        TOOL_H
+        LEDGER_TOOL_H
     } else {
-        10.0 + 16.0 + 7.0 + label_w + 12.0
+        TOOL_H
     };
-    let h = if look == "petal" { PETAL_TOOL_H } else if ledger { LEDGER_TOOL_H } else { TOOL_H };
+    let h = if look == "petal" {
+        PETAL_TOOL_H
+    } else if craft_stack {
+        CRAFT_STACKED_H
+    } else if ledger {
+        LEDGER_TOOL_H
+    } else {
+        TOOL_H
+    };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
     // Screen readers (Narrator, NVDA): the button's name, though it is painted.
     let spoken = if label.is_empty() { tip.to_string() } else { label.to_string() };
@@ -1959,8 +2069,8 @@ fn tool_button(
         // A flat button: a pale wash and a hairline under the pointer, a
         // coloured glyph over its label.
         if hov {
-            if look == "petal" {
-                p.rect_filled(rect, 10.0, pl().surface_lt);
+            if look == "petal" || craft_stack {
+                p.rect_filled(rect, if craft_stack { 8.0 } else { 10.0 }, pl().surface_lt);
             } else {
                 p.rect(rect, 2.0, pl().surface_lt, egui::Stroke::new(1.0_f32, pl().sel_bd.gamma_multiply(0.6)), egui::StrokeKind::Inside);
             }
@@ -1978,10 +2088,16 @@ fn tool_button(
         };
         let tc = if enabled { pl().txt } else { pl().dim.gamma_multiply(0.6) };
         if label.is_empty() {
-            p.text(rect.center(), egui::Align2::CENTER_CENTER, icon.to_string(), crate::fonts::icon(26.0), ic);
+            draw_tool_glyph(p, rect.center(), icon, if craft_stack { 18.0 } else { 24.0 }, ic);
         } else {
-            let (isz, lsz, iy, ly) = if look == "petal" { (17.0, 11.0, 14.0, 8.0) } else { (26.0, 11.0, 20.0, 10.0) };
-            p.text(egui::pos2(rect.center().x, rect.min.y + iy), egui::Align2::CENTER_CENTER, icon.to_string(), crate::fonts::icon(isz), ic);
+            let (isz, lsz, iy, ly) = if look == "petal" {
+                (17.0, STACKED_TOOL_FONT, 14.0, 8.0)
+            } else if craft_stack {
+                (16.0, STACKED_TOOL_FONT - 0.5, 14.0, 9.0)
+            } else {
+                (22.0, STACKED_TOOL_FONT, 20.0, 10.0)
+            };
+            draw_tool_glyph(p, egui::pos2(rect.center().x, rect.min.y + iy), icon, isz, ic);
             p.text(egui::pos2(rect.center().x, rect.max.y - ly), egui::Align2::CENTER_CENTER, label.to_string(), egui::FontId::proportional(lsz), tc);
         }
         if enabled && !tip.is_empty() && hov {
@@ -2006,15 +2122,9 @@ fn tool_button(
     if label.is_empty() {
         p.text(rect.center(), egui::Align2::CENTER_CENTER, icon.to_string(), crate::fonts::icon(17.0), c);
     } else {
+        draw_tool_glyph(p, egui::pos2(rect.min.x + 13.0, rect.center().y), icon, 14.0, c);
         p.text(
-            egui::pos2(rect.min.x + 18.0, rect.center().y),
-            egui::Align2::CENTER_CENTER,
-            icon.to_string(),
-            crate::fonts::icon(16.0),
-            c,
-        );
-        p.text(
-            egui::pos2(rect.min.x + 33.0, rect.center().y),
+            egui::pos2(rect.min.x + 24.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label.to_string(),
             font,
@@ -2022,22 +2132,27 @@ fn tool_button(
         );
     }
     if enabled && !tip.is_empty() && hov {
-        egui::Tooltip::always_open(
-            ui.ctx().clone(),
-            ui.layer_id(),
-            ui.id().with(("toolbar_tip", label)),
-            egui::PopupAnchor::Pointer,
-        )
-        .gap(12.0)
-        .show(|ui| {
-            // Near the window's edge the tooltip has little room, and a plain
-            // label broke into one word a line (issue #10, at ~500 px wide).
-            // Short tips stay on one line, long ones wrap at a readable width.
-            ui.set_min_width(tip.chars().count().min(42) as f32 * 6.4);
-            ui.add(egui::Label::new(tip).wrap_mode(egui::TextWrapMode::Wrap));
-        });
+        hover_tip(ui, label, tip);
     }
     rect
+}
+
+/// The toolbar's tooltip at the pointer (for a control under it now).
+fn hover_tip(ui: &egui::Ui, key: &str, tip: &str) {
+    egui::Tooltip::always_open(
+        ui.ctx().clone(),
+        ui.layer_id(),
+        ui.id().with(("toolbar_tip", key)),
+        egui::PopupAnchor::Pointer,
+    )
+    .gap(12.0)
+    .show(|ui| {
+        // Near the window's edge the tooltip has little room, and a plain
+        // label broke into one word a line (issue #10, at ~500 px wide).
+        // Short tips stay on one line, long ones wrap at a readable width.
+        ui.set_min_width(tip.chars().count().min(42) as f32 * 6.4);
+        ui.add(egui::Label::new(tip).wrap_mode(egui::TextWrapMode::Wrap));
+    });
 }
 
 /// Add-URL button: the same metrics and the same hover-only wash as the other
@@ -2047,9 +2162,17 @@ fn tool_button(
 fn add_url_button(ui: &mut egui::Ui, man: &ManState, hot: bool) -> egui::Rect {
     match crate::skins::active() {
         "ledger" => return tool_button(ui, man, MI_ADD, crate::i18n::t("Add URL"), true, if hot { "A download link is on the clipboard: click to add it" } else { "Add a download by URL" }),
+        "craft" if craft_stacked() => {
+            let r = tool_button(ui, man, MI_ADD, crate::i18n::t("Add URL"), true, if hot { "A download link is on the clipboard: click to add it" } else { "Add a download by URL" });
+            if hot {
+                ui.painter().rect_stroke(r.shrink(1.0), 8.0, egui::Stroke::new(1.5_f32, pl().acc), egui::StrokeKind::Inside);
+            }
+            return r;
+        }
         "petal" => {
-            // A filled pill in the accent: the one loud control.
-            let label = crate::i18n::t("Add download").to_string();
+            // A filled pill in the accent: the one loud control. It takes the
+            // link on the clipboard, like Add URL everywhere else.
+            let label = crate::i18n::t("Add URL").to_string();
             let font = egui::FontId::proportional(13.0);
             let lw = ui.painter().layout_no_wrap(label.clone(), font.clone(), egui::Color32::WHITE).size().x;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0 + 18.0 + 8.0 + lw + 18.0, TOOL_H + 4.0), egui::Sense::hover());
@@ -2062,14 +2185,16 @@ fn add_url_button(ui: &mut egui::Ui, man: &ManState, hot: bool) -> egui::Rect {
             }
             p.text(egui::pos2(rect.min.x + 25.0, rect.center().y), egui::Align2::CENTER_CENTER, MI_ADD, crate::fonts::icon(18.0), egui::Color32::WHITE);
             p.text(egui::pos2(rect.min.x + 42.0, rect.center().y), egui::Align2::LEFT_CENTER, label, font, egui::Color32::WHITE);
+            if hov {
+                hover_tip(ui, "petal_add_url", if hot { "A download link is on the clipboard: click to add it" } else { "Add a download by URL (a link on the clipboard is filled in)" });
+            }
             return rect;
         }
         _ => {}
     }
     let label = crate::i18n::t("Add URL").to_string();
-    let font = egui::FontId::proportional(12.0);
-    let label_w = ui.painter().layout_no_wrap(label.clone(), font.clone(), egui::Color32::WHITE).size().x;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0 + 16.0 + 7.0 + label_w + 14.0, TOOL_H), egui::Sense::hover());
+    let font = egui::FontId::proportional(CRAFT_TOOL_FONT);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(tool_w(ui, &label), TOOL_H), egui::Sense::hover());
     let hov = man.hover(&rect);
     let p = ui.painter();
     // A link waiting on the clipboard: a soft ring breathes around the
@@ -2098,14 +2223,14 @@ fn add_url_button(ui: &mut egui::Ui, man: &ManState, hot: bool) -> egui::Rect {
     }
     let c = if hov { pl().txt } else { pl().txt.gamma_multiply(0.75) };
     p.text(
-        egui::pos2(rect.min.x + 20.0, rect.center().y),
+        egui::pos2(rect.min.x + 13.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
         MI_ADD.to_string(),
-        crate::fonts::icon(17.0),
+        crate::fonts::icon(15.0),
         c,
     );
     p.text(
-        egui::pos2(rect.min.x + 35.0, rect.center().y),
+        egui::pos2(rect.min.x + 24.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
         font,
@@ -2239,6 +2364,8 @@ enum ToolId {
     Batch,
     /// Petal: take every finished download off the list.
     ClearDone,
+    /// Add a torrent (a magnet link on the clipboard, or .torrent files).
+    AddTorrent,
 }
 
 /// Manual hit-test targets. Layout records (kind, rect) every frame;
@@ -3909,6 +4036,15 @@ impl CraftApp {
         }
         let name = d.filename.clone();
         crate::model::rebind_resume(&dest, &item.url);
+        // A paused transfer still holds its connections' old link: stop it
+        // (its bytes stay on disk) so the new start uses the new link and
+        // continues from those bytes.
+        if self.tasks.contains_key(&id) {
+            self.cancel_task(id);
+        }
+        if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+            d.downloaded_bytes = d.downloaded_bytes.max(crate::model::partial_bytes(&dest));
+        }
         self.save_queue();
         self.push_log(format!("Refresh address: new link for {name} - continuing."));
         self.resume(id);
@@ -4663,11 +4799,17 @@ impl CraftApp {
             }
             self.downloads[pos].duration_secs = media.0;
             self.downloads[pos].expects_audio = media.1;
-            self.downloads[pos].downloaded_bytes = 0;
+            // A failed download continues from what it has (same link, same
+            // file); a finished one whose file is gone starts again.
+            let dp = self.downloads[pos].dest_path();
+            let failed = matches!(self.downloads[pos].status, Status::Failed(_));
+            self.downloads[pos].downloaded_bytes =
+                if failed && crate::engine::has_partial(&dp) { crate::model::partial_bytes(&dp) } else {
+                    crate::model::drop_resume_state(&dp);
+                    0
+                };
             self.downloads[pos].speed_bps = 0.0;
             self.downloads[pos].status = Status::Queued;
-            let dp = self.downloads[pos].dest_path();
-            crate::model::drop_resume_state(&dp);
             self.push_log(format!("Re-queued: {fname}"));
             if autostart {
                 self.start(id);
@@ -4710,9 +4852,13 @@ impl CraftApp {
         if let Some(pos) = crate::model::find_dest_clash(&self.downloads, &dest) {
             let id = self.downloads[pos].id;
             if self.downloads[pos].url != url {
-                self.downloads[pos].url = url;
-                self.downloads[pos].downloaded_bytes = 0;
-                crate::model::drop_resume_state(&dest);
+                let old = std::mem::replace(&mut self.downloads[pos].url, url);
+                self.downloads[pos].downloaded_bytes =
+                    if crate::model::keep_or_drop_resume(&dest, &old, &self.downloads[pos].url) {
+                        crate::model::partial_bytes(&dest)
+                    } else {
+                        0
+                    };
             }
             self.downloads[pos].duration_secs = media.0;
             self.downloads[pos].expects_audio = media.1;
@@ -5284,8 +5430,32 @@ impl CraftApp {
                 }
             }
         }
+        if urls.is_empty() {
+            self.push_log("Nothing to download in the dropped file (drop .torrent files, .url shortcuts or text lists of links).");
+            return;
+        }
+        self.offer_urls(urls, "Dropped links");
+    }
+
+    /// "Add torrent": a magnet link on the clipboard opens the Add
+    /// dialog with it; otherwise pick .torrent files (one opens the Add
+    /// dialog, several the pick-and-queue window).
+    fn add_torrent(&mut self) {
+        let clip = arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()).map(|t| t.trim().to_string()).unwrap_or_default();
+        if clip.len() > 8 && clip.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("magnet:?")) {
+            self.offer_urls(vec![clip], "Torrents");
+            return;
+        }
+        let Some(files) = rfd::FileDialog::new().add_filter("Torrent", &["torrent"]).set_title("Add torrent").pick_files() else { return };
+        let urls: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        self.offer_urls(urls, "Torrents");
+    }
+
+    /// One link opens the Add dialog with it; several open the
+    /// pick-and-queue window under `title`.
+    fn offer_urls(&mut self, mut urls: Vec<String>, title: &str) {
         match urls.len() {
-            0 => self.push_log("Nothing to download in the dropped file (drop .torrent files, .url shortcuts or text lists of links)."),
+            0 => {}
             1 => {
                 self.add_file = filename_from_url(&urls[0]);
                 self.add_url = urls.remove(0);
@@ -5295,10 +5465,10 @@ impl CraftApp {
             n => {
                 let links: Vec<crate::native_host::PageLink> =
                     urls.into_iter().map(|url| crate::native_host::PageLink { url, text: String::new() }).collect();
-                if let Err(e) = crate::native_host::open_links_window("", "Dropped links", "", &links) {
-                    self.push_log(format!("Dropped links: {e}"));
+                if let Err(e) = crate::native_host::open_links_window("", title, "", &links) {
+                    self.push_log(format!("{title}: {e}"));
                 } else {
-                    self.push_log(format!("{n} dropped links - pick them in the window that opened."));
+                    self.push_log(format!("{n} links - pick them in the window that opened."));
                 }
             }
         }
@@ -5659,8 +5829,10 @@ impl CraftApp {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
                     let groups: [Vec<(ToolId, &str, String, bool)>; 4] = [
+                        // Adding comes first, each a plain tool like the rest.
                         vec![
-                            (ToolId::AddUrl, MI_LINK, t("Add URL"), true),
+                            (ToolId::AddUrl, MI_ADD, t("Add URL"), true),
+                            (ToolId::AddTorrent, MI_MAGNET, t("Add torrent"), true),
                             (ToolId::Batch, MI_PLAYLIST_ADD, t("Batch"), true),
                         ],
                         vec![
@@ -5682,7 +5854,7 @@ impl CraftApp {
                     ];
                     // The view switch and the pill keep their room; tools
                     // that do not fit drop off the end (all are in the menus).
-                    let pill_w = 16.0 + 18.0 + 8.0 + ui.painter().layout_no_wrap(t("Add download"), egui::FontId::proportional(13.0), pl().txt).size().x + 18.0;
+                    let pill_w = 0.0;
                     let room = ui.available_width() - pill_w - 84.0 - 16.0;
                     let mut used = 0.0;
                     let mut full_row = true;
@@ -5701,7 +5873,17 @@ impl CraftApp {
                                 full_row = false;
                                 break 'groups;
                             }
-                            let r = tool_button(ui, &self.man, icon, label, *enabled, "");
+                            let tip = match id {
+                                ToolId::AddUrl if self.clipboard_url.is_some() => "A download link is on the clipboard: click to add it",
+                                ToolId::AddUrl => "Add a download by URL (a link on the clipboard is filled in)",
+                                ToolId::AddTorrent => "Add a torrent: a magnet link on the clipboard, or pick .torrent files",
+                                _ => "",
+                            };
+                            let r = tool_button(ui, &self.man, icon, label, *enabled, tip);
+                            // A link waiting on the clipboard: Add URL glows.
+                            if *id == ToolId::AddUrl && self.clipboard_url.is_some() {
+                                ui.painter().rect_stroke(r.shrink(1.0), 8.0, egui::Stroke::new(1.5_f32, pl().acc), egui::StrokeKind::Inside);
+                            }
                             used += r.width() + 2.0;
                             self.hits.push((HitKind::Tool(*id), r));
                         }
@@ -5713,10 +5895,14 @@ impl CraftApp {
                         let p = ui.painter();
                         p.rect_filled(sw, 10.0, pl().surface_lt);
                         let halves = [
-                            (egui::Rect::from_min_size(sw.min + egui::vec2(3.0, 3.0), egui::vec2(34.0, 26.0)), MI_GRID, !table, ToolId::ViewCards),
-                            (egui::Rect::from_min_size(sw.min + egui::vec2(39.0, 3.0), egui::vec2(34.0, 26.0)), MI_VIEW_LIST, table, ToolId::ViewTable),
+                            (egui::Rect::from_min_size(sw.min + egui::vec2(3.0, 3.0), egui::vec2(34.0, 26.0)), MI_GRID, !table, ToolId::ViewCards, "Grid view: downloads as cards"),
+                            (egui::Rect::from_min_size(sw.min + egui::vec2(39.0, 3.0), egui::vec2(34.0, 26.0)), MI_VIEW_LIST, table, ToolId::ViewTable, "List view: downloads as a table"),
                         ];
-                        for (r, icon, on, id) in halves {
+                        let mut tip = None;
+                        for (r, icon, on, id, hint) in halves {
+                            if self.man.hover(&r) {
+                                tip = Some(hint);
+                            }
                             if on {
                                 p.rect_filled(r, 8.0, pl().central_bg);
                             }
@@ -5724,9 +5910,9 @@ impl CraftApp {
                             p.text(r.center(), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), c);
                             self.hits.push((HitKind::Tool(id), r));
                         }
-                        ui.add_space(12.0);
-                        let r = add_url_button(ui, &self.man, self.clipboard_url.is_some());
-                        self.hits.push((HitKind::Tool(ToolId::AddUrl), r));
+                        if let Some(hint) = tip {
+                            hover_tip(ui, hint, crate::i18n::t(hint));
+                        }
                     });
                 });
             });
@@ -5771,14 +5957,31 @@ impl CraftApp {
         egui::SidePanel::left("petal_side")
             .resizable(false)
             .exact_width(200.0)
-            .frame(egui::Frame::new().fill(pl().header_bg).inner_margin(egui::Margin { left: 10, right: 10, top: 10, bottom: 10 }))
+            .show_separator_line(false)
+            // One card, on the page like the tiles beside it: same top and
+            // bottom gutter (12 px), its rows sharing out the card's height.
+            .frame(egui::Frame::new().fill(pl().bg).inner_margin(egui::Margin { left: 12, right: 0, top: 12, bottom: 12 }))
             .show(ctx, |ui| {
-                let full = ui.max_rect();
-                ui.painter().vline(full.max.x + 9.5, (full.min.y - 10.0)..=(full.max.y + 10.0), egui::Stroke::new(1.0_f32, pl().card_bd));
+                let card = ui.max_rect();
+                ui.painter().rect(card, radius(), pl().central_bg, egui::Stroke::new(1.0_f32, pl().card_bd), egui::StrokeKind::Inside);
+                const PAD: f32 = 8.0;
+                const HEAD_H: f32 = 22.0;
+                const GAP: f32 = 6.0;
+                let n_rows = (library.len() + cats.len()) as f32;
+                // Every row and head is followed by 1 px of item spacing.
+                let spacing = n_rows + 2.0;
+                let row_h = ((card.height() - 2.0 * PAD - 2.0 * HEAD_H - GAP - spacing - 1.0) / n_rows).floor().clamp(22.0, 34.0);
+                let inner = card.shrink(PAD);
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+                let ui = &mut ui;
                 ui.spacing_mut().item_spacing.y = 1.0;
-                egui::ScrollArea::vertical().id_salt("petal_side_scroll").auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("petal_side_scroll")
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                    .show(ui, |ui| {
                     let mut row = |ui: &mut egui::Ui, key: &str, icon: &str, label: &str, n: usize, col: egui::Color32| {
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::hover());
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
                         let on = cur == key || (key == "Unfinished" && cur == "Incomplete");
                         let hov = self.man.hover(&r);
                         let p = ui.painter();
@@ -5794,14 +5997,14 @@ impl CraftApp {
                         self.hits.push((HitKind::SideRow(key.to_string()), r));
                     };
                     let head = |ui: &mut egui::Ui, title: &str| {
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::hover());
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), HEAD_H), egui::Sense::hover());
                         ui.painter().text(egui::pos2(r.min.x + 10.0, r.center().y + 1.0), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.0), pl().dim);
                     };
                     head(ui, &t("Library"));
                     for (key, icon, label, n, col) in &library {
                         row(ui, key, icon, label, *n, *col);
                     }
-                    ui.add_space(6.0);
+                    ui.add_space(GAP);
                     head(ui, &t("Categories"));
                     for (key, icon, label, col) in &cats {
                         let n = cat_n.get(key).copied().unwrap_or(0);
@@ -5849,13 +6052,21 @@ impl CraftApp {
         ui.add_space(8.0);
     }
 
-    /// Petal's list: every download a card (file badge, name, size and
-    /// category, a state chip, a progress bar while it runs, a line of
-    /// figures, and its actions). Click selects, right-click the menu,
-    /// double-click as in the table: the same hits the table records.
+    /// Petal's list: a grid of cards (as many per row as fit, each at least
+    /// [`PETAL_CARD_MIN_W`] wide): a file-type badge, name and category, a
+    /// state chip, a progress bar, a line of figures and the actions. Click
+    /// selects, right-click the menu, double-click as in the table: the same
+    /// hits the table records. The grid's outer edges line up with the
+    /// summary tiles above it.
     fn petal_cards(&mut self, ui: &mut egui::Ui, ids: &[u64]) {
         modern_scrollbars(ui);
-        let body_h = (ui.available_height() - 4.0).max(80.0);
+        // Ends 12 px above the status bar, where the sidebar card ends.
+        let body_h = (ui.available_height() - 12.0).max(80.0);
+        // The tiles span 24 px .. (panel width - 12 px): the cards use the
+        // same two edges, measured here, outside the scroll area (whose
+        // content is narrower by the scrollbar's lane, which then sits in
+        // the 12 px gutter).
+        let (x0, x1) = (ui.max_rect().min.x + 24.0, ui.max_rect().max.x - 12.0);
         egui::ScrollArea::vertical()
             .id_salt("dl_cards")
             .max_height(body_h)
@@ -5863,107 +6074,155 @@ impl CraftApp {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let view = ui.clip_rect();
-                for &id in ids {
-                    let Some(d) = self.downloads.iter().find(|d| d.id == id) else { continue };
-                    let running = matches!(d.status, Status::Downloading);
-                    let with_bar = running || matches!(d.status, Status::Paused);
-                    let h = if with_bar { 80.0 } else { 68.0 };
-                    let (outer, oresp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h + 6.0), egui::Sense::hover());
-                    let spoken = format!("{}, {}, {}%", d.filename, d.status.label(), (d.progress() * 100.0) as u32);
-                    oresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, d.selected, &spoken));
-                    let r = egui::Rect::from_min_size(outer.min + egui::vec2(24.0, 6.0), egui::vec2(outer.width() - 40.0, h));
-                    if !r.intersects(view) {
+                let full = ui.available_width();
+                let left = x0 - ui.max_rect().min.x;
+                let gap = PETAL_CARD_GAP;
+                let inner = (x1 - x0).max(120.0);
+                let cols = (((inner + gap) / (PETAL_CARD_MIN_W + gap)).floor() as usize).clamp(1, 4);
+                let cw = (inner - gap * (cols as f32 - 1.0)) / cols as f32;
+                // Card height: the rows that fit fill the view exactly, so
+                // the grid's last visible row ends on the sidebar card's
+                // bottom edge instead of a few pixels above it (a fixed
+                // height left a strip that never lined up). Fewer rows than
+                // fit, or a height far from the design's: the fixed one.
+                const TOP: f32 = 6.0;
+                let rows = ids.len().div_ceil(cols);
+                let room = view.height() - TOP + gap;
+                let fit = (room / (PETAL_CARD_H + gap)).round().max(1.0);
+                let card_h = if rows as f32 >= fit {
+                    let h = room / fit - gap;
+                    if (PETAL_CARD_H * 0.85..=PETAL_CARD_H * 1.3).contains(&h) { h } else { PETAL_CARD_H }
+                } else {
+                    PETAL_CARD_H
+                };
+                ui.add_space(TOP);
+                for chunk in ids.chunks(cols) {
+                    let (row, _) = ui.allocate_exact_size(egui::vec2(full, card_h + gap), egui::Sense::hover());
+                    if !row.intersects(view) {
                         continue;
                     }
-                    let p = ui.painter().clone();
-                    let hov = self.man.hover(&r);
-                    let (chip, chip_c) = match &d.status {
-                        Status::Downloading => (crate::i18n::t("Downloading").to_string(), pl().acc),
-                        Status::Paused => (crate::i18n::t("Paused").to_string(), pl().warning),
-                        Status::Queued => (crate::i18n::t("Queued").to_string(), pl().dim),
-                        Status::Completed => (crate::i18n::t("Complete").to_string(), pl().done),
-                        Status::Failed(_) => (crate::i18n::t("Failed").to_string(), pl().fail),
-                    };
-                    let edge = if d.selected { pl().acc } else if hov { pl().dim.gamma_multiply(0.5) } else { pl().card_bd };
-                    let fill = if d.selected { mix(pl().central_bg, pl().acc, 0.06) } else { pl().central_bg };
-                    p.rect(r, radius(), fill, egui::Stroke::new(if d.selected { 2.0 } else { 1.0 }, edge), egui::StrokeKind::Inside);
-                    self.hits.push((HitKind::Row(id), r.intersect(view)));
-                    // File badge.
-                    let cat = d.category().to_string();
-                    let badge = egui::Rect::from_min_size(r.min + egui::vec2(12.0, 11.0), egui::vec2(34.0, 34.0));
-                    p.rect_filled(badge, 8.0, wash(chip_c, 36));
-                    line_icon(&p, badge.center(), 16.0, &cat, chip_c);
-                    // Name, then size and category.
-                    let tx = badge.max.x + 12.0;
-                    let chip_font = egui::FontId::proportional(10.5);
-                    let cw = p.layout_no_wrap(chip.clone(), chip_font.clone(), chip_c).size().x + 24.0;
-                    let name_w = (r.max.x - 12.0 - cw - 12.0 - tx).max(40.0);
-                    let name = truncate_to_width(&p, &d.filename, egui::FontId::proportional(13.0), pl().txt, name_w);
-                    crate::shaped::draw(&p, egui::pos2(tx, badge.min.y + 8.0), egui::Align2::LEFT_CENTER, &name, egui::FontId::proportional(13.0), pl().txt);
-                    let size = d.total_bytes.map(format_bytes).unwrap_or_else(|| "--".into());
-                    p.text(egui::pos2(tx, badge.min.y + 26.0), egui::Align2::LEFT_CENTER, format!("{size} · {}", crate::i18n::t(&cat)), egui::FontId::proportional(11.0), pl().dim);
-                    // State chip.
-                    let cr = egui::Rect::from_min_size(egui::pos2(r.max.x - 12.0 - cw, r.min.y + 10.0), egui::vec2(cw, 20.0));
-                    p.rect_filled(cr, 10.0, wash(chip_c, 34));
-                    p.circle_filled(egui::pos2(cr.min.x + 11.0, cr.center().y), 3.0, chip_c);
-                    p.text(egui::pos2(cr.min.x + 19.0, cr.center().y), egui::Align2::LEFT_CENTER, chip, chip_font, chip_c);
-                    // Progress bar while it runs or waits half-done.
-                    // Figures and buttons on the card's last line.
-                    let mut line_y = r.max.y - 13.0;
-                    if with_bar {
-                        let bar = egui::Rect::from_min_size(egui::pos2(r.min.x + 12.0, badge.max.y + 6.0), egui::vec2(r.width() - 24.0, 4.0));
-                        p.rect_filled(bar, 2.0, pl().track);
-                        let f = d.progress().clamp(0.0, 1.0);
-                        if f > 0.0 {
-                            p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2((bar.width() * f).max(4.0), 4.0)), 2.0, if running { pl().acc } else { pl().warning });
-                        }
-                        line_y = bar.max.y + 11.0;
-                    }
-                    // Figures.
-                    let figures = match &d.status {
-                        Status::Downloading => {
-                            // Speed and time left only once they are known.
-                            let mut parts = vec![format!("{}%", (d.progress() * 100.0) as u32)];
-                            if d.speed_bps > 0.0 {
-                                parts.push(format_speed(d.speed_bps));
-                            }
-                            let eta = format_eta(d);
-                            if !eta.trim().is_empty() && eta.trim() != "-" && eta.trim() != "--" {
-                                parts.push(eta);
-                            }
-                            parts.join("  ·  ")
-                        }
-                        Status::Paused => format!("{}%  ·  {}", (d.progress() * 100.0) as u32, crate::i18n::t("Paused")),
-                        Status::Completed => format!("{}  ·  {}", crate::i18n::t("Completed"), relative_time(&d.created_at)),
-                        Status::Failed(e) => e.chars().take(80).collect(),
-                        Status::Queued => crate::i18n::t("Waiting in the queue").to_string(),
-                    };
-                    let fx = if with_bar { r.min.x + 12.0 } else { tx };
-                    let fw = (r.max.x - fx - 100.0).max(40.0);
-                    let figures = truncate_to_width(&p, &figures, egui::FontId::proportional(11.5), pl().dim, fw);
-                    p.text(egui::pos2(if with_bar { r.min.x + 12.0 } else { tx }, line_y), egui::Align2::LEFT_CENTER, figures, egui::FontId::proportional(11.0), pl().dim);
-                    // Actions: pause/resume (or open), folder, remove.
-                    let acts: [(&str, RowAct); 3] = [
-                        match &d.status {
-                            Status::Downloading => (MI_PAUSE, RowAct::Pause),
-                            Status::Completed => (MI_OPEN, RowAct::OpenFile),
-                            _ => (MI_PLAY, RowAct::Resume),
-                        },
-                        (MI_FOLDER_OPEN, RowAct::OpenFolder),
-                        (MI_CANCEL, RowAct::Remove),
-                    ];
-                    for (k, (icon, act)) in acts.into_iter().enumerate() {
-                        let b = egui::Rect::from_center_size(egui::pos2(r.max.x - 22.0 - (2 - k) as f32 * 26.0, line_y), egui::vec2(24.0, 22.0));
-                        let bh = self.man.hover(&b);
-                        if bh {
-                            p.rect_filled(b, 6.0, pl().surface_lt);
-                        }
-                        p.text(b.center(), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(15.0), if bh { pl().txt } else { pl().dim });
-                        self.hits.push((HitKind::CtxItem(act, id), b.intersect(view)));
+                    for (ci, &id) in chunk.iter().enumerate() {
+                        let r = egui::Rect::from_min_size(
+                            egui::pos2(row.min.x + left + ci as f32 * (cw + gap), row.min.y),
+                            egui::vec2(cw, card_h),
+                        );
+                        self.petal_card(ui, r, view, id);
                     }
                 }
                 ui.add_space(10.0);
             });
+    }
+
+    /// One card of [`Self::petal_cards`], drawn in `r`.
+    fn petal_card(&mut self, ui: &mut egui::Ui, r: egui::Rect, view: egui::Rect, id: u64) {
+        let Some(d) = self.downloads.iter().find(|d| d.id == id) else { return };
+        let spoken = format!("{}, {}, {}%", d.filename, d.status.label(), (d.progress() * 100.0) as u32);
+        let resp = ui.interact(r, ui.id().with(("petal_card", id)), egui::Sense::hover());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, d.selected, &spoken));
+        let p = ui.painter().clone();
+        let hov = self.man.hover(&r);
+        let (chip, chip_c) = match &d.status {
+            Status::Downloading => (crate::i18n::t("Downloading").to_string(), pl().acc),
+            Status::Paused => (crate::i18n::t("Paused").to_string(), pl().warning),
+            Status::Queued => (crate::i18n::t("Queued").to_string(), pl().dim),
+            Status::Completed => (crate::i18n::t("Complete").to_string(), pl().done),
+            Status::Failed(_) => (crate::i18n::t("Failed").to_string(), pl().fail),
+        };
+        let edge = if d.selected { pl().acc } else if hov { pl().dim.gamma_multiply(0.5) } else { pl().card_bd };
+        let fill = if d.selected { mix(pl().central_bg, pl().acc, 0.06) } else { pl().central_bg };
+        p.rect(r, radius() + 2.0, fill, egui::Stroke::new(if d.selected { 2.0 } else { 1.0 }, edge), egui::StrokeKind::Inside);
+        self.hits.push((HitKind::Row(id), r.intersect(view)));
+        // File badge: the extension (ZIP, EXE, MKV…) in the category's tint,
+        // or the category glyph when the name has none.
+        let cat = d.category().to_string();
+        let tint = petal_category_tint(&cat);
+        let badge = egui::Rect::from_min_size(r.min + egui::vec2(14.0, 14.0), egui::vec2(38.0, 38.0));
+        p.rect_filled(badge, 8.0, wash(tint, 40));
+        let ext = std::path::Path::new(&d.filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .filter(|e| (1..=4).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric()))
+            .map(str::to_ascii_uppercase);
+        match ext {
+            Some(e) => {
+                p.text(badge.center(), egui::Align2::CENTER_CENTER, e, crate::fonts::semi(10.5), tint);
+            }
+            None => line_icon(&p, badge.center(), 16.0, &cat, tint),
+        }
+        // State chip, top right.
+        let chip_font = egui::FontId::proportional(10.5);
+        let cw = p.layout_no_wrap(chip.clone(), chip_font.clone(), chip_c).size().x + 26.0;
+        let cr = egui::Rect::from_min_size(egui::pos2(r.max.x - 14.0 - cw, badge.min.y + 2.0), egui::vec2(cw, 22.0));
+        p.rect_filled(cr, 11.0, wash(chip_c, 34));
+        p.circle_filled(egui::pos2(cr.min.x + 12.0, cr.center().y), 3.0, chip_c);
+        p.text(egui::pos2(cr.min.x + 20.0, cr.center().y), egui::Align2::LEFT_CENTER, chip, chip_font, chip_c);
+        // Name, then the category.
+        let tx = badge.max.x + 12.0;
+        let name_w = (cr.min.x - 10.0 - tx).max(40.0);
+        let name = truncate_to_width(&p, &d.filename, crate::fonts::semi(13.5), pl().txt, name_w);
+        crate::shaped::draw(&p, egui::pos2(tx, badge.min.y + 11.0), egui::Align2::LEFT_CENTER, &name, crate::fonts::semi(13.5), pl().txt);
+        p.text(egui::pos2(tx, badge.min.y + 29.0), egui::Align2::LEFT_CENTER, crate::i18n::t(&cat), egui::FontId::proportional(11.0), pl().dim);
+        // Progress bar: every card has one, so a grid row reads evenly.
+        let bar = egui::Rect::from_min_size(egui::pos2(r.min.x + 14.0, badge.max.y + 14.0), egui::vec2(r.width() - 28.0, 5.0));
+        p.rect_filled(bar, 2.5, pl().track);
+        let f = if matches!(d.status, Status::Completed) { 1.0 } else { d.progress().clamp(0.0, 1.0) };
+        if f > 0.0 {
+            p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2((bar.width() * f).max(5.0), 5.0)), 2.5, chip_c);
+        }
+        // Figures (left) and actions (right) on the last line.
+        let line_y = r.max.y - 24.0;
+        let of_total = match d.total_bytes {
+            Some(t) if t > 0 => format!("{} {} {}", format_bytes(d.downloaded_bytes.min(t)), crate::i18n::t("of"), format_bytes(t)),
+            _ => format_bytes(d.downloaded_bytes),
+        };
+        let (figures, fig_c) = match &d.status {
+            Status::Downloading => {
+                let mut parts = vec![of_total];
+                if d.speed_bps > 0.0 {
+                    parts.push(format_speed(d.speed_bps));
+                }
+                let eta = format_eta(d);
+                if !eta.trim().is_empty() && eta.trim() != "-" && eta.trim() != "--" {
+                    parts.push(eta);
+                }
+                (parts.join(" · "), pl().dim)
+            }
+            Status::Completed => {
+                let total = format_bytes(d.total_bytes.unwrap_or(d.downloaded_bytes));
+                (format!("{total} · {}", relative_time(&d.created_at)), pl().dim)
+            }
+            Status::Failed(e) => (e.clone(), pl().fail),
+            Status::Paused | Status::Queued => (of_total, pl().dim),
+        };
+        let acts: [(&str, RowAct); 3] = [
+            match &d.status {
+                Status::Downloading => (MI_PAUSE, RowAct::Pause),
+                Status::Completed => (MI_OPEN, RowAct::OpenFile),
+                _ => (MI_PLAY, RowAct::Resume),
+            },
+            (MI_FOLDER_OPEN, RowAct::OpenFolder),
+            (MI_DELETE, RowAct::Remove),
+        ];
+        let bsz = 30.0;
+        let acts_w = 3.0 * bsz + 2.0 * 6.0;
+        let fx = r.min.x + 14.0;
+        let fw = (r.max.x - 14.0 - acts_w - 10.0 - fx).max(40.0);
+        let figures = truncate_to_width(&p, &figures, egui::FontId::proportional(11.5), fig_c, fw);
+        p.text(egui::pos2(fx, line_y), egui::Align2::LEFT_CENTER, figures, egui::FontId::proportional(11.5), fig_c);
+        for (k, (icon, act)) in acts.into_iter().enumerate() {
+            let cx = r.max.x - 14.0 - bsz / 2.0 - (2 - k) as f32 * (bsz + 6.0);
+            let b = egui::Rect::from_center_size(egui::pos2(cx, line_y), egui::vec2(bsz, bsz));
+            let bh = self.man.hover(&b);
+            let danger = matches!(act, RowAct::Remove);
+            let base = if danger { pl().fail } else { pl().txt };
+            let wash_a = if bh { 54 } else if danger { 30 } else { 0 };
+            if wash_a > 0 {
+                p.circle_filled(b.center(), bsz / 2.0, wash(base, wash_a));
+            }
+            let ic = if danger { pl().fail } else if bh { pl().txt } else { pl().dim };
+            p.text(b.center(), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), ic);
+            self.hits.push((HitKind::CtxItem(act, id), b.intersect(view)));
+        }
     }
 
     /// Tray menu: act on what was clicked, and keep its list of running
@@ -6775,10 +7034,13 @@ impl CraftApp {
             {
                 let local = &mut self.downloads[pos];
                 if local.url != it.url {
-                    local.url = std::mem::take(&mut it.url);
-                    local.downloaded_bytes = 0;
+                    let old = std::mem::replace(&mut local.url, std::mem::take(&mut it.url));
                     let dp = local.dest_path();
-                    crate::model::drop_resume_state(&dp);
+                    local.downloaded_bytes = if crate::model::keep_or_drop_resume(&dp, &old, &local.url) {
+                        crate::model::partial_bytes(&dp)
+                    } else {
+                        0
+                    };
                 }
                 local.total_bytes = it.total_bytes;
                 local.speed_bps = 0.0;
@@ -7310,6 +7572,17 @@ const DATE_W: f32 = 104.0;
 
 impl eframe::App for CraftApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // The graphics device is gone (issue #20): this window can never
+        // draw again, so save the queue and start a fresh copy of the app,
+        // which opens a new device. Downloads resume from their saved parts.
+        if crate::platform::gpu_lost() {
+            self.save_queue();
+            if let Ok(exe) = crate::platform::launch_path() {
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                let _ = std::process::Command::new(exe).args(&args).env(crate::RELAUNCHED, "1").spawn();
+            }
+            std::process::exit(0);
+        }
         if let Ok(notes) = self.startup_maintenance_rx.try_recv() {
             for note in notes {
                 self.push_log(note);
@@ -8263,7 +8536,7 @@ impl eframe::App for CraftApp {
                 let (outer, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
                 // Petal's table sits in the page's gutter like its cards.
                 let outer = if petal {
-                    egui::Rect::from_min_max(outer.min + egui::vec2(24.0, 4.0), outer.max - egui::vec2(16.0, 12.0))
+                    egui::Rect::from_min_max(outer.min + egui::vec2(24.0, 4.0), outer.max - egui::vec2(12.0, 12.0))
                 } else {
                     outer
                 };
@@ -8294,6 +8567,8 @@ impl eframe::App for CraftApp {
                 // Manual routing: paint (+record hit); process_hits acts.
                 let n_checked = self.selected_ids().len();
                 let mut tools: Vec<(ToolId, &str, &str, bool, &str)> = Vec::new();
+                // First after Add URL, so a narrow window drops it last.
+                tools.push((ToolId::AddTorrent, MI_MAGNET, crate::i18n::t("Add torrent"), true, crate::i18n::t("Add a torrent: a magnet link on the clipboard, or pick .torrent files")));
                 tools.push((ToolId::ResumeSel, MI_PLAY_CIRCLE, crate::i18n::t("Resume"), true, crate::i18n::t("Resume the selected downloads (all paused when none is checked)")));
                 tools.push((ToolId::StopSel, MI_PAUSE_CIRCLE, crate::i18n::t("Stop"), true, crate::i18n::t("Pause the selected downloads (all active when none is checked)")));
                 tools.push((ToolId::StopAll, MI_STOP_CIRCLE, crate::i18n::t("Stop All"), true, crate::i18n::t("Pause every active download now")));
@@ -8315,19 +8590,24 @@ impl eframe::App for CraftApp {
                     let room = ui.available_width() - (sq + 8.0 + TOOL_GAP) - 6.0;
                     let font = egui::FontId::proportional(12.0);
                     let label_w = |l: &str| ui.painter().layout_no_wrap(l.to_owned(), font.clone(), pl().txt).size().x;
-                    let add_w = match crate::skins::active() {
-                        // Petal's pill says "Add download" and is wider.
-                        "petal" => 16.0 + 18.0 + 8.0 + label_w(crate::i18n::t("Add download")) * 1.1 + 18.0,
-                        "ledger" => (label_w(crate::i18n::t("Add URL")) + 16.0).max(58.0),
-                        _ => 12.0 + 16.0 + 7.0 + label_w(crate::i18n::t("Add URL")) + 14.0,
-                    };
+                    let _ = label_w;
+                    let add_w = tool_w(ui, crate::i18n::t("Add URL"));
                     let sep_w = 13.0 + TOOL_GAP;
-                    let ledger_tb = crate::skins::active() == "ledger";
-                    let full: f32 = tools
-                        .iter()
-                        .map(|t| if ledger_tb { (label_w(t.2) + 16.0).max(58.0) } else { 10.0 + 16.0 + 7.0 + label_w(t.2) + 12.0 } + TOOL_GAP)
-                        .sum();
-                    let icons_only = add_w + TOOL_GAP + sep_w + full > room;
+                    // Measured with labels beside the glyphs first.
+                    CRAFT_STACKED.store(false, std::sync::atomic::Ordering::Relaxed);
+                    let full: f32 = tools.iter().map(|t| tool_w(ui, t.2) + TOOL_GAP).sum();
+                    let mut icons_only = add_w + TOOL_GAP + sep_w + full > room;
+                    let craft = crate::skins::active() == "craft";
+                    if craft && icons_only {
+                        // Labels under small glyphs take far less width.
+                        CRAFT_STACKED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let add = tool_w(ui, crate::i18n::t("Add URL"));
+                        let full: f32 = tools.iter().map(|t| tool_w(ui, t.2) + TOOL_GAP).sum();
+                        icons_only = add + TOOL_GAP + sep_w + full > room;
+                        if icons_only {
+                            CRAFT_STACKED.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                     let mut fit = tools.len();
                     if icons_only {
                         while fit > 0 && add_w + TOOL_GAP + sep_w + fit as f32 * (sq + TOOL_GAP) > room {
@@ -8391,7 +8671,9 @@ impl eframe::App for CraftApp {
                             );
                         });
                     });
-                } else if crate::skins::active() == "petal" {
+                } else if crate::skins::active() == "petal" && !self.petal_table {
+                    // (Petal's grid returns before this card; its List view
+                    // is the table below.)
                     self.petal_cards(ui, &ids);
                 } else {
                     // ---- fully manual table: explicit geometry for header
@@ -10954,9 +11236,14 @@ impl CraftApp {
             Some(pos) => {
                 // Refresh the dead row in place (same id): drop any stale
                 // resume state so a mixed-URL resume can't corrupt the file.
+                // A failed row added again into the same file continues from
+                // what it already has.
                 let id = self.downloads[pos].id;
                 let dp = self.downloads[pos].dest_path();
-                crate::model::drop_resume_state(&dp);
+                let same_file = std::path::Path::new(&final_dir).join(self.add_file.trim()) == dp;
+                if !(matches!(self.downloads[pos].status, Status::Failed(_)) && same_file && crate::engine::has_partial(&dp)) {
+                    crate::model::drop_resume_state(&dp);
+                }
                 id
             }
             None => 0,
@@ -10980,6 +11267,9 @@ impl CraftApp {
         item.checksum_sha256 = csum;
         item.overwrite_existing = self.add_overwrite;
         item.quality_pref = self.add_quality.trim().to_string();
+        if item.downloaded_bytes == 0 && crate::engine::has_partial(&item.dest_path()) {
+            item.downloaded_bytes = crate::model::partial_bytes(&item.dest_path());
+        }
         // Probed (or browser-measured) size survives queueing so the engine
         // and progress UI know the total even if a re-probe would 403.
         item.total_bytes = self.probe_size.filter(|s| *s > 0);
@@ -11101,11 +11391,13 @@ impl CraftApp {
     /// whole, and the return says so). Without it everything is deleted.
     fn stop_add_prestart(&mut self, keep_as: Option<&std::path::Path>) -> bool {
         let Some(pre) = self.add_pre.take() else { return false };
-        pre.shared.cancelled.store(true, Ordering::SeqCst);
-        let finished = pre.handle.is_finished() && !crate::engine::has_partial(&pre.dest) && pre.dest.is_file();
-        pre.handle.abort();
-        // Let the transfer write its journal and let go of the files.
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        // Continuing it: let it write its journal and let go of the files
+        // first, so the download resumes at the same byte, not from 0.
+        // (Finished means a whole file and no unfinished data, also when it
+        // completed during this wait.)
+        let wait = if keep_as.is_some() { 3000 } else { 250 };
+        let ended = crate::engine::stop_for_handover(&pre.shared, &pre.handle, std::time::Duration::from_millis(wait));
+        let finished = ended && !crate::engine::has_partial(&pre.dest) && pre.dest.is_file();
         let mut whole = false;
         if let Some(to) = keep_as {
             if let Some(dir) = to.parent() {
@@ -11844,13 +12136,23 @@ impl CraftApp {
                                 // A link picked up from the clipboard is
                                 // pre-filled here: the lit Add URL button is
                                 // the only affordance (no banner row).
-                                if let Some(url) = self.clipboard_url.take() {
+                                // The watcher only reports a link it saw arrive;
+                                // one copied earlier is read here, on the click.
+                                let url = self.clipboard_url.take().or_else(|| {
+                                    arboard::Clipboard::new()
+                                        .ok()
+                                        .and_then(|mut c| c.get_text().ok())
+                                        .map(|t| t.trim().to_string())
+                                        .filter(|t| is_download_url(t))
+                                });
+                                if let Some(url) = url {
                                     self.add_file = filename_from_url(&url);
                                     self.add_url = url;
                                     self.add_focus_req = true;
                                 }
                                 self.show_add = true;
                             }
+                            ToolId::AddTorrent => self.add_torrent(),
                             ToolId::StartQueue => self.start_queue(),
                             ToolId::StopQueue if !idle => self.stop_queue(),
                             ToolId::StopAll if !idle => self.stop_all(),
@@ -12178,6 +12480,35 @@ impl CraftApp {
         if fired_any && !fired_menu && !fired_ctx {
             self.drop_menu = None;
             self.ctx_menu = None;
+        }
+        // Issue #21: a click on empty space (no control under it), Escape,
+        // or the window losing focus (a click in another app or on the
+        // desktop) closes menus too, as everywhere else on Windows. A click
+        // inside a menu's own frame (its padding, a heading) keeps it.
+        if self.drop_menu.is_some() || self.ctx_menu.is_some() || self.add_recent_open {
+            let (click, pos, esc, unfocused) = ctx.input(|i| {
+                (
+                    i.pointer.any_click(),
+                    i.pointer.interact_pos(),
+                    i.key_pressed(egui::Key::Escape),
+                    i.viewport().focused == Some(false),
+                )
+            });
+            let on_menu = pos.and_then(|p| ctx.layer_id_at(p)).is_some_and(|l| {
+                ["drop_menu", "ctx_menu", "ctx_sub_menu", "add_recent_menu"]
+                    .iter()
+                    .any(|n| l.id == egui::Id::new(*n))
+            });
+            let outside_click = click && !fired_menu && !fired_ctx && !on_menu;
+            if esc || unfocused || outside_click {
+                self.drop_menu = None;
+                self.ctx_menu = None;
+                self.ctx_sub = None;
+            }
+            // (The Add dialog handles Esc for its folder menu itself.)
+            if unfocused {
+                self.add_recent_open = false;
+            }
         }
         self.man_hover_dbg = hover_dbg;
     }

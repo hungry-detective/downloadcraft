@@ -82,6 +82,49 @@ pub fn use_direct3d(options: &mut eframe::NativeOptions) {
     options.wgpu_options = WgpuConfiguration { wgpu_setup: WgpuSetup::CreateNew(setup), ..Default::default() };
 }
 
+static GPU_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Direct3D windows: a lost graphics device (driver update or reset, sleep,
+/// a laptop switching GPUs, Remote Desktop) no longer panics the app (issue
+/// #20, "Parent device is lost"). wgpu's default handler for an error with
+/// no one listening is a panic; here it is noted instead, the frame is
+/// skipped, and [`gpu_lost`] tells the window to start again.
+#[cfg(windows)]
+pub fn guard_gpu(cc: &eframe::CreationContext<'_>) {
+    let Some(rs) = cc.wgpu_render_state.as_ref() else { return };
+    let ctx = cc.egui_ctx.clone();
+    rs.device.on_uncaptured_error(Box::new(move |e| {
+        let text = e.to_string();
+        if text.to_ascii_lowercase().contains("lost") || matches!(e, eframe::wgpu::Error::OutOfMemory { .. }) {
+            if !GPU_LOST.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("graphics device lost: {text}");
+            }
+            ctx.request_repaint();
+        } else {
+            eprintln!("graphics error (ignored): {text}");
+        }
+    }));
+    let ctx = cc.egui_ctx.clone();
+    rs.device.set_device_lost_callback(move |reason, msg| {
+        // Dropping the device at exit reports "Destroyed": not a loss.
+        if reason != eframe::wgpu::DeviceLostReason::Destroyed {
+            eprintln!("graphics device lost ({reason:?}): {msg}");
+            GPU_LOST.store(true, std::sync::atomic::Ordering::SeqCst);
+            ctx.request_repaint();
+        }
+    });
+}
+
+/// OpenGL-only builds: nothing to guard.
+#[cfg(not(windows))]
+pub fn guard_gpu(_cc: &eframe::CreationContext<'_>) {}
+
+/// The window's graphics device was lost (see [`guard_gpu`]): it cannot
+/// draw again in this process.
+pub fn gpu_lost() -> bool {
+    GPU_LOST.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// The window could not be opened at all: say why, in a file and (Windows)
 /// a message box, instead of closing without a word.
 pub fn report_startup_failure(error: &str) {

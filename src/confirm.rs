@@ -664,19 +664,13 @@ impl ConfirmApp {
     /// whole and the return says so). Without it everything is deleted.
     fn stop_prestart(&mut self, keep_as: Option<&std::path::Path>) -> bool {
         let Some(pre) = self.pre.take() else { return false };
-        pre.shared.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
-        // Let the transfer notice the flag and write its journal before the
-        // hard abort: aborting mid-write is what leaves partial files for the
-        // next run to clean up. The wait is bounded and returns as soon as the
-        // task ends — this runs on the dialog's UI thread, where the old
-        // blanket 250 ms sleep froze the window on every Download.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
-        while !pre.handle.is_finished() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // Continuing it: let it write its journal first (returns as soon as
+        // it ends, usually well under a second), so the app resumes at the
+        // same byte instead of from 0. Discarding it: no need to wait long.
+        let wait = if keep_as.is_some() { 3000 } else { 250 };
+        engine::stop_for_handover(&pre.shared, &pre.handle, std::time::Duration::from_millis(wait));
         let finished =
             pre.handle.is_finished() && !engine::has_partial(&pre.dest) && pre.dest.is_file();
-        pre.handle.abort();
         let mut whole = false;
         if let Some(to) = keep_as {
             if finished && !to.exists() {
@@ -1124,6 +1118,7 @@ pub fn run() -> eframe::Result<()> {
         "Add download",
         crate::platform::native_options(viewport),
         Box::new(|cc| {
+            crate::platform::guard_gpu(cc);
             setup_popup_fonts(cc);
             crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());
             Ok(Box::new(app))
@@ -1221,6 +1216,10 @@ impl eframe::App for ConfirmApp {
                 }
             }
         }
+        // Start the background download in the frame the probe answers: the
+        // check above ran before the answer was read, and once probing ends
+        // the window only redraws every 2 s (the ~3 s wait before it began).
+        self.maybe_prestart();
         if self.probing {
             ctx.request_repaint();
         }

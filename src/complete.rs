@@ -420,6 +420,7 @@ pub fn run() -> eframe::Result<()> {
         crate::model::APP_NAME,
         crate::platform::native_options(viewport),
         Box::new(|cc| {
+            crate::platform::guard_gpu(cc);
             // `true`: the whole window is the concept, so Segoe UI also becomes
             // its default proportional face.
             crate::fonts::install(cc, true);

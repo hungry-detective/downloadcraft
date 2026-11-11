@@ -245,6 +245,7 @@ pub fn run_basket() -> eframe::Result<()> {
         "Drop Basket",
         centered_window("Drop Basket", 420.0, 520.0),
         Box::new(|cc| {
+            crate::platform::guard_gpu(cc);
             crate::app::setup_fonts(cc);
             // Spawned as its own process: pick up whatever theme `ui.json`
             // holds (written by the main app / the Settings window).
@@ -318,6 +319,7 @@ pub fn run_mini() -> eframe::Result<()> {
         "Download Craft Mini",
         centered_window("Download Craft Mini", 340.0, 230.0),
         Box::new(|cc| {
+            crate::platform::guard_gpu(cc);
             crate::app::setup_fonts(cc);
             // Spawned as its own process: pick up whatever theme `ui.json`
             // holds (written by the main app / the Settings window).

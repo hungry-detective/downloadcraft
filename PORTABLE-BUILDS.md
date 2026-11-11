@@ -1,10 +1,10 @@
-# Download Craft 0.9.16
+# Download Craft 0.9.17
 
 Use [the current release instructions](RELEASE-NOTES.md) for Windows, universal
 Mac, Fedora/RPM, Debian-family DEB and AppImage installation and media helpers.
 
 `VERSION` contains the public app version. Cargo, UI, CLI and browser versions
-are aligned at 0.9.16.
+are aligned at 0.9.17.
 
 Build native binaries with Cargo. Package with `scripts/package.py`, or build
 Linux glibc-2.28 binaries using cargo-zigbuild and run `scripts/package_linux.py`.

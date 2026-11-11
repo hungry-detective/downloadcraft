@@ -617,6 +617,7 @@ pub fn run() -> eframe::Result<()> {
         "Download Craft",
         crate::platform::native_options(viewport),
         Box::new(|cc| {
+            crate::platform::guard_gpu(cc);
             // `true`: this whole window is the concept, so Segoe UI also
             // becomes its default proportional face.
             crate::fonts::install(cc, true);

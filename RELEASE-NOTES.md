@@ -1,4 +1,83 @@
-# Download Craft 0.9.16
+# Download Craft 0.9.17
+
+## What's new
+
+- **Faster to the finish line.** A connection that goes silent while the
+  others are still downloading is replaced within about 6 seconds, instead of
+  holding the end of the file for up to a minute. In a test where one
+  connection freezes, an 8 MB file finishes in 7 s instead of 31 s.
+- **Connections are kept.** A single connection error (a reset, a failed
+  handshake) no longer costs a download one of its connections for good: it
+  takes three in a row. A connection that was given up is tried again after 8
+  seconds instead of 30.
+- **No pauses for disk writes.** Each connection keeps receiving while its
+  last piece is written to disk, and saving the resume record no longer holds
+  up the download.
+- **The Download window's early start continues where it is.** The download
+  that starts in the background while the Download window is open begins as
+  soon as the file's size is known (it waited up to 3 seconds). Pressing
+  Download continues it from the same byte, with no "Connecting…" and no
+  jump back to 0%.
+- **A failed download continues.** Retrying a failed download, or giving it a
+  fresh link to the same file, continues from what is already on disk.
+- **Petal, reworked.**
+  - Downloads are a grid of cards, two to four per row by window width, each
+    with a file-type badge (ZIP, EXE, MKV…), its state, progress and buttons.
+  - Add URL and the new Add torrent sit at the start of the toolbar. Add URL
+    takes the link on the clipboard.
+  - The sidebar is one card that fits every item, and the cards line up with
+    it and with the summary tiles.
+  - List view is a real table again, one download per row (it showed the
+    cards).
+- **Add torrent in every layout,** with a magnet icon: a magnet link on the
+  clipboard, or pick one or more `.torrent` files.
+- **Toolbars keep their labels** at the default window size in Craft and
+  Ledger (smaller icons), and the view switch says what it does.
+- **Ledger's dark side is near-black,** like the other dark looks.
+- **Menus close like Windows menus (#21):** a click on empty space, in another
+  app, or Esc closes them.
+- **TikTok thumbnails:** the extension's download panel shows the video's
+  cover on TikTok (and on other sites whose player has no poster image).
+- In the list, a paused download's percentage and bar sit centred in the
+  Status column, like the other states.
+
+## Fixes
+
+- **Crash with Bangla and other non-English text (#19):** an address or name
+  in another script no longer crashes the app.
+- **Crash when the graphics device is lost (#20):** after a driver update or
+  reset, waking from sleep or a GPU switch, the app saves the list and opens
+  its window again instead of crashing. Downloads continue.
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.9.17-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.9.17-windows-x64-portable.zip` and run `download_craft.exe`.
+
+**macOS 12+.** Unzip `DownloadCraft-0.9.17-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.9.17_amd64.deb`; Fedora: install
+`downloadcraft-0.9.17-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.9.17-x86_64.AppImage`.
+
+**Browser extensions.** Chrome, Edge and Brave: extract the Chrome ZIP and load
+the extracted folder in `chrome://extensions`. Firefox: load
+`DownloadCraft-Firefox-0.9.17.xpi` from
+`about:debugging#/runtime/this-firefox`.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.9.17`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+
+# Earlier: Download Craft 0.9.16
 
 ## What's new
 
@@ -100,76 +179,3 @@
   - When some connections crawl, a 32 MB file takes about 5 s instead of
     15.8 s. A crawling connection is noticed within a second or two, and a
     free connection takes over its remaining part.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.9.16-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.9.16-windows-x64-portable.zip` and run `download_craft.exe`.
-
-**macOS 12+.** Unzip `DownloadCraft-0.9.16-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.9.16_amd64.deb`; Fedora: install
-`downloadcraft-0.9.16-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.9.16-x86_64.AppImage`.
-
-**Browser extensions.** Chrome, Edge and Brave: extract the Chrome ZIP and load
-the extracted folder in `chrome://extensions`. Firefox: load
-`DownloadCraft-Firefox-0.9.16.xpi` from
-`about:debugging#/runtime/this-firefox`.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.9.16`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
-
-
-# Earlier: Download Craft 0.9.15
-
-## What's new
-
-- **Starts on old graphics cards (#14):** when the graphics driver cannot open
-  the window with OpenGL (an Intel HD Graphics 2000 on Windows 11, for one),
-  Download Craft starts again with Direct3D 12, or Windows' built-in software
-  renderer (WARP), and keeps using it. If no renderer works, it says why in a
-  message and in `startup-error.log` instead of closing without a word.
-- **Images get their file type (#13):** a picture saved from Civitai (or any
-  site whose image address has no extension) is named `….jpg`, `….png`,
-  `….webp` or `….avif` from the file type the browser reports.
-- **Drag finished downloads onto a page (#15):** in the extension's Downloads
-  list, drag a finished file onto an upload box, as with Chrome's own download
-  bubble (files up to 100 MB).
-- **Brave and Chrome from Flatpak (#16):** the browser connection is set up
-  inside a Flatpak browser's own folder too, and starts the app on the host.
-- **Interface size slider (#10):** any size from 75% to 200%, and the Settings
-  window follows it.
-- **Any font (#10):** every font installed on the computer, free fonts
-  downloaded on one click (Inter, Roboto, Open Sans, Noto Sans, Poppins, Lato),
-  a font file, or a link to a .ttf/.otf (or a .zip of a family).
-- **Updates in Settings → Updates (#10):** check, update and restart there; the
-  app now also looks for new releases every six hours while it runs, not only
-  at launch.
-- **Part-by-part progress bar (#10):** the progress window's bar fills each
-  connection's part where it lies in the file, as IDM's does.
-- **Double-click to open, remember folders (#12):** two options in Settings →
-  Download Engine → Storage. One makes double-clicking a finished download open
-  the file. The other makes the Download window start at the last folder used
-  and list the last 8 folders in its menu. Both are off by default.
-- The Queues window's name box matches its row, and toolbar tooltips no longer
-  break one word per line in a narrow window (#10).
-- **Faster startup on Linux:** the main window appears without waiting for
-  browser native-host registration, extension synchronization, or update cleanup.
-- **Progress windows return by default:** starting a download opens its own
-  progress window. Turn this off in **Settings → Progress windows** to keep
-  downloads in the main list.
-- **Reliable captures and downloads:** browser captures keep separate quality
-  choices, closing a progress window no longer pauses the transfer, and the app
-  stays live while minimized.
-- **Better Linux window grouping:** the main app and its dialogs appear under
-  one desktop application icon.
-- **Improved video filenames:** resolved titles replace generic CDN names.

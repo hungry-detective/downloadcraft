@@ -405,6 +405,14 @@ pub fn rekey_journal(journal: &Path, new_key: &str) -> bool {
     }
 }
 
+/// What a resume journal records: the file's size and how many of its bytes
+/// are already on disk. `None` when there is no readable journal.
+pub fn journal_progress(journal: &Path) -> Option<(u64, u64)> {
+    let j = journal::Journal::load(journal)?;
+    let left: u64 = j.remaining.iter().map(|(a, b)| b.saturating_sub(*a)).sum();
+    Some((j.total, j.total.saturating_sub(left)))
+}
+
 pub fn journal_path(dest: &Path) -> PathBuf {
     journal_path_in(dest, None)
 }

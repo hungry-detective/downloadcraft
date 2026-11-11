@@ -1128,6 +1128,7 @@ pub fn run() -> eframe::Result<()> {
         "Download all links",
         crate::platform::native_options(viewport),
         Box::new(|cc| {
+            crate::platform::guard_gpu(cc);
             crate::app::setup_fonts(cc);
             crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());
             app.start_probes(cc.egui_ctx.clone());

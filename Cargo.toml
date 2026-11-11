@@ -1,6 +1,6 @@
 [package]
 name = "download_craft"
-version = "0.9.16"
+version = "0.9.17"
 edition = "2021"
 description = "Download Craft — a lightweight, offline-first download manager (egui GUI + CLI)"
 license = "MIT"

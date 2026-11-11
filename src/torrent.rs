@@ -21,7 +21,9 @@ use std::sync::Arc;
 /// address, or a `.torrent` file on this computer?
 pub fn is_torrent(url: &str) -> bool {
     let t = url.trim();
-    if t.len() > 8 && t[..8].eq_ignore_ascii_case("magnet:?") {
+    // `get` (not `[..8]`): a pasted name in Bangla, Arabic, … has no char
+    // boundary at byte 8, and slicing there panicked (issue #19).
+    if t.len() > 8 && t.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("magnet:?")) {
         return true;
     }
     let path = t.split(['?', '#']).next().unwrap_or("");
@@ -249,6 +251,10 @@ mod tests {
         assert!(is_torrent("https://example.com/files/linux.iso.torrent?x=1"));
         assert!(!is_torrent("https://example.com/files/linux.iso"));
         assert!(!is_torrent("magnet:"));
+        // Issue #19: non-ASCII text with no char boundary at byte 8.
+        assert!(!is_torrent("আমার ফাইল"));
+        assert!(!is_torrent("ab মফাইল.zip"));
+        assert!(is_torrent("MAGNET:?xt=urn:btih:abc&dn=আমার"));
     }
 
     #[test]

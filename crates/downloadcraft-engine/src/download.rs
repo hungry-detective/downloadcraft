@@ -18,11 +18,22 @@ const TICK: Duration = Duration::from_millis(200);
 const HEALTHY_WINDOW: Duration = Duration::from_secs(5);
 /// Link refreshes allowed per run.
 const MAX_REFRESHES: u32 = 3;
-/// After this long without a reason to cut connections, try one more.
-const CAP_PROBE: Duration = Duration::from_secs(30);
+/// After this long without a reason to cut connections, try one more (30 s
+/// held a download at half its connections for minutes after one hiccup).
+const CAP_PROBE: Duration = Duration::from_secs(8);
 /// Wait at most this long for a reply while other connections are working
 /// (a server at its connection limit often just never answers).
-const BUSY_ANSWER: Duration = Duration::from_secs(20);
+const BUSY_ANSWER: Duration = Duration::from_secs(10);
+/// A connection silent this long while others receive data is dead, not
+/// slow: drop it and let a fresh one take its part (the full stall timeout
+/// held the end of the file for up to a minute).
+const SOFT_STALL: Duration = Duration::from_secs(6);
+/// How often a waiting connection looks up from its socket (to see a
+/// restart request or a stall).
+const WAKE: Duration = Duration::from_millis(500);
+/// Connection failures in a row, with others working, before one fewer is
+/// kept: a single refused or timed-out connect is usually just a hiccup.
+const QUIET_FAILS_BEFORE_CUT: u32 = 3;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -564,7 +575,9 @@ async fn monitor(run: Arc<Run>) -> Result<Outcome, Error> {
     let cfg = run.dl.config.clone();
     let mut set = tokio::task::JoinSet::new();
     let mut last_journal = Instant::now();
+    let mut saving: Option<tokio::task::JoinHandle<()>> = None;
     let mut last_speed = Instant::now();
+    let mut last_pause = Instant::now().checked_sub(Duration::from_secs(3600)).unwrap_or_else(Instant::now);
     let mut last_bytes: Vec<u64> = Vec::new();
     loop {
         while set.try_join_next().is_some() {}
@@ -601,12 +614,24 @@ async fn monitor(run: Arc<Run>) -> Result<Outcome, Error> {
         }
         run.snapshot();
         run.probe_cap(cfg.connections.clamp(1, 32));
+        // A pause stops every connection at once: no speed while paused, or
+        // just after, says anything about a slow connection.
+        if run.control.is_paused() {
+            last_pause = Instant::now();
+        }
         if last_speed.elapsed() >= Duration::from_secs(1) {
-            measure(&run, &cfg, &mut last_bytes, last_speed.elapsed());
+            let judge = last_pause.elapsed() >= cfg.slow_restart_after.unwrap_or_default() + Duration::from_secs(2);
+            measure(&run, &cfg, &mut last_bytes, last_speed.elapsed(), judge);
             last_speed = Instant::now();
         }
-        if run.dirty.load(Ordering::SeqCst) && last_journal.elapsed() >= cfg.journal_interval {
-            run.save_journal().await;
+        // The save (a disk flush, then the journal) runs beside the loop:
+        // awaited here it held up new connections and speed checks.
+        if run.dirty.load(Ordering::SeqCst)
+            && last_journal.elapsed() >= cfg.journal_interval
+            && saving.as_ref().is_none_or(|h| h.is_finished())
+        {
+            let r = run.clone();
+            saving = Some(tokio::spawn(async move { r.save_journal().await }));
             last_journal = Instant::now();
         }
         if set.is_empty() {
@@ -627,6 +652,11 @@ async fn monitor(run: Arc<Run>) -> Result<Outcome, Error> {
     }
     set.abort_all();
     while set.join_next().await.is_some() {}
+    // A periodic save still running finishes first: two saves at once
+    // would race on the journal file.
+    if let Some(h) = saving.take() {
+        let _ = h.await;
+    }
     run.snapshot();
 
     let fatal = lock(&run.fatal).take();
@@ -643,7 +673,7 @@ async fn monitor(run: Arc<Run>) -> Result<Outcome, Error> {
 }
 
 /// Speeds per connection, and reopening the very slow ones.
-fn measure(run: &Run, cfg: &crate::Config, last: &mut Vec<u64>, dt: Duration) {
+fn measure(run: &Run, cfg: &crate::Config, last: &mut Vec<u64>, dt: Duration, judge: bool) {
     let stats = lock(&run.stats).clone();
     let mut speeds = lock(&run.speeds);
     last.resize(stats.len(), 0);
@@ -664,7 +694,7 @@ fn measure(run: &Run, cfg: &crate::Config, last: &mut Vec<u64>, dt: Duration) {
         *b = b.max(best);
         *b
     };
-    let Some(after) = cfg.slow_restart_after else { return };
+    let Some(after) = cfg.slow_restart_after.filter(|_| judge) else { return };
     let active: Vec<usize> = (0..stats.len()).filter(|&i| stats[i].active.load(Ordering::SeqCst)).collect();
     if active.is_empty() {
         return;
@@ -765,6 +795,8 @@ async fn worker(run: Arc<Run>, w: usize) {
         None => None,
     };
     let mut out: Option<Arc<std::fs::File>> = None;
+    // This connection's failures in a row that brought nothing in.
+    let mut quiet_fails = 0u32;
     loop {
         if run.stopping() {
             break;
@@ -812,6 +844,9 @@ async fn worker(run: Arc<Run>, w: usize) {
         stat.active.store(false, Ordering::SeqCst);
         stat.streaming.store(false, Ordering::SeqCst);
         lock(&run.map).release(claim.id, w);
+        if matches!(res, Ok(()) | Err(Fail::Retry { progressed: true, .. })) {
+            quiet_fails = 0;
+        }
         match res {
             Ok(()) => {}
             Err(Fail::Cancelled) => break,
@@ -824,11 +859,24 @@ async fn worker(run: Arc<Run>, w: usize) {
                 // Nothing came through while other connections are working
                 // (or just were): that is the server's connection limit, not
                 // a broken link. The last connection keeps trying instead.
+                // One such failure is usually a hiccup (a lost SYN, a slow
+                // TLS handshake): try again shortly, and give the slot up
+                // only when it keeps happening on this connection.
                 let live = run.live.load(Ordering::SeqCst);
                 let recent = lock(&run.last_progress).elapsed() < cfg_stall(&run) * 2;
                 if !progressed && live > 1 && (run.others_healthy(w) || recent) {
-                    run.reduce_cap(live.saturating_sub(1), format!("the server did not take another connection ({msg})"));
-                    break;
+                    quiet_fails += 1;
+                    // No answer at all while others stream is the server's
+                    // connection limit (it takes the socket and stays
+                    // silent): give the slot up now, retrying only waits.
+                    let ignored = msg.starts_with("no answer");
+                    if ignored || quiet_fails >= QUIET_FAILS_BEFORE_CUT {
+                        run.reduce_cap(live.saturating_sub(1), format!("the server did not take another connection ({msg})"));
+                        break;
+                    }
+                    run.emit(Event::Retry { worker: w, error: msg });
+                    run.nap(backoff(quiet_fails)).await;
+                    continue;
                 }
                 match run.note_failure(progressed, msg, w) {
                     Some(streak) => run.nap(backoff(streak)).await,
@@ -1016,6 +1064,7 @@ async fn fetch(
     }
 
     let mut buf: Vec<u8> = Vec::with_capacity(cfg.write_buffer);
+    let mut wr = Writer::new(cfg.write_buffer);
     let mut buf_off = pos;
     let mut got = 0u64;
     let mut body_bytes = 0u64;
@@ -1030,16 +1079,43 @@ async fn fetch(
         if stat.restart.swap(false, Ordering::SeqCst) {
             break Ok(End::Restart);
         }
-        let chunk = match tokio::time::timeout(cfg.stall_timeout, stream.next()).await {
-            Err(_) => {
-                break Err(Fail::Retry {
-                    msg: format!("stalled: no data for {}s", cfg.stall_timeout.as_secs()),
-                    progressed: got > 0,
-                })
+        // Wait for the next chunk in short steps (`next()` is safe to drop
+        // and call again): a restart request is seen within half a second
+        // even on a dead socket, and a connection silent for SOFT_STALL while
+        // others stream is replaced instead of waiting out the stall timeout.
+        enum Next<T> {
+            Item(T),
+            BodyEnd,
+            Interrupted,
+            Stalled(Duration),
+        }
+        let waited = Instant::now();
+        let next = loop {
+            match tokio::time::timeout(WAKE, stream.next()).await {
+                Ok(Some(item)) => break Next::Item(item),
+                Ok(None) => break Next::BodyEnd,
+                Err(_) => {
+                    let quiet = waited.elapsed();
+                    if run.stopping() || stat.restart.load(Ordering::SeqCst) {
+                        break Next::Interrupted;
+                    }
+                    // Others received data while this one was silent (or
+                    // still are): the server is fine, this connection is dead.
+                    let server_alive = run.streaming_count(w) > 0 || lock(&run.last_progress).elapsed() < quiet;
+                    if quiet >= cfg.stall_timeout || (quiet >= SOFT_STALL && server_alive) {
+                        break Next::Stalled(quiet);
+                    }
+                }
             }
-            Ok(None) => break Ok(End::Body),
-            Ok(Some(Err(e))) => break Err(Fail::Retry { msg: format!("network: {e}"), progressed: got > 0 }),
-            Ok(Some(Ok(b))) => b,
+        };
+        let chunk = match next {
+            Next::Interrupted => continue, // stop / restart: handled at the top of the loop
+            Next::Stalled(quiet) => {
+                break Err(Fail::Retry { msg: format!("stalled: no data for {}s", quiet.as_secs()), progressed: got > 0 })
+            }
+            Next::BodyEnd => break Ok(End::Body),
+            Next::Item(Err(e)) => break Err(Fail::Retry { msg: format!("network: {e}"), progressed: got > 0 }),
+            Next::Item(Ok(b)) => b,
         };
         body_bytes += chunk.len() as u64;
         let mut data = &chunk[..];
@@ -1065,12 +1141,20 @@ async fn fetch(
             break Ok(End::Reached);
         }
         if buf.len() >= cfg.write_buffer {
-            if let Err(e) = flush(run, out, id, &mut buf, &mut buf_off).await {
+            if let Err(e) = flush(run, out, id, &mut buf, &mut buf_off, &mut wr).await {
                 break Err(Fail::Fatal(Error::Io(e)));
             }
         }
     };
-    if let Err(e) = flush(run, out, id, &mut buf, &mut buf_off).await {
+    // Whatever happened, what was received goes to disk and is recorded.
+    let written = match flush(run, out, id, &mut buf, &mut buf_off, &mut wr).await {
+        Ok(()) => wr.settle(run, id).await,
+        Err(e) => {
+            let _ = wr.settle(run, id).await;
+            Err(e)
+        }
+    };
+    if let Err(e) = written {
         return Err(Fail::Fatal(Error::Io(e)));
     }
     match ended? {
@@ -1103,14 +1187,47 @@ async fn fetch(
     }
 }
 
-/// Write the buffer at its offset (on a blocking thread), then record it.
+/// One connection's disk writes: at most one in flight on a blocking thread
+/// while the connection keeps reading into its other buffer (awaiting each
+/// write stopped the socket for the length of every 512 KiB write).
+struct Writer {
+    /// The write in flight, and the file offset its data ends at.
+    pending: Option<(tokio::task::JoinHandle<std::io::Result<Vec<u8>>>, u64)>,
+    /// The buffer the last finished write gave back, reused for the next.
+    spare: Vec<u8>,
+}
+
+impl Writer {
+    fn new(cap: usize) -> Self {
+        Self { pending: None, spare: Vec::with_capacity(cap) }
+    }
+
+    /// Wait for the write in flight, then record its bytes as on disk.
+    async fn settle(&mut self, run: &Arc<Run>, id: u64) -> std::io::Result<()> {
+        let Some((task, end)) = self.pending.take() else { return Ok(()) };
+        let mut data = task.await.map_err(std::io::Error::other)??;
+        data.clear();
+        self.spare = data;
+        lock(&run.map).mark_written(id, end);
+        run.dirty.store(true, Ordering::SeqCst);
+        run.fail_streak.store(0, Ordering::SeqCst);
+        *lock(&run.last_progress) = Instant::now();
+        Ok(())
+    }
+}
+
+/// Hand the buffer to a blocking thread to write at its offset, after the
+/// previous write (so they are recorded in order). `buf` comes back empty,
+/// ready to fill while this write runs; [`Writer::settle`] finishes it.
 async fn flush(
     run: &Arc<Run>,
     out: &mut Option<Arc<std::fs::File>>,
     id: u64,
     buf: &mut Vec<u8>,
     off: &mut u64,
+    wr: &mut Writer,
 ) -> std::io::Result<()> {
+    wr.settle(run, id).await?;
     if buf.is_empty() {
         return Ok(());
     }
@@ -1122,19 +1239,11 @@ async fn flush(
             f
         }
     };
-    let data = std::mem::take(buf);
+    let data = std::mem::replace(buf, std::mem::take(&mut wr.spare));
     let at = *off;
-    let len = data.len() as u64;
-    let mut data = tokio::task::spawn_blocking(move || file::write_all_at(&f, &data, at).map(|_| data))
-        .await
-        .map_err(std::io::Error::other)??;
-    data.clear();
-    *buf = data;
-    *off += len;
-    lock(&run.map).mark_written(id, *off);
-    run.dirty.store(true, Ordering::SeqCst);
-    run.fail_streak.store(0, Ordering::SeqCst);
-    *lock(&run.last_progress) = Instant::now();
+    *off += data.len() as u64;
+    let task = tokio::task::spawn_blocking(move || file::write_all_at(&f, &data, at).map(|_| data));
+    wr.pending = Some((task, *off));
     Ok(())
 }
 

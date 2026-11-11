@@ -509,6 +509,23 @@ pub fn remove_partial(dest: &std::path::Path) {
     }
 }
 
+/// Stop a background download (the Download dialog's early start) so another
+/// can continue it: raise its stop flag and wait — at most `max`, back as
+/// soon as it ends — for it to write its journal and let go of its files.
+/// Aborting right away left no journal (the engine writes one every 3 s and
+/// on stop), so the app started the file again from 0 % and its progress
+/// showed "Connecting…" before jumping back up. Returns whether it ended.
+pub fn stop_for_handover<T>(shared: &SharedState, handle: &tokio::task::JoinHandle<T>, max: std::time::Duration) -> bool {
+    shared.cancelled.store(true, Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + max;
+    while !handle.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let ended = handle.is_finished();
+    handle.abort();
+    ended
+}
+
 /// Move `from`'s unfinished data so it continues as `to` (the journal is
 /// keyed by the URL, not the path, so a resume picks it up under the new
 /// name). Data next to the file and in the temporary folder both move.
@@ -522,6 +539,25 @@ pub fn move_partial(from: &std::path::Path, to: &std::path::Path) -> bool {
     if let Some(w) = wd.as_deref() {
         pairs.push((downloadcraft_engine::data_path_in(from, Some(w)), downloadcraft_engine::data_path_in(to, Some(w))));
         pairs.push((downloadcraft_engine::journal_path_in(from, Some(w)), downloadcraft_engine::journal_path_in(to, Some(w))));
+    }
+    // The file may already have a partial of its own (a paused download
+    // whose link was clicked again: the Download window's early start began
+    // from 0 in its scratch folder). Keep whichever has more bytes of the
+    // same file; replacing a 15% partial with a few seconds' worth made
+    // every part start again from its beginning.
+    let done = |dest: &std::path::Path| -> Option<(u64, u64)> {
+        let mut js = vec![downloadcraft_engine::journal_path(dest)];
+        if let Some(w) = wd.as_deref() {
+            js.push(downloadcraft_engine::journal_path_in(dest, Some(w)));
+        }
+        js.iter()
+            .filter_map(|j| downloadcraft_engine::journal_progress(j))
+            .max_by_key(|(_, d)| *d)
+    };
+    if let (Some((t_from, d_from)), Some((t_to, d_to))) = (done(from), done(to)) {
+        if t_from == t_to && d_to >= d_from && has_partial(to) {
+            return false;
+        }
     }
     let mut moved = false;
     for (a, b) in pairs {

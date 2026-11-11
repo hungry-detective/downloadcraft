@@ -1257,6 +1257,47 @@ pub fn drop_resume_state(dest: &std::path::Path) {
     let _ = std::fs::remove_file(dest.with_extension("dcftpparts"));
 }
 
+/// Whether `new` is a fresh link to the very file `old` points at, so what is
+/// already downloaded can continue: the same address, or the same server and
+/// path with a new token or signature in the query (an expired link captured
+/// again, "Refresh download address"). YouTube-style stream addresses share
+/// one path for every quality and slice, so they never count. The engine
+/// still compares the server's ETag / Last-Modified and size before it
+/// continues, and starts over by itself if the file changed.
+pub fn same_file_link(old: &str, new: &str) -> bool {
+    if old == new {
+        return true;
+    }
+    let (Ok(a), Ok(b)) = (url::Url::parse(old), url::Url::parse(new)) else { return false };
+    let host = a.host_str().unwrap_or("").to_ascii_lowercase();
+    if host.ends_with("googlevideo.com") || a.path().ends_with("/videoplayback") || a.path() == "/" {
+        return false;
+    }
+    a.scheme() == b.scheme() && a.host_str() == b.host_str() && a.port() == b.port() && a.path() == b.path()
+}
+
+/// A row is being refreshed from `old_url` to `new_url` (or restarted after
+/// failing). Keep the bytes on disk when it is the same file; drop them when
+/// it is not (another file's bytes must never be resumed into this one).
+/// Returns whether the partial was kept.
+pub fn keep_or_drop_resume(dest: &std::path::Path, old_url: &str, new_url: &str) -> bool {
+    if same_file_link(old_url, new_url) && crate::engine::has_partial(dest) {
+        return true;
+    }
+    drop_resume_state(dest);
+    false
+}
+
+/// Bytes of `dest` already on disk in an unfinished download (from its
+/// resume journal), or 0.
+pub fn partial_bytes(dest: &std::path::Path) -> u64 {
+    let mut js = vec![downloadcraft_engine::journal_path(dest)];
+    if let Some(w) = crate::engine::work_dir() {
+        js.push(downloadcraft_engine::journal_path_in(dest, Some(&w)));
+    }
+    js.iter().filter_map(|j| downloadcraft_engine::journal_progress(j)).map(|(_, d)| d).max().unwrap_or(0)
+}
+
 // ---- saved site logins (IDM "Site logins") ----------------------------------
 
 /// A login used automatically for one site.
@@ -1589,13 +1630,20 @@ fn append_to_queue_at(path: &std::path::Path, item: &mut DownloadItem) -> Append
         // queue settings stay): keeping the old cookie/headers/referer — the
         // very ones that expired — made the retry fail the same way.
         let old = &items[pos];
-        drop_resume_state(&old.dest_path());
+        // A failed download keeps what it already has: the same link (or a
+        // fresh one to the same file) continues from there.
+        let kept = !matches!(old.status, Status::Completed)
+            && old.dest_path() == item.dest_path()
+            && keep_or_drop_resume(&old.dest_path(), &old.url, &item.url);
+        if !kept {
+            drop_resume_state(&old.dest_path());
+        }
         let mut fresh = item.clone();
         fresh.id = old.id;
         fresh.created_at = old.created_at;
         fresh.priority = old.priority;
         fresh.start_at = old.start_at.clone();
-        fresh.downloaded_bytes = 0;
+        fresh.downloaded_bytes = if kept { partial_bytes(&old.dest_path()) } else { 0 };
         fresh.speed_bps = 0.0;
         fresh.status = Status::Queued;
         fresh.selected = false;
@@ -1628,7 +1676,7 @@ fn append_to_queue_at(path: &std::path::Path, item: &mut DownloadItem) -> Append
         let created = items[pos].created_at;
         let fresh_url = item.url.clone();
         let same_url = items[pos].url == fresh_url;
-        items[pos].url = fresh_url;
+        let old_url = std::mem::replace(&mut items[pos].url, fresh_url);
         items[pos].filename = item.filename.clone();
         items[pos].save_dir = item.save_dir.clone();
         items[pos].referer = std::mem::take(&mut item.referer);
@@ -1653,10 +1701,11 @@ fn append_to_queue_at(path: &std::path::Path, item: &mut DownloadItem) -> Append
         items[pos].total_bytes = item.total_bytes;
         items[pos].resolution = String::new();
         if !same_url {
-            // Different bytes (or a slice of them): never resume old parts.
-            items[pos].downloaded_bytes = 0;
+            // A fresh link to the same file continues; different bytes (or
+            // a slice of them) never resume old parts.
             let dp = items[pos].dest_path();
-            drop_resume_state(&dp);
+            items[pos].downloaded_bytes =
+                if keep_or_drop_resume(&dp, &old_url, &items[pos].url) { partial_bytes(&dp) } else { 0 };
         }
         items[pos].speed_bps = 0.0;
         items[pos].status = Status::Queued;
@@ -1946,6 +1995,63 @@ mod tests {
         );
         assert_eq!(append_to_queue_at(&p, &mut again), AppendResult::AlreadyQueued(1));
         assert_eq!(read_queue_items(&p).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_row_captured_again_keeps_its_bytes() {
+        let dir = std::env::temp_dir().join("dc_append_failed_resume_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("queue.json");
+        let dest = dir.join("big.zip");
+        // A partial with 600 of 1000 bytes on disk.
+        std::fs::write(downloadcraft_engine::data_path(&dest), vec![0u8; 1000]).unwrap();
+        std::fs::write(
+            downloadcraft_engine::journal_path(&dest),
+            format!(
+                r#"{{"v":1,"key":{},"total":1000,"etag":null,"last_modified":null,"remaining":[[600,1000]]}}"#,
+                serde_json::to_string(&dest.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+        let row = |url: &str| DownloadItem::new(0, url.into(), "big.zip".into(), dir.to_string_lossy().into(), 8);
+        let mut old = row("https://e.com/big.zip?token=old");
+        old.id = 1;
+        old.status = Status::Failed("connection lost".into());
+        old.downloaded_bytes = 600;
+        std::fs::write(&p, serde_json::to_string_pretty(&vec![old]).unwrap()).unwrap();
+
+        // The same link again: continues from 600.
+        assert_eq!(append_to_queue_at(&p, &mut row("https://e.com/big.zip?token=old")), AppendResult::Added(1));
+        let items = read_queue_items(&p).unwrap();
+        assert_eq!(items[0].downloaded_bytes, 600);
+        assert!(crate::engine::has_partial(&dest));
+
+        // A fresh token for the same file (a refreshed link): still kept.
+        let mut items = read_queue_items(&p).unwrap();
+        items[0].status = Status::Failed("link expired".into());
+        std::fs::write(&p, serde_json::to_string_pretty(&items).unwrap()).unwrap();
+        assert_eq!(append_to_queue_at(&p, &mut row("https://e.com/big.zip?token=new")), AppendResult::Added(1));
+        assert!(crate::engine::has_partial(&dest));
+
+        // Another file into the same name: the old bytes go.
+        let mut items = read_queue_items(&p).unwrap();
+        items[0].status = Status::Paused;
+        std::fs::write(&p, serde_json::to_string_pretty(&items).unwrap()).unwrap();
+        let _ = append_to_queue_at(&p, &mut row("https://other.org/big.zip"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fresh_links_to_the_same_file() {
+        assert!(same_file_link("https://e.com/a.zip?t=1", "https://e.com/a.zip?t=2"));
+        assert!(same_file_link("https://e.com/a.zip", "https://e.com/a.zip"));
+        assert!(!same_file_link("https://e.com/a.zip", "https://e.com/b.zip"));
+        assert!(!same_file_link("https://e.com/a.zip", "https://f.com/a.zip"));
+        assert!(!same_file_link(
+            "https://r1.googlevideo.com/videoplayback?itag=137",
+            "https://r1.googlevideo.com/videoplayback?itag=22"
+        ));
     }
 
     #[test]

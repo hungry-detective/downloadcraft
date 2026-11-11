@@ -44,6 +44,9 @@ struct Behaviour {
     expire_after: usize,
     /// `/old` refuses with 403 once this many bytes were served. 0 = never.
     old_dies_after: usize,
+    /// The first connection that asks for byte 0 sends this many bytes,
+    /// then goes silent with the socket open (a dead connection). 0 = never.
+    freeze_first_after: usize,
 }
 
 struct Server {
@@ -53,6 +56,7 @@ struct Server {
     active: AtomicUsize,
     peak: AtomicUsize,
     slow_taken: AtomicBool,
+    frozen: AtomicBool,
     served: AtomicU64,
     signature: AtomicU64,
     sig_served: AtomicU64,
@@ -70,6 +74,7 @@ impl Server {
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             slow_taken: AtomicBool::new(false),
+            frozen: AtomicBool::new(false),
             served: AtomicU64::new(0),
             signature: AtomicU64::new(1),
             sig_served: AtomicU64::new(0),
@@ -204,6 +209,7 @@ impl Server {
             r.push_str(&format!("ETag: \"v{version}\"\r\nContent-Type: application/octet-stream\r\nContent-Length: {len}\r\n\r\n"));
             sock.write_all(r.as_bytes()).await?;
             let cut_here = b.cut_after > 0 && take_one(&b.cut);
+            let freeze_here = start == 0 && b.freeze_first_after > 0 && !self.frozen.swap(true, Ordering::SeqCst);
             let rate = if *slow_conn { b.slow_first } else { b.rate };
             let data = body(size, version);
             let t0 = Instant::now();
@@ -212,6 +218,13 @@ impl Server {
                 let n = (len - sent).min(16 * 1024);
                 if cut_here && sent + n > b.cut_after {
                     return Ok(false); // drop the connection mid-body
+                }
+                if freeze_here && sent >= b.freeze_first_after {
+                    // Hold the socket open, sending nothing, until the client
+                    // gives up on it.
+                    let mut sink = [0u8; 64];
+                    let _ = tokio::time::timeout(Duration::from_secs(120), sock.read(&mut sink)).await;
+                    return Ok(false);
                 }
                 sock.write_all(&data[start + sent..start + sent + n]).await?;
                 sent += n;
@@ -306,6 +319,22 @@ async fn a_slow_connection_does_not_hold_the_download_back() {
     let t0 = Instant::now();
     get(&Downloader::new(reqwest::Client::new()).config(quick()), job).await.unwrap();
     assert!(t0.elapsed() < Duration::from_secs(12), "took {:?}", t0.elapsed());
+    assert_eq!(std::fs::read(&dest).unwrap(), body(8 * MIB, 1));
+}
+
+#[tokio::test]
+async fn a_dead_connection_is_replaced_before_the_stall_timeout() {
+    // The connection serving the start goes silent after 256 KiB, its
+    // socket left open. Waiting out the 30 s stall timeout used to hold the
+    // whole download; a connection silent while the others stream is now
+    // given up within seconds and its part handed to a fresh one.
+    let srv = Server::start(Behaviour { size: 8 * MIB, rate: 4 * MIB as u64, freeze_first_after: 256 * 1024, ..Default::default() }).await;
+    let dest = tmp("frozen");
+    let job = Job::new(srv.url("/f"), &dest).size_hint(Some(8 * MIB as u64), true);
+    let cfg = Config { stall_timeout: Duration::from_secs(30), ..quick() };
+    let t0 = Instant::now();
+    get(&Downloader::new(reqwest::Client::new()).config(cfg), job).await.unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(15), "took {:?}", t0.elapsed());
     assert_eq!(std::fs::read(&dest).unwrap(), body(8 * MIB, 1));
 }
 

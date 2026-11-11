@@ -869,6 +869,7 @@ pub fn run() -> eframe::Result<()> {
         "Settings",
         crate::platform::native_options(viewport),
         Box::new(|cc| {
+            crate::platform::guard_gpu(cc);
             crate::app::setup_fonts(cc);
             crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());
             Ok(Box::new(app))

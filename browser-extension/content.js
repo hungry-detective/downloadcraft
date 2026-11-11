@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.9.16";
+  const EXT_VER = "0.9.17";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -3471,6 +3471,43 @@
     if (!prefQuality) return null;
     return { label: prefQuality === "audio" ? dcT("barAudio", "audio") : prefQuality, run: () => socialSend(post, prefQuality, video) };
   }
+  // The picture for a social post's panel. TikTok's <video> has no poster:
+  // the cover is an <img> laid over the player, so the poster alone left
+  // the panel blank. In order: the poster; a picture on the player itself;
+  // TikTok's cover for this post from the page's own data; the page's
+  // og:image while it still describes this post (not after an in-app swap
+  // to the next video); a still of the playing frame.
+  function socialThumb(post, video) {
+    try { const p = video && (video.getAttribute("poster") || video.poster); if (/^https?:\/\//i.test(p || "")) return p; } catch (e) { /* ignore */ }
+    try {
+      const near = fbThumbCandidates("", video, false).filter((c) => c.dist === 0);
+      const best = fbPickThumb(near);
+      if (best) return best;
+    } catch (e) { /* ignore */ }
+    const id = (String(post || location.href).match(/\/video\/(\d{8,25})/) || [])[1];
+    if (id && /(^|\.)tiktok\.com$/i.test(location.hostname)) {
+      try {
+        for (const s of document.querySelectorAll("script#__UNIVERSAL_DATA_FOR_REHYDRATION__, script#SIGI_STATE, script#__NEXT_DATA__")) {
+          const txt = s.textContent || "";
+          const at = txt.indexOf('"' + id + '"');
+          if (at < 0) continue;
+          const near = txt.slice(at, at + 20000);
+          for (const k of ["cover", "originCover", "dynamicCover"]) {
+            const u = fbJsonUrlNear(near, k);
+            if (/^https?:\/\//i.test(u)) return u;
+          }
+        }
+      } catch (e) { /* ignore */ }
+    }
+    try {
+      const og = fbMeta("og:image");
+      const ogUrl = fbMeta("og:url") || ((document.querySelector('link[rel="canonical"]') || {}).href || "");
+      const samePost = id ? ogUrl.includes(id) : (ogUrl && ogUrl.split(/[?#]/)[0] === location.href.split(/[?#]/)[0]);
+      if (og && samePost) return og;
+    } catch (e) { /* ignore */ }
+    return fbFrame(video) || "";
+  }
+
   // Instagram / TikTok / X / Reddit: the post's qualities (the app fetches
   // the one picked with its sound), plus audio only as MP3.
   function openSocialMenu(pill, post, video) {
@@ -3479,7 +3516,7 @@
     const pick = (q) => { rememberQuality(q); socialSend(post, q, video); };
     api = dcPanel({
       title: String(document.title || "Video").slice(0, 120),
-      thumb: (video && video.poster) || "",
+      thumb: socialThumb(post, video),
       dur: (() => { try { const d = video.duration; return Number.isFinite(d) && d > 0 ? fmtDurSec(d) : ""; } catch (e) { return ""; } })(),
       res: "", size: "", format: "MP4",
       hint: dcT("panelSocialHint", "The app fetches this post's video with its sound."),
@@ -3758,6 +3795,16 @@
           const v = document.querySelector("video[poster]");
           thumb = (og && og.content) || (v && v.poster) || "";
           if (!/^https?:\/\//i.test(thumb)) thumb = "";
+          // TikTok and the like: no poster, and og:image is the first video
+          // the tab opened. Use the picture of the video on screen.
+          const R = typeof DCRank !== "undefined" ? DCRank : null;
+          if (R && R.socialSite && R.socialSite(location.hostname)) {
+            const onScreen = [...document.querySelectorAll("video")].find((x) => {
+              const r = x.getBoundingClientRect();
+              return r.width > 80 && r.bottom > 0 && r.top < window.innerHeight;
+            });
+            if (onScreen) thumb = socialThumb(socialPostFor(onScreen), onScreen) || thumb;
+          }
         } catch (e) { /* ignore */ }
         // Facebook: whole videos from its own JSON, the reel on screen first.
         // Their byte-range pieces (and every other fbcdn file the sniffer or
