@@ -17,15 +17,15 @@ yt-dlp, and an extension that works with the app — or on its own.
 
 <br>
 
-[![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHBhdGggZmlsbD0nd2hpdGUnIGQ9J00yIDQuMmw4LjUtMS4ydjguNEgyek0xMS42IDIuOUwyMiAxLjV2OS45SDExLjZ6TTIgMTIuNmg4LjVWMjFMMiAxOS44ek0xMS42IDEyLjZIMjJ2OS45bC0xMC40LTEuNHonLz48L3N2Zz4=)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.9.16/DownloadCraft-0.9.16-windows-x64-setup.exe)
+[![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHBhdGggZmlsbD0nd2hpdGUnIGQ9J00yIDQuMmw4LjUtMS4ydjguNEgyek0xMS42IDIuOUwyMiAxLjV2OS45SDExLjZ6TTIgMTIuNmg4LjVWMjFMMiAxOS44ek0xMS42IDEyLjZIMjJ2OS45bC0xMC40LTEuNHonLz48L3N2Zz4=)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.9.17/DownloadCraft-0.9.17-windows-x64-setup.exe)
 &nbsp;
-[![Download for macOS](https://img.shields.io/badge/Download-macOS-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.9.16/DownloadCraft-0.9.16-macos-Universal.zip)
+[![Download for macOS](https://img.shields.io/badge/Download-macOS-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.9.17/DownloadCraft-0.9.17-macos-Universal.zip)
 &nbsp;
-[![Download for Linux](https://img.shields.io/badge/Download-Linux-E95420?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/tag/v0.9.16)
+[![Download for Linux](https://img.shields.io/badge/Download-Linux-E95420?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/tag/v0.9.17)
 
-[![Chrome / Edge extension](https://img.shields.io/badge/Extension-Chrome%20%2F%20Edge-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.9.16/DownloadCraft-Chrome-0.9.16.zip)
+[![Chrome / Edge extension](https://img.shields.io/badge/Extension-Chrome%20%2F%20Edge-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.9.17/DownloadCraft-Chrome-0.9.17.zip)
 &nbsp;
-[![Firefox extension](https://img.shields.io/badge/Extension-Firefox-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.9.16/DownloadCraft-Firefox-0.9.16.xpi)
+[![Firefox extension](https://img.shields.io/badge/Extension-Firefox-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.9.17/DownloadCraft-Firefox-0.9.17.xpi)
 
 <sub>Windows 10/11 · macOS 12+ (Apple Silicon & Intel) · Linux x86-64 (DEB, RPM, AppImage) · <a href="https://github.com/hungry-detective/downloadcraft/releases">all releases</a></sub>
 
@@ -41,18 +41,21 @@ https://github.com/user-attachments/assets/acd6afd0-926c-4e11-a718-3edf42c4f7c6
 
 ---
 
-## ✨ What's new in 0.9.16
+## ✨ What's new in 0.9.17
 
-- **Torrents and magnet links**, with pause, resume, file picking and a seed ratio.
-- **Remote control from a phone** (paired with a 6-digit code, optional HTTPS), and a
-  **server mode with a Docker image** for a NAS or home server.
-- **VPN-only downloads with a kill switch**, and encrypted DNS (DoH / DoT).
-- **Faster when a server holds back:** a server allowing two connections, 22 s → 12.7 s for
-  50 MB; crawling connections, 15.8 s → about 5 s for 32 MB.
-- **Two new layouts, Ledger and Petal**, theme files, 9 languages, a Windows installer,
-  debrid accounts, image galleries and AI-assistant (MCP) control.
+- **Faster to the finish:** a connection that goes silent is replaced within about 6 s
+  instead of holding the end of the file (a frozen-connection test: 31 s → 7 s), single
+  connection errors no longer cost a connection, and disk writes no longer pause downloads.
+- **The early start keeps its bytes:** pressing Download in the Download window continues
+  the background download at the same byte, with no restart from 0%.
+- **Petal reworked:** a grid of download cards, Add URL and Add torrent in the toolbar, a
+  sidebar that fits every item, and a real table in List view.
+- **Add torrent with a magnet icon** in every layout; toolbars keep their labels at the
+  default window size; Ledger's dark side is near-black.
+- **Fixes:** no crash on Bangla text (#19) or when the graphics device is lost (#20),
+  menus close on an outside click (#21), and TikTok thumbnails in the extension.
 
-Full notes: [Release 0.9.16](https://github.com/hungry-detective/downloadcraft/releases/tag/v0.9.16).
+Full notes: [Release 0.9.17](https://github.com/hungry-detective/downloadcraft/releases/tag/v0.9.17).
 
 ---
 
@@ -185,17 +188,17 @@ let done = downloadcraft_engine::Downloader::new(reqwest::Client::new())
 
 | Platform | Download | How |
 |---|---|---|
-| **Windows 10/11** | `DownloadCraft-0.9.16-windows-x64-setup.exe` or `DownloadCraft-0.9.16-windows-x64-portable.zip` | Run the installer (no administrator rights), or extract the zip and run `download_craft.exe`. |
-| **macOS 12+** | `DownloadCraft-0.9.16-macos-Universal.zip` | Move *Download Craft.app* to Applications (development build, not notarized — right-click → Open the first time). |
-| **Ubuntu / Debian / Mint** | `downloadcraft_0.9.16_amd64.deb` | `sudo apt install ./downloadcraft_0.9.16_amd64.deb` |
-| **Fedora** | `downloadcraft-0.9.16-1.x86_64.rpm` | `sudo dnf install ./downloadcraft-0.9.16-1.x86_64.rpm` |
-| **Other Linux** | `DownloadCraft-0.9.16-x86_64.AppImage` | Make it executable and open it. |
+| **Windows 10/11** | `DownloadCraft-0.9.17-windows-x64-setup.exe` or `DownloadCraft-0.9.17-windows-x64-portable.zip` | Run the installer (no administrator rights), or extract the zip and run `download_craft.exe`. |
+| **macOS 12+** | `DownloadCraft-0.9.17-macos-Universal.zip` | Move *Download Craft.app* to Applications (development build, not notarized — right-click → Open the first time). |
+| **Ubuntu / Debian / Mint** | `downloadcraft_0.9.17_amd64.deb` | `sudo apt install ./downloadcraft_0.9.17_amd64.deb` |
+| **Fedora** | `downloadcraft-0.9.17-1.x86_64.rpm` | `sudo dnf install ./downloadcraft-0.9.17-1.x86_64.rpm` |
+| **Other Linux** | `DownloadCraft-0.9.17-x86_64.AppImage` | Make it executable and open it. |
 
 **Browser extension**
-1. **Chrome / Edge / Brave:** extract `DownloadCraft-Chrome-0.9.16.zip`, open `chrome://extensions`, turn on
+1. **Chrome / Edge / Brave:** extract `DownloadCraft-Chrome-0.9.17.zip`, open `chrome://extensions`, turn on
    *Developer mode*, choose **Load unpacked** and pick the `browser-extension` folder.
 2. **Firefox:** open `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** → pick
-   `DownloadCraft-Firefox-0.9.16.xpi`.
+   `DownloadCraft-Firefox-0.9.17.xpi`.
 3. In the app, open **Settings → Browser Integration** and press **Install** for your browser, so the
    extension can talk to the app. (Without it, the extension still downloads in the browser.)
 
