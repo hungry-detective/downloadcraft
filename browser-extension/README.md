@@ -48,7 +48,7 @@ and the promise-style API calls go through `api` (`browser` when it exists,
 2. In Firefox open `about:debugging#/runtime/this-firefox`, press
    **Load Temporary Add-on…** and pick the `.xpi` (or the staged folder's
    `manifest.json`). The add-on appears as *Send to Download Craft* with the
-   ID `send-to-download-craft@example` — the same ID the app allows in
+   ID `send-to-download-craft@hungry-detective.github.io` — the same ID the app allows in
    `%APPDATA%\download_craft\native-host\firefox.json`.
 3. Then do step 2 below (**Install firefox** in Settings).
 

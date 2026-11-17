@@ -106,7 +106,7 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "send-to-download-craft@example",
+      "id": "send-to-download-craft@hungry-detective.github.io",
       "strict_min_version": "115.0",
       "data_collection_permissions": {
         "required": [

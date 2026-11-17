@@ -463,7 +463,7 @@ pub fn install_native_host(browser: &str) -> Result<String, String> {
     }
     let mut manifest = serde_json::json!({"name":"com.download_craft","description":"Download Craft native host","path":launcher,"type":"stdio"});
     if browser == "firefox" {
-        manifest["allowed_extensions"] = serde_json::json!(["send-to-download-craft@example"]);
+        manifest["allowed_extensions"] = serde_json::json!(crate::app::FIREFOX_EXTENSION_IDS);
     } else {
         manifest["allowed_origins"] =
             serde_json::json!([format!("chrome-extension://{}/", crate::app::EXTENSION_ID)]);

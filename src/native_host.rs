@@ -185,7 +185,7 @@ pub fn launched_directly(args: &[String]) -> bool {
         a.strip_prefix("chrome-extension://").is_some_and(|rest| {
             let id = rest.trim_end_matches('/');
             id == crate::app::EXTENSION_ID || crate::app::STORE_EXTENSION_IDS.contains(&id)
-        }) || a == "send-to-download-craft@example"
+        }) || crate::app::FIREFOX_EXTENSION_IDS.contains(&a.as_str())
     };
     args.iter().skip(1).take(2).any(ours)
 }
@@ -1162,6 +1162,7 @@ mod media_tests {
         let ext = format!("chrome-extension://{}/", crate::app::EXTENSION_ID);
         assert!(launched_directly(&["dc.exe".into(), ext, "--parent-window=0".into()]));
         assert!(launched_directly(&["dc.exe".into(), r"C:\m.json".into(), "send-to-download-craft@example".into()]));
+        assert!(launched_directly(&["dc.exe".into(), r"C:\m.json".into(), "send-to-download-craft@hungry-detective.github.io".into()]));
         assert!(!launched_directly(&["dc.exe".into(), "chrome-extension://someoneelse/".into()]));
         assert!(!launched_directly(&["dc.exe".into(), "--settings".into()]));
     }

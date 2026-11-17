@@ -8,7 +8,7 @@ The text and answers to paste into each browser's extension store. The extension
 
 ## Full description
 
-Download Craft is a free, open-source (MIT) download manager for Windows. This extension connects it to your browser:
+Download Craft is a free, open-source (MIT) download manager for Windows, macOS and Linux. This extension connects it to your browser:
 
 - **Captures downloads.** Files you download go to Download Craft instead of the browser. It splits each file over up to 32 connections, resumes after a cut or a restart, and can refresh an expired link.
 - **Saves videos.** A button appears on pages that play video, including YouTube, Vimeo, HLS and DASH streams. Pick a quality and the app downloads and merges it.
@@ -72,7 +72,7 @@ Productivity (Chrome / Edge / Opera); Download Management (Firefox).
 - Opera users can also install the Chrome Web Store version through "Install Chrome Extensions".
 
 ### Firefox (AMO)
-- Build with `build-firefox.ps1` and upload the result. The add-on ID comes from `manifest-firefox.json` (`browser_specific_settings.gecko.id`) and must match `allowed_extensions` in the Firefox host manifest (`install_native_host` in `src/app.rs`). It is `send-to-download-craft@example` today. Change both to an address you own (for example `send-to-download-craft@<your domain>`) before the first upload, because AMO fixes the ID for good.
+- Build with `scripts/package_extensions.py` and upload the `.xpi`. The add-on ID is `send-to-download-craft@hungry-detective.github.io` (`browser_specific_settings.gecko.id` in `manifest-firefox.json`); the app's Firefox host allows it and the older `send-to-download-craft@example` of self-installed builds (`FIREFOX_EXTENSION_IDS` in `src/app.rs`).
 - AMO asks for the source of minified code. None of the code is minified, so upload as is.
 
 ## Review notes (for the reviewer field)

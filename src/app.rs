@@ -7228,6 +7228,10 @@ pub(crate) const EXTENSION_ID: &str = "pgdhmfgefjnfijmlheboncdmfhcnoikk";
 /// IDs the Edge / Opera stores give the same extension once it is listed
 /// there (each store assigns its own); the host accepts them too.
 pub(crate) const STORE_EXTENSION_IDS: &[&str] = &[];
+/// Firefox add-on IDs the native host answers: the addons.mozilla.org one
+/// first, then the placeholder that self-installed builds up to 0.9.17 carry.
+pub(crate) const FIREFOX_EXTENSION_IDS: &[&str] =
+    &["send-to-download-craft@hungry-detective.github.io", "send-to-download-craft@example"];
 
 #[cfg(windows)]
 pub(crate) fn install_native_host(browser: &str) -> Result<String, String> {
@@ -7261,7 +7265,7 @@ pub(crate) fn install_native_host(browser: &str) -> Result<String, String> {
             "description": "Download Craft native host",
             "path": host.to_string_lossy(),
             "type": "stdio",
-            "allowed_extensions": ["send-to-download-craft@example"]
+            "allowed_extensions": FIREFOX_EXTENSION_IDS
         }),
         _ => serde_json::json!({
             "name": HOST_NAME,
