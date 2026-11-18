@@ -8167,6 +8167,7 @@ fn tray_menu(running: &[(u64, String)], autostart: bool) -> tray_icon::menu::Men
 
 /// A tray menu picture: one glyph of the app's icon font, centred in 16×16
 /// in `rgb`, transparent around it.
+#[cfg(windows)]
 fn tray_glyph(glyph: &str, rgb: u32) -> Option<tray_icon::menu::Icon> {
     use ab_glyph::{Font, FontRef};
     const SIZE: u32 = 16;
