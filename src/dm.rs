@@ -211,19 +211,18 @@ pub fn dm_icon(p: &egui::Painter, r: egui::Rect, icon: DmIcon, color: egui::Colo
             );
         }
         DmIcon::Restore => {
-            // The front sheet, then the one behind it peeking out top-left.
+            // The front window bottom-left, and of the one behind it only
+            // the top and right edges peeking out, as Windows draws it.
             p.rect_stroke(
-                egui::Rect::from_min_size(m(8.0, 8.0), egui::vec2(11.0 * s, 11.0 * s)),
+                egui::Rect::from_min_size(m(5.0, 8.0), egui::vec2(11.0 * s, 11.0 * s)),
                 egui::CornerRadius::same(1),
                 st,
                 egui::StrokeKind::Inside,
             );
-            p.rect_stroke(
-                egui::Rect::from_min_size(m(5.0, 5.0), egui::vec2(11.0 * s, 11.0 * s)),
-                egui::CornerRadius::same(1),
-                st,
-                egui::StrokeKind::Inside,
-            );
+            line((8.0, 8.0), (8.0, 5.5));
+            line((8.0, 5.5), (18.5, 5.5));
+            line((18.5, 5.5), (18.5, 16.0));
+            line((18.5, 16.0), (16.0, 16.0));
         }
         DmIcon::Close => {
             line((6.0, 6.0), (18.0, 18.0));

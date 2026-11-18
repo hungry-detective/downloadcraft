@@ -24,14 +24,15 @@ pub struct ManState {
     pos: Option<Pos2>,
     down_l: bool,
     down_r: bool,
-    prev_l: bool,
-    prev_r: bool,
     rose_l: bool,
     rose_r: bool,
     org_l: Option<Pos2>,
     org_r: Option<Pos2>,
     rel_l: Option<Pos2>,
     rel_r: Option<Pos2>,
+    /// Where the press released this frame began.
+    rel_org_l: Option<Pos2>,
+    rel_org_r: Option<Pos2>,
     consumed: bool,
     last_click_at: Option<Instant>,
     last_click_pos: Option<Pos2>,
@@ -49,39 +50,80 @@ impl ManState {
         self.consumed = false;
         self.rel_l = None;
         self.rel_r = None;
+        self.rel_org_l = None;
+        self.rel_org_r = None;
+        self.rose_l = false;
+        self.rose_r = false;
         self.double_pending = false;
         ctx.input(|i| {
             self.pos = i.pointer.hover_pos();
-            self.down_l = i.pointer.button_down(egui::PointerButton::Primary);
-            self.down_r = i.pointer.button_down(egui::PointerButton::Secondary);
-            if self.down_l || self.down_r {
-                if let Some(o) = i.pointer.press_origin() {
-                    if self.down_l {
-                        self.org_l = Some(o);
+            // Presses and releases come from the input events, in order, with
+            // their own positions: a click whose press and release land
+            // between two frames still counts (polling the button state once
+            // a frame lost such clicks while the window was idle, right-clicks
+            // most of all).
+            let mut seen_l = false;
+            let mut seen_r = false;
+            for e in &i.events {
+                match e {
+                    egui::Event::PointerButton { pos, button, pressed, .. } => {
+                        let (down, org, rel, rel_org, rose, seen) = match button {
+                            egui::PointerButton::Primary => (
+                                &mut self.down_l,
+                                &mut self.org_l,
+                                &mut self.rel_l,
+                                &mut self.rel_org_l,
+                                &mut self.rose_l,
+                                &mut seen_l,
+                            ),
+                            egui::PointerButton::Secondary => (
+                                &mut self.down_r,
+                                &mut self.org_r,
+                                &mut self.rel_r,
+                                &mut self.rel_org_r,
+                                &mut self.rose_r,
+                                &mut seen_r,
+                            ),
+                            _ => continue,
+                        };
+                        *seen = true;
+                        if *pressed {
+                            *down = true;
+                            *org = Some(*pos);
+                            *rose = true;
+                        } else {
+                            *down = false;
+                            *rel = Some(*pos);
+                            *rel_org = org.take().or(Some(*pos));
+                        }
                     }
-                    if self.down_r {
-                        self.org_r = Some(o);
+                    // Focus or pointer gone (minimized, parked to the tray,
+                    // another window on top): a release may never arrive, and
+                    // a button left "held" blocked hover, clicks and drags
+                    // until restart (issue #24).
+                    egui::Event::WindowFocused(false) | egui::Event::PointerGone => {
+                        self.down_l = false;
+                        self.down_r = false;
+                        self.org_l = None;
+                        self.org_r = None;
                     }
+                    _ => {}
                 }
             }
-            if self.down_l && !self.prev_l && self.org_l.is_none() {
-                self.org_l = self.pos;
+            // egui's own button state only ever clears ours (a release we
+            // missed). It never sets it: egui keeps a button "held" when its
+            // release was lost while the window was away, and copying that
+            // back is exactly what froze hover, clicks and drags (#24). Every
+            // real press arrives as an event above.
+            for (button, down, org, seen) in [
+                (egui::PointerButton::Primary, &mut self.down_l, &mut self.org_l, seen_l),
+                (egui::PointerButton::Secondary, &mut self.down_r, &mut self.org_r, seen_r),
+            ] {
+                if !seen && *down && !i.pointer.button_down(button) {
+                    *down = false;
+                    *org = None;
+                }
             }
-            if self.down_r && !self.prev_r && self.org_r.is_none() {
-                self.org_r = self.pos;
-            }
-            if !self.down_l && self.prev_l {
-                self.rel_l = self.pos.or(self.org_l);
-                self.org_l = None;
-            }
-            if !self.down_r && self.prev_r {
-                self.rel_r = self.pos.or(self.org_r);
-                self.org_r = None;
-            }
-            self.rose_l = self.down_l && !self.prev_l;
-            self.rose_r = self.down_r && !self.prev_r;
-            self.prev_l = self.down_l;
-            self.prev_r = self.down_r;
             // keyboard delivery proof (Phase 2 text fields need this)
             for e in &i.events {
                 match e {
@@ -140,7 +182,7 @@ impl ManState {
     /// Left-click (press + release inside, minimal drift). Also arms
     /// double-click detection, read via `take_double` right after.
     pub fn clicked(&mut self, r: &Rect) -> bool {
-        let (rel, org) = (self.rel_l, self.org_l);
+        let (rel, org) = (self.rel_l, self.rel_org_l);
         if !self.fire(r, rel, org) {
             return false;
         }
@@ -164,7 +206,7 @@ impl ManState {
 
     /// Right-click.
     pub fn secondary(&mut self, r: &Rect) -> bool {
-        let (rel, org) = (self.rel_r, self.org_r);
+        let (rel, org) = (self.rel_r, self.rel_org_r);
         self.fire(r, rel, org)
     }
 
@@ -179,10 +221,100 @@ impl ManState {
         if self.consumed {
             return false;
         }
-        if self.rose_l && matches!(self.pos, Some(p) if r.contains(p)) {
+        // Where the press happened (the pointer may have moved on since).
+        if self.rose_l && matches!(self.org_l.or(self.pos), Some(p) if r.contains(p)) {
             self.consumed = true;
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One frame of `events` through a real egui context, then `begin`.
+    fn frame(ctx: &egui::Context, man: &mut ManState, events: Vec<egui::Event>) {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| man.begin(ctx));
+    }
+
+    fn button(pos: Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button, pressed, modifiers: Default::default() }
+    }
+
+    const ROW: Rect = Rect { min: Pos2 { x: 100.0, y: 100.0 }, max: Pos2 { x: 300.0, y: 130.0 } };
+
+    #[test]
+    fn a_click_inside_one_frame_counts() {
+        let (ctx, mut man) = (egui::Context::default(), ManState::default());
+        let p = Pos2::new(150.0, 115.0);
+        frame(&ctx, &mut man, vec![
+            egui::Event::PointerMoved(p),
+            button(p, egui::PointerButton::Primary, true),
+            button(p, egui::PointerButton::Primary, false),
+        ]);
+        assert!(man.clicked(&ROW));
+    }
+
+    #[test]
+    fn a_right_click_inside_one_frame_counts() {
+        let (ctx, mut man) = (egui::Context::default(), ManState::default());
+        let p = Pos2::new(150.0, 115.0);
+        frame(&ctx, &mut man, vec![
+            egui::Event::PointerMoved(p),
+            button(p, egui::PointerButton::Secondary, true),
+            button(p, egui::PointerButton::Secondary, false),
+        ]);
+        assert!(man.secondary(&ROW));
+    }
+
+    #[test]
+    fn a_click_over_several_frames_counts_once() {
+        let (ctx, mut man) = (egui::Context::default(), ManState::default());
+        let p = Pos2::new(150.0, 115.0);
+        frame(&ctx, &mut man, vec![egui::Event::PointerMoved(p), button(p, egui::PointerButton::Primary, true)]);
+        assert!(!man.clicked(&ROW));
+        assert!(man.down_left());
+        frame(&ctx, &mut man, vec![]);
+        assert!(!man.clicked(&ROW));
+        frame(&ctx, &mut man, vec![button(p, egui::PointerButton::Primary, false)]);
+        assert!(man.clicked(&ROW));
+        frame(&ctx, &mut man, vec![]);
+        assert!(!man.clicked(&ROW));
+    }
+
+    #[test]
+    fn a_release_lost_while_away_does_not_block_input() {
+        // Pressed, then the window lost focus (minimized, parked to the tray)
+        // and the release never came: hover and the next click still work.
+        let (ctx, mut man) = (egui::Context::default(), ManState::default());
+        let p = Pos2::new(150.0, 115.0);
+        frame(&ctx, &mut man, vec![egui::Event::PointerMoved(p), button(p, egui::PointerButton::Primary, true)]);
+        frame(&ctx, &mut man, vec![egui::Event::WindowFocused(false)]);
+        frame(&ctx, &mut man, vec![egui::Event::WindowFocused(true), egui::Event::PointerMoved(p)]);
+        assert!(man.hover(&ROW), "hover must work again");
+        frame(&ctx, &mut man, vec![
+            button(p, egui::PointerButton::Primary, true),
+            button(p, egui::PointerButton::Primary, false),
+        ]);
+        assert!(man.clicked(&ROW));
+    }
+
+    #[test]
+    fn a_press_starts_a_drag_where_it_happened() {
+        let (ctx, mut man) = (egui::Context::default(), ManState::default());
+        let p = Pos2::new(150.0, 115.0);
+        frame(&ctx, &mut man, vec![
+            egui::Event::PointerMoved(p),
+            button(p, egui::PointerButton::Primary, true),
+            egui::Event::PointerMoved(Pos2::new(400.0, 400.0)),
+        ]);
+        assert!(man.press_started_in(&ROW));
     }
 }

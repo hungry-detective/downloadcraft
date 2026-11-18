@@ -283,6 +283,9 @@ struct PreStart {
 struct ConfirmApp {
     pre: Option<PreStart>,
     pre_tried: bool,
+    /// The row the main app is downloading in the background for this
+    /// dialog (see `prefetch_in_app`): Download shows it, Cancel drops it.
+    prefetch_id: Option<u64>,
     url: String,
     filename: String,
     category: String,
@@ -613,6 +616,13 @@ impl ConfirmApp {
         if self.pre_tried || self.probing || self.done {
             return;
         }
+        // The main app runs: the download starts there, out of sight, so
+        // Download simply shows it - same connections, same progress, never
+        // a second start from "Connecting...".
+        if main_app_running() {
+            self.prefetch_in_app();
+            return;
+        }
         let url = self.url.trim().to_string();
         let plain = is_download_url(&url)
             && self.pair_url.is_empty()
@@ -657,6 +667,64 @@ impl ConfirmApp {
         let conns = self.connections.max(1);
         let handle = rt.spawn(async move { engine::download(url, d2, conns, opts, s2).await });
         self.pre = Some(PreStart { shared, handle, dest });
+    }
+
+    /// Start this dialog's download in the main app as a hidden row: a plain
+    /// file whose size is known, or a YouTube video (the app reads it
+    /// itself). Not a web page, a stream manifest or an audio/video pair
+    /// before their details are known, and not a link already in the list.
+    fn prefetch_in_app(&mut self) {
+        let url = self.url.trim().to_string();
+        let youtube = url.contains("youtube.com") || url.contains("youtu.be");
+        let plain = is_download_url(&url)
+            && self.pair_url.is_empty()
+            && !self.page_mime.contains("text/html")
+            && !engine::is_stream_manifest(&url, None, &self.page_mime)
+            && self.probe_size.unwrap_or(0) > 0;
+        if !(plain || (youtube && is_download_url(&url))) {
+            return;
+        }
+        self.pre_tried = true;
+        let mut item = self.build_item();
+        item.prefetch = true;
+        if let crate::model::AppendResult::Added(id) = crate::model::append_to_queue(&mut item) {
+            request_start(&[id]);
+            self.prefetch_id = Some(id);
+        }
+    }
+
+    /// The dialog closed without Download: the background download goes,
+    /// with whatever it wrote.
+    fn discard_prefetch(&mut self) {
+        if let Some(id) = self.prefetch_id.take() {
+            crate::model::send_app_cmd(serde_json::json!({ "id": id, "action": "discard" }));
+        }
+    }
+
+    /// The row this dialog describes (name, folder, links and session).
+    fn build_item(&self) -> DownloadItem {
+        let filename = if self.filename.trim().is_empty() { filename_from_url(&self.url) } else { self.filename.clone() };
+        let mut item = DownloadItem::new(
+            0, // id assigned atomically under the queue lock
+            self.url.trim().to_string(),
+            engine::sanitize_filename(filename.trim()),
+            self.effective_dir(),
+            self.connections,
+        );
+        item.referer = self.referer.clone();
+        item.cookie = self.cookie.clone();
+        item.extra_headers = self.headers.clone();
+        item.browser = self.browser.clone();
+        item.description = self.description.trim().to_string();
+        item.total_bytes = self.probe_size.filter(|s| *s > 0);
+        if self.pair_url.starts_with("http") {
+            item.pair_url = self.pair_url.clone();
+            item.pair_mime = self.pair_mime.clone();
+        }
+        item.quality_pref = self.quality_pref.trim().to_string();
+        item.duration_secs = self.duration_secs;
+        item.expects_audio = self.expects_audio;
+        item
     }
 
     /// Stop the background download. `keep_as`: continue it as this file
@@ -830,6 +898,25 @@ impl ConfirmApp {
         self.waiting_app = None;
         if self.filename.trim().is_empty() {
             self.filename = filename_from_url(&self.url);
+        }
+        if let Some(id) = self.prefetch_id {
+            let sent = crate::model::send_app_cmd(serde_json::json!({
+                "id": id,
+                "action": "adopt",
+                "start": start,
+                "filename": engine::sanitize_filename(self.filename.trim()),
+                "dir": self.effective_dir(),
+                "description": self.description.trim(),
+            }));
+            if sent {
+                self.prefetch_id = None;
+                save_remember_category(self.remember_path);
+                save_recent_folder(&self.save_base);
+                self.done = true;
+                return;
+            }
+            // Could not reach the app: drop it and queue the usual way.
+            self.discard_prefetch();
         }
         let mut item = DownloadItem::new(
             0, // id assigned atomically under the queue lock below
@@ -1078,6 +1165,7 @@ pub fn run() -> eframe::Result<()> {
         recent_folders: if prefs.remember_folders { prefs.recent_folders } else { Vec::new() },
         pre: None,
         pre_tried: false,
+        prefetch_id: None,
         probing: false,
         probe_size: known_size,
         probe_rx: None,
@@ -1169,6 +1257,7 @@ impl eframe::App for ConfirmApp {
         }
         if self.done || ctx.input(|i| i.viewport().close_requested()) {
             self.stop_prestart(None);
+            self.discard_prefetch();
             self.done = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             if !self.exited {
@@ -1685,6 +1774,7 @@ impl eframe::App for ConfirmApp {
             }
             if x_b.clicked() {
                 self.stop_prestart(None);
+                self.discard_prefetch();
                 self.done = true;
             }
             // ---- notice (the window grew 16px for it) ----

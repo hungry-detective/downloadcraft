@@ -42,6 +42,9 @@ pub struct SharedState {
     pub part_done: std::sync::Mutex<Vec<u64>>,
     /// Set when YouTube answers with a bot-check wall (HTTP 429 /sorry).
     pub rate_limited: AtomicBool,
+    /// A torrent's live swarm for the progress window's Part Info: seeds,
+    /// peers, the connected peers and each file's progress (src/torrent.rs).
+    pub torrent: std::sync::Mutex<Option<serde_json::Value>>,
     /// What the transfer is doing when it is not moving bytes — the helper's
     /// own phase names ("Getting info", "Merging"), empty for the built-in
     /// engine, which is always transferring once it has started. yt-dlp spends
@@ -97,6 +100,7 @@ impl SharedState {
             part_total: std::sync::Mutex::new(Vec::new()),
             part_done: std::sync::Mutex::new(Vec::new()),
             rate_limited: AtomicBool::new(false),
+            torrent: std::sync::Mutex::new(None),
             phase: std::sync::Mutex::new(String::new()),
             error: std::sync::Mutex::new(None),
             note: std::sync::Mutex::new(None),

@@ -4,6 +4,12 @@
 //!   lines, a large labelled toolbar, the Windows blue accent, square corners.
 //! - **Petal**: an airy card look: white surfaces on a light grey page,
 //!   summary tiles, downloads as cards, the blue accent, round corners.
+//! - **Classic**: laid out the way Internet Download Manager users know: a
+//!   grey Windows window, a toolbar of coloured icons over their labels in
+//!   that order (Add URL, Resume, Stop, Stop All, Delete, Delete Completed,
+//!   Options, Scheduler, Start/Stop Queue, Grabber), a Categories tree of
+//!   folders, and a plain list (File Name, Size, Status, Time left, Transfer
+//!   rate, Last Try Date). Drawn here with Download Craft's own icons.
 //!
 //! Both are written here from scratch (palettes, layouts, drawing). Each look has a light and a
 //! dark side; the mode (system, dark, light) chooses between them.
@@ -27,7 +33,7 @@ const fn pm(c: u32, a: u8) -> u8 {
 }
 
 /// Looks in the order the menus list them: (key, name).
-pub const LOOKS: [(&str, &str); 3] = [("craft", "Craft"), ("ledger", "Ledger"), ("petal", "Petal")];
+pub const LOOKS: [(&str, &str); 4] = [("craft", "Craft"), ("ledger", "Ledger"), ("petal", "Petal"), ("classic", "Classic")];
 
 /// `"petal:light"` → `("petal", "light")`; a bare mode is Download Craft's look.
 pub fn split(theme: &str) -> (&str, &str) {
@@ -62,10 +68,35 @@ pub fn palette(look: &str, dark: bool) -> Palette {
         ("ledger", true) => LEDGER_DARK,
         ("petal", false) => PETAL_LIGHT,
         ("petal", true) => PETAL_DARK,
+        ("classic", false) => CLASSIC_LIGHT,
+        ("classic", true) => CLASSIC_DARK,
         (_, true) => DARK_PAL,
         (_, false) => LIGHT_PAL,
     }
 }
+
+/// Classic: the Windows grey of a classic download manager, white list,
+/// the pale blue selection of a Windows list view, near-square corners.
+pub const CLASSIC_LIGHT: Palette = Palette {
+    bg: rgb(0xF0F0F0),
+    surface: rgb(0xFFFFFF),
+    surface_lt: rgb(0xE5F3FF),
+    header_bg: rgb(0xF0F0F0),
+    central_bg: rgb(0xFFFFFF),
+    card_bd: rgb(0xC9C9C9),
+    sel_bg: rgb(0xCCE8FF),
+    sel_bd: rgb(0x99D1FF),
+    hover_bg: rgb(0xE5F3FF),
+    radius: 1.0,
+    ..LEDGER_LIGHT
+};
+
+/// Classic on a dark desktop: the same layout in near-black.
+pub const CLASSIC_DARK: Palette = Palette {
+    sel_bg: wash(0x0078D4, 120),
+    radius: 1.0,
+    ..LEDGER_DARK
+};
 
 pub const LEDGER_LIGHT: Palette = Palette {
     bg: rgb(0xF0F0F0),
@@ -292,6 +323,8 @@ mod tests {
             ("ledger dark", LEDGER_DARK),
             ("petal light", PETAL_LIGHT),
             ("petal dark", PETAL_DARK),
+            ("classic light", CLASSIC_LIGHT),
+            ("classic dark", CLASSIC_DARK),
         ] {
             for (what, bg) in [("bg", p.bg), ("surface", p.surface), ("list", p.central_bg)] {
                 assert!(ratio(p.txt, bg) >= 7.0, "{name}: text on {what}");
@@ -303,6 +336,12 @@ mod tests {
     }
 }
 
+/// Ledger's layout (toolbar of glyphs over labels, gridded list), which
+/// Classic builds on.
+pub fn ledger_like() -> bool {
+    matches!(active(), "ledger" | "classic")
+}
+
 /// Is the active look `key`? (The palette knows: each look has its radius.)
 pub fn active() -> &'static str {
     let r = crate::app::pl().radius;
@@ -310,6 +349,8 @@ pub fn active() -> &'static str {
         "ledger"
     } else if r == PETAL_LIGHT.radius {
         "petal"
+    } else if r == CLASSIC_LIGHT.radius {
+        "classic"
     } else {
         "craft"
     }

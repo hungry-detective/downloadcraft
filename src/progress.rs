@@ -60,6 +60,47 @@ struct Snap {
     /// (index, count) while a helper fetches a fragmented stream, which has
     /// no size until it is done: the bar and Part Info count fragments.
     fragments: Option<(u64, u64)>,
+    /// A torrent's swarm: Part Info shows its peers instead of byte ranges.
+    torrent: Option<TorrentSnap>,
+}
+
+/// A torrent's swarm, as the main app publishes it (src/torrent.rs).
+#[derive(Debug, Default, Clone)]
+struct TorrentSnap {
+    seeds: u64,
+    peers: u64,
+    connecting: u64,
+    /// Addresses heard of (trackers, DHT) but not connected.
+    seen: u64,
+    /// (address, client, received bytes, bytes/s), fastest first.
+    list: Vec<(String, String, u64, f64)>,
+    /// (name, size, have) per file being fetched.
+    files: Vec<(String, u64, u64)>,
+}
+
+impl TorrentSnap {
+    fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let o = v.as_object()?;
+        let n = |k: &str| o.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        let mut t = TorrentSnap { seeds: n("seeds"), peers: n("peers"), connecting: n("connecting"), seen: n("seen"), ..Default::default() };
+        for p in o.get("list").and_then(|x| x.as_array()).into_iter().flatten() {
+            let s = |i: usize| p.get(i).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let u = |i: usize| p.get(i).and_then(|x| x.as_u64()).unwrap_or(0);
+            let f = p.get(3).and_then(|x| x.as_f64()).unwrap_or(0.0);
+            t.list.push((s(0), s(1), u(2), f));
+        }
+        for f in o.get("files").and_then(|x| x.as_array()).into_iter().flatten() {
+            let name = f.get(0).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let u = |i: usize| f.get(i).and_then(|x| x.as_u64()).unwrap_or(0);
+            t.files.push((name, u(1), u(2)));
+        }
+        Some(t)
+    }
+
+    /// Table rows: one per connected peer, or one "finding peers" row.
+    fn rows(&self) -> usize {
+        self.list.len().max(1)
+    }
 }
 
 fn read_snap(id: u64) -> Snap {
@@ -97,6 +138,7 @@ fn read_snap(id: u64) -> Snap {
             out.parts.push((n(0), n(1), n(2)));
         }
     }
+    out.torrent = e.get("torrent").and_then(TorrentSnap::from_json);
     if let Some(f) = e.get("fragments").and_then(|x| x.as_array()) {
         let n = |i: usize| f.get(i).and_then(|x| x.as_u64()).unwrap_or(0);
         if n(1) > 0 {
@@ -302,6 +344,8 @@ const TBL_PAD: f32 = 4.0;
 const FOOT_PAD: f32 = 10.0;
 /// Table columns: # | Status (flex) | Downloaded | Total, both right on IN_R.
 const COL_NUM_W: f32 = 24.0;
+/// A torrent peer's address column ("185.148.0.207:25518").
+const PEER_ADDR_W: f32 = 128.0;
 const COL_DL_X: f32 = IN_R - 170.0;
 const COL_TOT_X: f32 = IN_R - 80.0;
 
@@ -681,7 +725,12 @@ impl eframe::App for ProgressApp {
         // Every tab carries the part section (its header row holds the state
         // actions), so the height no longer depends on the tab.
         // A fragmented stream shows one row (see `fragment_parts`).
-        let parts = self.snap.parts.len().max(self.snap.fragments.map_or(0, |_| 1));
+        let parts = self
+            .snap
+            .parts
+            .len()
+            .max(self.snap.fragments.map_or(0, |_| 1))
+            .max(self.snap.torrent.as_ref().map_or(0, TorrentSnap::rows));
         let want_h = match &self.item {
             None => PG_DEAD_H,
             // The header row is always there: it carries the state actions
@@ -1510,7 +1559,8 @@ impl ProgressApp {
         // A helper fetching a fragmented stream has no byte ranges, only a
         // fragment count: that is its part list (IDM shows one too).
         let frags = self.snap.fragments.filter(|_| self.snap.parts.is_empty());
-        let has_parts = !self.snap.parts.is_empty() || frags.is_some();
+        let swarm = self.snap.torrent.clone();
+        let has_parts = !self.snap.parts.is_empty() || frags.is_some() || swarm.is_some();
         p.line_segment(
             [
                 egui::pos2(o.x + 1.0, o.y + PART_Y + 0.5),
@@ -1547,10 +1597,15 @@ impl ProgressApp {
             if cb.hovered() { pl().dm_txt } else { pl().dm_dim },
             2.0,
         );
+        // A torrent has no parts of its own: its header counts the swarm.
+        let head = match &swarm {
+            Some(t) => format!("Peers  ·  {} seeds  ·  {} peers  ·  {} connecting", t.seeds, t.peers, t.connecting),
+            None => "Part Info".to_string(),
+        };
         p.text(
             egui::pos2(o.x + 37.0, o.y + HEAD_Y + HEAD_H / 2.0),
             egui::Align2::LEFT_CENTER,
-            "Part Info",
+            head,
             reg(12.0),
             pl().dm_dim,
         );
@@ -1653,6 +1708,10 @@ impl ProgressApp {
         }
         if let Some((i, n)) = frags {
             self.fragment_parts(&p, o, i, n, downloading);
+            return;
+        }
+        if let Some(t) = swarm {
+            self.torrent_parts(ui, &p, o, &t, downloading);
             return;
         }
 
@@ -1824,6 +1883,133 @@ impl ProgressApp {
             let t = self.scroll / max_scroll;
             let y = rows_top + (rows_rect.height() - bar_h) * t;
             // The same thin, see-through handle as the main list's bars.
+            p.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(o.x + PG_W - 7.0, y), egui::vec2(4.0, bar_h)),
+                2.0,
+                pl().dm_dim.gamma_multiply(if rows.hovered() { 0.55 } else { 0.30 }),
+            );
+        }
+    }
+
+    /// Part Info for a torrent: the strip is the files (each as wide as its
+    /// size, filled as far as it has arrived), and the table is the peers
+    /// connected now, fastest first, with what each has sent.
+    fn torrent_parts(&mut self, ui: &egui::Ui, p: &egui::Painter, o: egui::Pos2, t: &TorrentSnap, downloading: bool) {
+        // ---- strip: one segment per file ----
+        let strip = at(o, PAD_X, STRIP_Y, PROG_W, STRIP_H);
+        let sum = t.files.iter().map(|f| f.1).sum::<u64>().max(1);
+        if t.files.is_empty() {
+            p.rect_filled(strip, 2.0, pl().dm_box_bd);
+        }
+        let mut x = strip.min.x;
+        for (i, (_, len, have)) in t.files.iter().enumerate() {
+            let w = strip.width() * (*len as f32 / sum as f32);
+            let seg = egui::Rect::from_min_size(egui::pos2(x, strip.min.y), egui::vec2(w, STRIP_H));
+            let f = if *len > 0 { (*have as f32 / *len as f32).clamp(0.0, 1.0) } else { 1.0 };
+            p.rect_filled(seg, 1.0, if f >= 1.0 { DM_OK } else { pl().dm_box_bd });
+            if f > 0.0 && f < 1.0 {
+                p.rect_filled(egui::Rect::from_min_size(seg.min, egui::vec2(seg.width() * f, STRIP_H)), 1.0, DM_OK);
+            }
+            // A hairline between files.
+            if i > 0 {
+                p.line_segment([seg.left_top(), seg.left_bottom()], egui::Stroke::new(1.0, pl().dm_card));
+            }
+            x += w;
+        }
+
+        // ---- table: the connected peers ----
+        let hdr_y = o.y + TBL_HDR_Y + 4.0;
+        // Columns: #, the peer's address, its client, what it sent, its speed
+        // (each value in its own column, as the part table has them).
+        let client_x = o.x + PAD_X + COL_NUM_W + PEER_ADDR_W;
+        for (x, align, text) in [
+            (o.x + PAD_X, egui::Align2::LEFT_TOP, "#"),
+            (o.x + PAD_X + COL_NUM_W, egui::Align2::LEFT_TOP, "Peer"),
+            (client_x, egui::Align2::LEFT_TOP, "Client"),
+            (o.x + COL_DL_X + 90.0, egui::Align2::RIGHT_TOP, "Received"),
+            (o.x + COL_TOT_X + 80.0, egui::Align2::RIGHT_TOP, "Speed"),
+        ] {
+            p.text(egui::pos2(x, hdr_y), align, text, reg(10.0), pl().dm_head);
+        }
+        p.line_segment(
+            [
+                egui::pos2(o.x + PAD_X, o.y + TBL_HDR_Y + TBL_HDR_H - 0.5),
+                egui::pos2(o.x + IN_R, o.y + TBL_HDR_Y + TBL_HDR_H - 0.5),
+            ],
+            egui::Stroke::new(1.0, pl().dm_line),
+        );
+        let rows_top = o.y + TBL_Y;
+        let rows_bottom = (ui.max_rect().max.y - 1.0 - FOOT_PAD).max(rows_top);
+        let rows_rect = egui::Rect::from_min_max(egui::pos2(o.x + 1.0, rows_top), egui::pos2(o.x + PG_W - 1.0, rows_bottom));
+        if t.list.is_empty() {
+            let (text, col) = if downloading {
+                (format!("Finding peers…  ({} known)", t.seen), DM_YEL)
+            } else {
+                ("No peers connected".to_string(), pl().dm_lbl)
+            };
+            p.text(egui::pos2(o.x + PAD_X + COL_NUM_W, rows_top + TBL_PAD), egui::Align2::LEFT_TOP, text, reg(10.0), col);
+            return;
+        }
+        let n = t.list.len();
+        let table_h = TBL_STEP * n as f32;
+        let max_scroll = (table_h - rows_rect.height()).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, max_scroll);
+        let rows = ui.interact(rows_rect, egui::Id::new("pg-rows"), egui::Sense::hover());
+        if rows.hovered() {
+            let dy = ui.input(|i| i.smooth_scroll_delta.y);
+            if dy != 0.0 {
+                self.scroll = (self.scroll - dy).clamp(0.0, max_scroll);
+            }
+        }
+        let pc = p.with_clip_rect(rows_rect);
+        let addr_w = PEER_ADDR_W - 8.0;
+        let client_w = (o.x + COL_DL_X + 90.0 - 64.0) - client_x;
+        let fit = |pc: &egui::Painter, s: &str, w: f32, col: egui::Color32| -> String {
+            let mut c = s.to_string();
+            if pc.layout_no_wrap(c.clone(), reg(10.0), col).size().x <= w {
+                return c;
+            }
+            while !c.is_empty() && pc.layout_no_wrap(format!("{c}…"), reg(10.0), col).size().x > w {
+                c.pop();
+            }
+            format!("{c}…")
+        };
+        for (i, (addr, client, got, speed)) in t.list.iter().enumerate() {
+            let y = rows_top + TBL_STEP * i as f32 - self.scroll;
+            if y > rows_bottom || y + TBL_STEP < rows_top {
+                continue;
+            }
+            pc.text(egui::pos2(o.x + PAD_X, y + TBL_PAD), egui::Align2::LEFT_TOP, (i + 1).to_string(), reg(10.0), pl().dm_lbl);
+            let col = if *speed > 0.0 { DM_OK } else { pl().dm_dim };
+            pc.text(egui::pos2(o.x + PAD_X + COL_NUM_W, y + TBL_PAD), egui::Align2::LEFT_TOP, fit(&pc, addr, addr_w, col), reg(10.0), col);
+            if !client.is_empty() {
+                pc.text(egui::pos2(client_x, y + TBL_PAD), egui::Align2::LEFT_TOP, fit(&pc, client, client_w, pl().dm_dim), reg(10.0), pl().dm_dim);
+            }
+            pc.text(
+                egui::pos2(o.x + COL_DL_X + 90.0, y + TBL_PAD),
+                egui::Align2::RIGHT_TOP,
+                if *got > 0 { format_bytes(*got) } else { String::new() },
+                reg(10.0),
+                pl().dm_dim,
+            );
+            pc.text(
+                egui::pos2(o.x + COL_TOT_X + 80.0, y + TBL_PAD),
+                egui::Align2::RIGHT_TOP,
+                if *speed >= 1.0 { crate::model::format_speed(*speed) } else { String::new() },
+                reg(10.0),
+                col,
+            );
+            if i + 1 < n {
+                pc.line_segment(
+                    [egui::pos2(o.x + 1.0, y + TBL_STEP - 0.5), egui::pos2(o.x + PG_W - 1.0, y + TBL_STEP - 0.5)],
+                    egui::Stroke::new(1.0, pl().dm_trough),
+                );
+            }
+        }
+        if max_scroll > 0.0 {
+            let bar_h = (rows_rect.height() * rows_rect.height() / table_h).max(24.0);
+            let tt = self.scroll / max_scroll;
+            let y = rows_top + (rows_rect.height() - bar_h) * tt;
             p.rect_filled(
                 egui::Rect::from_min_size(egui::pos2(o.x + PG_W - 7.0, y), egui::vec2(4.0, bar_h)),
                 2.0,

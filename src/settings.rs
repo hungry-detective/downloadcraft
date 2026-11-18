@@ -43,6 +43,8 @@ struct Settings {
     /// Interface language code ("en", or a lang/<code>.json file).
     language: String,
     close_to_tray: bool,
+    /// Look at the clipboard for download links (Add URL lights up).
+    watch_clipboard: bool,
     start_with_windows: bool,
     /// Keep the OS title bar (`platform::system_title_bar`).
     system_title_bar: bool,
@@ -155,6 +157,7 @@ impl Default for Settings {
             theme: "dark".to_string(),
             language: "en".to_string(),
             close_to_tray: cfg!(windows),
+            watch_clipboard: true,
             system_title_bar: crate::platform::frame_unsupported(),
             ui_scale: 100,
             ui_font: String::new(),
@@ -253,6 +256,9 @@ fn load() -> Settings {
     str_in("finish_action", &mut s.finish_action);
     str_in("rename_template", &mut s.rename_template);
     if let Some(p) = g("ffmpeg_custom_path").and_then(|v|v.as_str()) { s.ffmpeg_custom_path=p.to_string(); }
+    if let Some(b) = g("watch_clipboard").and_then(|x| x.as_bool()) {
+        s.watch_clipboard = b;
+    }
     if let Some(b) = g("close_to_tray").and_then(|x| x.as_bool()) {
         s.close_to_tray = cfg!(windows) && b;
     }
@@ -553,6 +559,7 @@ fn save(s: &Settings) -> bool {
     set(obj, "theme", s.theme.clone().into());
     set(obj, "language", s.language.clone().into());
     set(obj, "close_to_tray", s.close_to_tray.into());
+    set(obj, "watch_clipboard", s.watch_clipboard.into());
     set(obj, "start_with_windows", s.start_with_windows.into());
     set(obj, "system_title_bar", s.system_title_bar.into());
     set(obj, "ui_scale", s.ui_scale.into());
@@ -2726,8 +2733,12 @@ impl SettingsApp {
         let mut picked: Option<String> = None;
         let mut open_theme = self.open_theme;
         card(ui, "Layout", None, &mut open_theme, |ui| {
+            // Every look on one row, sharing the width the window has (a
+            // fourth look ran off the right edge when they were sized for
+            // three).
             let gap = 8.0;
-            let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).max(72.0);
+            let n = crate::skins::LOOKS.len() as f32;
+            let tile_w = ((ui.available_width() - gap * (n - 1.0)) / n).floor().max(48.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 for (key, name) in crate::skins::LOOKS {
@@ -2738,7 +2749,7 @@ impl SettingsApp {
                 }
             });
             ui.add_space(4.0);
-            hint(ui, "Craft: Download Craft's own layout. Ledger: a grey window, a large labelled toolbar and a list with grid lines, square corners. Petal: summary tiles and downloads as cards, round corners. All in blue; the Theme menu in the main window shows each one as you point at it.");
+            hint(ui, "Craft: Download Craft's own layout. Ledger: a grey window, a large labelled toolbar and a list with grid lines, square corners. Petal: summary tiles and downloads as cards, round corners. Classic: laid out like Internet Download Manager, with a coloured toolbar, a Categories tree and its list columns. All in blue; the Theme menu in the main window shows each one as you point at it.");
         });
         card(ui, "Mode", None, &mut open_theme, |ui| {
             let gap = 8.0;
@@ -3000,6 +3011,22 @@ impl SettingsApp {
             self.s.close_to_tray = tray;
             self.s.start_with_windows = startup;
             self.s.system_title_bar = os_caption;
+        }
+
+        // ---- Clipboard (issue #24: off for those who keep secrets there) ----
+        {
+            let mut watch = self.s.watch_clipboard;
+            let mut open_clip = true;
+            card(ui, "Clipboard", None, &mut open_clip, |ui| {
+                switch_row(
+                    ui,
+                    "watch_clipboard",
+                    &mut watch,
+                    "Watch the clipboard for download links",
+                    "A link you copy lights up Add URL. Off: the clipboard is only read when you click Add URL.",
+                );
+            });
+            self.s.watch_clipboard = watch;
         }
 
         // ---- Progress windows ----

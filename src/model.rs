@@ -264,6 +264,11 @@ pub struct DownloadItem {
     /// a persistently corrupt source fails loudly instead of looping.
     #[serde(default)]
     pub checksum_repaired: bool,
+    /// Started by an open Download window, before Start was pressed: the
+    /// main app downloads it out of sight, and Start reveals it (Cancel
+    /// discards it with its data). Never shown in the list.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prefetch: bool,
     /// Queue v2 ordering: higher runs first; ties keep creation order.
     #[serde(default)]
     pub priority: i64,
@@ -483,6 +488,7 @@ impl DownloadItem {
             max_retries: None,
             timeout_secs: None,
             checksum_repaired: false,
+            prefetch: false,
             priority: 0,
             start_at: String::new(),
             browser: None,
@@ -1255,6 +1261,27 @@ pub fn drop_resume_state(dest: &std::path::Path) {
     crate::engine::remove_partial(dest);
     let _ = std::fs::remove_file(dest.with_extension("dcftp"));
     let _ = std::fs::remove_file(dest.with_extension("dcftpparts"));
+}
+
+/// Queue a command for the main window (`cmd.json`, read by its
+/// `check_cmd`): what the progress windows and the Download window send.
+/// Returns whether it was written.
+pub fn send_app_cmd(cmd: serde_json::Value) -> bool {
+    let Some(p) = config_dir().map(|d| d.join("cmd.json")) else { return false };
+    let _guard = fs_lock("cmd");
+    if !_guard.owned() {
+        return false;
+    }
+    let mut v: serde_json::Value = std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!([]));
+    let Some(arr) = v.as_array_mut() else { return false };
+    arr.push(cmd);
+    match serde_json::to_string_pretty(&v) {
+        Ok(json) => atomic_write(&p, json.as_bytes()).is_ok(),
+        Err(_) => false,
+    }
 }
 
 /// Whether `new` is a fresh link to the very file `old` points at, so what is

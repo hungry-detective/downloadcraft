@@ -1894,6 +1894,9 @@ fn dragged_width(col: SortCol, start_w: f32, dx: f32) -> f32 {
     (start_w + dx).clamp(col_min(col), 900.0)
 }
 
+/// The title bar's minimize / maximize / close buttons.
+const WIN_BTN_W: f32 = 36.0;
+
 /// Uniform toolbar metrics: every action button shares one height.
 const TOOL_H: f32 = 32.0;
 /// Ledger's toolbar buttons: a large glyph over the label.
@@ -1931,6 +1934,11 @@ fn ledger_icon_color(icon: &str) -> egui::Color32 {
         MI_PUBLIC => 0x8250DF,
         MI_QUEUE_PLAY => 0x0078D4,
         MI_STOP => 0xC42B1C,
+        MI_DELETE => 0xC42B1C,
+        MI_DELETE_SWEEP => 0xD9480F,
+        MI_TUNE => 0x5C6BC0,
+        MI_ALARM => 0x0E8A7E,
+        MI_MAGNET => 0xB4232F,
         _ => if dark { 0xB0B0B0 } else { 0x5F5F5F },
     };
     let col = egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
@@ -1996,6 +2004,26 @@ fn craft_stacked() -> bool {
     CRAFT_STACKED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Classic's toolbar labels: one line, or two when wider than a classic
+/// button ("Delete Completed" as "Delete" over "Completed"), split at the
+/// space nearest the middle.
+fn classic_label_lines(p: &egui::Painter, label: &str) -> Vec<String> {
+    const MAX: f32 = 58.0;
+    let font = egui::FontId::proportional(STACKED_TOOL_FONT);
+    let w = |s: &str| p.layout_no_wrap(s.to_owned(), font.clone(), pl().txt).size().x;
+    if w(label) <= MAX || !label.contains(' ') {
+        return vec![label.to_string()];
+    }
+    let mid = label.chars().count() / 2;
+    let split = label
+        .char_indices()
+        .filter(|(_, c)| *c == ' ')
+        .min_by_key(|(i, _)| (label[..*i].chars().count() as i64 - mid as i64).abs())
+        .map(|(i, _)| i)
+        .unwrap_or(label.len());
+    vec![label[..split].trim().to_string(), label[split..].trim().to_string()]
+}
+
 /// The width of a labelled toolbar button in the active look (what
 /// [`tool_button`] allocates), so a toolbar can tell whether every button
 /// fits with its label before it draws any.
@@ -2006,6 +2034,15 @@ fn tool_w(ui: &egui::Ui, label: &str) -> f32 {
     let lw = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), pl().txt).size().x;
     match look {
         "petal" => (lw + 14.0).max(46.0),
+        "classic" => {
+            let p = ui.painter();
+            let lines = classic_label_lines(p, label);
+            let widest = lines
+                .iter()
+                .map(|l| p.layout_no_wrap(l.clone(), egui::FontId::proportional(size), pl().txt).size().x)
+                .fold(0.0_f32, f32::max);
+            (widest + 10.0).max(40.0)
+        }
         "ledger" => (lw + 12.0).max(48.0),
         _ if stacked => (lw + 12.0).max(44.0),
         // Glyph centred at 13, label from 24, 8 px after it: compact
@@ -2038,7 +2075,7 @@ fn tool_button(
     let font = egui::FontId::proportional(CRAFT_TOOL_FONT);
     let look = crate::skins::active();
     let craft_stack = look == "craft" && craft_stacked();
-    let ledger = look == "ledger" || look == "petal" || craft_stack;
+    let ledger = look == "ledger" || look == "classic" || look == "petal" || craft_stack;
     let w = if !label.is_empty() {
         tool_w(ui, label)
     } else if craft_stack {
@@ -2081,15 +2118,31 @@ fn tool_button(
             // Petal: every glyph in the text's ink, as Craft draws them
             // (black on light, white on dark); only Add download is blue.
             pl().txt
+        } else if look == "classic" {
+            // Classic: every action its own colour, as classic download
+            // managers paint their toolbars.
+            ledger_icon_color(icon)
         } else {
-            // Ledger too: the text's ink (black on light, white on dark).
-            let _ = ledger_icon_color;
+            // Ledger: the text's ink (black on light, white on dark).
             pl().txt
         };
         let tc = if enabled { pl().txt } else { pl().dim.gamma_multiply(0.6) };
         if label.is_empty() {
             draw_tool_glyph(p, rect.center(), icon, if craft_stack { 18.0 } else { 24.0 }, ic);
         } else {
+            if look == "classic" {
+                // A coloured glyph over one or two short lines.
+                let lines = classic_label_lines(p, label);
+                draw_tool_glyph(p, egui::pos2(rect.center().x, rect.min.y + 17.0), icon, 22.0, ic);
+                let ys: &[f32] = if lines.len() > 1 { &[37.0, 48.0] } else { &[42.0] };
+                for (line, y) in lines.iter().zip(ys) {
+                    p.text(egui::pos2(rect.center().x, rect.min.y + y), egui::Align2::CENTER_CENTER, line, egui::FontId::proportional(STACKED_TOOL_FONT), tc);
+                }
+                if enabled && !tip.is_empty() && hov {
+                    hover_tip(ui, label, tip);
+                }
+                return rect;
+            }
             let (isz, lsz, iy, ly) = if look == "petal" {
                 (17.0, STACKED_TOOL_FONT, 14.0, 8.0)
             } else if craft_stack {
@@ -2161,7 +2214,7 @@ fn hover_tip(ui: &egui::Ui, key: &str, tip: &str) {
 /// click, instead of a banner pushing the list down.
 fn add_url_button(ui: &mut egui::Ui, man: &ManState, hot: bool) -> egui::Rect {
     match crate::skins::active() {
-        "ledger" => return tool_button(ui, man, MI_ADD, crate::i18n::t("Add URL"), true, if hot { "A download link is on the clipboard: click to add it" } else { "Add a download by URL" }),
+        "ledger" | "classic" => return tool_button(ui, man, MI_ADD, crate::i18n::t("Add URL"), true, if hot { "A download link is on the clipboard: click to add it" } else { "Add a download by URL" }),
         "craft" if craft_stacked() => {
             let r = tool_button(ui, man, MI_ADD, crate::i18n::t("Add URL"), true, if hot { "A download link is on the clipboard: click to add it" } else { "Add a download by URL" });
             if hot {
@@ -2331,6 +2384,17 @@ impl SortCol {
         }
     }
     fn title(&self) -> &'static str {
+        // Classic names the columns the classic way.
+        if crate::skins::active() == "classic" {
+            return match self {
+                SortCol::Name => "File Name",
+                SortCol::Size => "Size",
+                SortCol::Status => "Status",
+                SortCol::Speed => "Transfer rate",
+                SortCol::Eta => "Time left",
+                SortCol::Date => "Last Try Date",
+            };
+        }
         match self {
             SortCol::Name => "Name",
             SortCol::Size => "Size",
@@ -3087,6 +3151,8 @@ impl CraftApp {
                         task.shared.frag_index.load(Ordering::SeqCst),
                         task.shared.frag_count.load(Ordering::SeqCst),
                     ],
+                    // A torrent's swarm (seeds, peers, files) for Part Info.
+                    "torrent": task.shared.torrent.lock().ok().and_then(|g| g.clone()),
                 }),
             );
         }
@@ -3117,6 +3183,13 @@ impl CraftApp {
             match act {
                 "pause" => self.pause(id),
                 "resume" => self.resume(id),
+                // A Download window's background download: Start / Cancel.
+                "adopt" => {
+                    let text = |k: &str| c.get(k).and_then(|x| x.as_str()).map(str::to_string);
+                    let start = c.get("start").and_then(|x| x.as_bool()).unwrap_or(true);
+                    self.adopt_prefetch(id, text("filename"), text("dir"), text("description"), start);
+                }
+                "discard" => self.discard_prefetch(id),
                 "cancel" => self.cancel_task(id),
                 // The phone remote's Remove (the file stays).
                 "remove" => self.remove(id),
@@ -3664,7 +3737,7 @@ impl CraftApp {
                     open_path(&d, false);
                 }
             }
-            19..=22 | 26..=28 | 40..=59 => {
+            19..=22 | 26..=29 | 40..=59 => {
                 self.theme = Self::theme_for_act(&self.theme, act);
                 self.theme_preview = None;
                 self.save_ui_state();
@@ -3685,6 +3758,7 @@ impl CraftApp {
             26 => crate::skins::join("craft", mode),
             27 => crate::skins::join("ledger", mode),
             28 => crate::skins::join("petal", mode),
+            29 => crate::skins::join("classic", mode),
             40..=59 => crate::theme_files::list()
                 .get((act - 40) as usize)
                 .map(|e| crate::skins::join(&e.key, mode))
@@ -3727,6 +3801,7 @@ impl CraftApp {
                 ("Craft".into(), 26),
                 ("Ledger".into(), 27),
                 ("Petal".into(), 28),
+                ("Classic".into(), 29),
             ]
             .into_iter()
             .chain({
@@ -5059,6 +5134,12 @@ impl CraftApp {
                     self.push_log("Queue file had unreadable entries — kept the good ones, quarantined the rest.");
                 }
                 for mut it in items {
+                        // A background download whose Download window is gone
+                        // (closed with the app, or a crash): nobody asked for it.
+                        if it.prefetch {
+                            Self::discard_files(&it);
+                            continue;
+                        }
                         if it.status.is_active() {
                             it.status = Status::Queued;
                         }
@@ -5100,7 +5181,9 @@ impl CraftApp {
         // while a window the user closed comes straight back on Retry. Users
         // who prefer only the main list turn this off in Settings; the row's
         // Show download window still opens one by hand.
-        if self.progress_windows {
+        // A background download for an open Download window gets its window
+        // when Start is pressed (see `adopt_prefetch`).
+        if self.progress_windows && !self.downloads[idx].prefetch {
             if let Err(e) = Self::spawn_progress(id) {
                 self.push_log(format!("Could not open the progress window for #{id}: {e}"));
             }
@@ -5137,7 +5220,9 @@ impl CraftApp {
             username: item.username.clone(),
             password: item.password.clone(),
             proxy_url: self.proxy_url.clone(),
-            allow_rename: true,
+            // A background download keeps the name its Download window shows,
+            // so Start can reveal it as it is (a rename would move its file).
+            allow_rename: !item.prefetch,
             expected_sha256: item.checksum_sha256.clone(),
             expected_duration_secs: item.duration_secs,
             require_audio: item.expects_audio || !item.pair_url.is_empty(),
@@ -5188,8 +5273,119 @@ impl CraftApp {
         self.downloads[idx].status = Status::Downloading;
         self.downloads[idx].speed_bps = 0.0;
         self.had_active = true;
-        self.push_log(format!("Started: {}", item.filename));
+        if item.prefetch {
+            self.push_log(format!("Preparing in the background: {}", item.filename));
+        } else {
+            self.push_log(format!("Started: {}", item.filename));
+        }
         self.save_queue();
+    }
+
+    /// Start pressed in a Download window whose download already runs here
+    /// out of sight: show it, as it is (same connections, same progress). A
+    /// new name or folder from the dialog moves what is already downloaded
+    /// and continues under it. `start` false: Download later (paused).
+    fn adopt_prefetch(&mut self, id: u64, filename: Option<String>, dir: Option<String>, description: Option<String>, start: bool) {
+        self.merge_queue_from_disk();
+        let Some(d) = self.downloads.iter_mut().find(|d| d.id == id && d.prefetch) else { return };
+        d.prefetch = false;
+        if let Some(t) = description {
+            d.description = t;
+        }
+        let old = d.dest_path();
+        let mut moved = d.clone();
+        if let Some(f) = filename.filter(|f| !f.trim().is_empty()) {
+            moved.filename = crate::engine::sanitize_filename(f.trim());
+        }
+        if let Some(dir) = dir.filter(|x| !x.trim().is_empty()) {
+            moved.save_dir = dir;
+        }
+        let new = moved.dest_path();
+        let status = d.status.clone();
+        let running = self.tasks.contains_key(&id);
+        if new != old {
+            // Another name or folder: let the transfer save its place, move
+            // its data (or the finished file), and go on from there.
+            if running {
+                if let Some(t) = self.tasks.remove(&id) {
+                    crate::engine::stop_for_handover(&t.shared, &t.handle, std::time::Duration::from_secs(3));
+                }
+            }
+            if let Some(dir) = new.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if matches!(status, Status::Completed) {
+                let _ = std::fs::rename(&old, &new);
+            } else {
+                crate::engine::move_partial(&old, &new);
+            }
+            if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+                d.filename = moved.filename.clone();
+                d.save_dir = moved.save_dir.clone();
+                if running {
+                    d.status = Status::Queued;
+                }
+            }
+            if running && start {
+                self.start(id);
+            }
+        } else if running && self.progress_windows && start {
+            // The common case: nothing changes but that it is shown.
+            let _ = Self::spawn_progress(id);
+        }
+        let name = self.downloads.iter().find(|d| d.id == id).map(|d| (d.filename.clone(), d.dest_path()));
+        match self.downloads.iter().find(|d| d.id == id).map(|d| d.status.clone()) {
+            // Finished while the dialog was open: it is simply done.
+            Some(Status::Completed) => {
+                if let Some((n, path)) = name {
+                    self.on_download_finished_quiet(&n, &path, self.show_complete);
+                    if self.show_complete {
+                        Self::spawn_complete(id);
+                    }
+                    self.push_log(format!("Finished: {n}"));
+                }
+            }
+            Some(Status::Failed(_)) | Some(Status::Paused) | Some(Status::Queued) if start && !self.tasks.contains_key(&id) => {
+                if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+                    d.status = Status::Queued;
+                }
+                self.start(id);
+            }
+            _ => {
+                if let Some((n, _)) = name {
+                    self.push_log(format!("Started: {n}"));
+                }
+            }
+        }
+        if !start {
+            self.pause(id);
+        }
+        self.save_queue();
+    }
+
+    /// Cancel in a Download window whose download runs here out of sight:
+    /// stop it and delete everything it wrote.
+    fn discard_prefetch(&mut self, id: u64) {
+        self.merge_queue_from_disk();
+        let Some(item) = self.downloads.iter().find(|d| d.id == id && d.prefetch).cloned() else { return };
+        if let Some(t) = self.tasks.remove(&id) {
+            crate::engine::stop_for_handover(&t.shared, &t.handle, std::time::Duration::from_millis(1500));
+        }
+        Self::discard_files(&item);
+        self.downloads.retain(|d| d.id != id);
+        self.phases.remove(&id);
+        self.save_queue();
+    }
+
+    /// The data of a background download nobody kept: its partial, and its
+    /// file if it had finished (the user never asked for it).
+    fn discard_files(item: &DownloadItem) {
+        let dest = item.dest_path();
+        crate::engine::remove_partial(&dest);
+        crate::model::drop_resume_state(&dest);
+        if matches!(item.status, Status::Completed) {
+            let _ = std::fs::remove_file(&dest);
+        }
     }
 
     /// Start queued items while under the concurrent limit.
@@ -5377,6 +5573,9 @@ impl CraftApp {
         // here on its next poll): a cancelled transfer rests Paused with
         // its partial state kept for resume.
         if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
+            // Stopped: no speed (the last one stayed on the row and in the
+            // status bar, with a time left, after a torrent was cancelled).
+            d.speed_bps = 0.0;
             if !matches!(d.status, Status::Completed) {
                 d.status = if live && d.downloaded_bytes > 0 {
                     Status::Completed
@@ -6014,6 +6213,114 @@ impl CraftApp {
             });
     }
 
+    /// Classic's left pane: the Categories tree of a classic download
+    /// manager. "All Downloads" holds the file-type folders; Unfinished,
+    /// Finished and Queues follow. Folder glyphs, dotted tree lines, the
+    /// open one in the list view's selection blue.
+    fn classic_sidebar(
+        &mut self,
+        ctx: &egui::Context,
+        n_all: usize,
+        n_incomplete: usize,
+        n_done: usize,
+        cat_n: &std::collections::HashMap<&str, usize>,
+    ) {
+        let t = |s: &str| crate::i18n::t(s).to_string();
+        let cur = self.filter.clone();
+        let rgb = |c: u32| egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
+        let folder = rgb(0xE0A82E);
+        // (key, label, icon, colour): every folder its own picture, as a
+        // classic download manager's tree has them.
+        let cats: [(&str, String, &str, egui::Color32); 6] = [
+            ("Compressed", t("Compressed"), "\u{e149}", rgb(0xB7791F)), // archive
+            ("Document", t("Documents"), "\u{e873}", rgb(0x2B6CB0)),   // description
+            ("Music", t("Music"), "\u{e405}", rgb(0x6B46C1)),          // music_note
+            ("Apps", t("Programs"), "\u{e069}", rgb(0x2F855A)),        // web_asset
+            ("Video", t("Video"), "\u{e02c}", rgb(0x2C7A7B)),          // movie
+            ("Image", t("Pictures"), "\u{e3f4}", rgb(0xC05621)),       // image
+        ];
+        egui::SidePanel::left("classic_side")
+            .resizable(false)
+            .exact_width(196.0)
+            .show_separator_line(false)
+            // The same 12 px top and bottom gutter as the list's card beside
+            // it, so both panes start and end on one line.
+            .frame(egui::Frame::new().fill(pl().bg).inner_margin(egui::Margin { left: 12, right: 6, top: 12, bottom: 12 }))
+            .show(ctx, |ui| {
+                let pane = ui.max_rect();
+                let p = ui.painter().clone();
+                // The pane: a white box with a title strip, as a classic tree view.
+                p.rect(pane, 1.0, pl().central_bg, egui::Stroke::new(1.0_f32, pl().card_bd), egui::StrokeKind::Inside);
+                let head = egui::Rect::from_min_size(pane.min, egui::vec2(pane.width(), 22.0));
+                p.rect_filled(head.shrink(1.0), 0.0, pl().bg);
+                p.hline(head.x_range(), head.max.y, egui::Stroke::new(1.0_f32, pl().card_bd));
+                p.text(egui::pos2(head.min.x + 8.0, head.center().y), egui::Align2::LEFT_CENTER, t("Categories"), egui::FontId::proportional(12.0), pl().txt);
+                let row_h = 21.0;
+                let mut y = head.max.y + 4.0;
+                let x0 = pane.min.x + 6.0;
+                let dots = egui::Stroke::new(1.0_f32, pl().card_bd);
+                // `arrow`: Some(open) on a branch of the tree.
+                let mut row = |s: &mut Self, depth: usize, key: &str, label: &str, n: Option<usize>, last: bool, icon: &str, tint: egui::Color32, arrow: Option<bool>| {
+                    let indent = depth as f32 * 16.0;
+                    let r = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(pane.max.x - 4.0 - x0, row_h));
+                    let on = cur == key || (key == "Unfinished" && cur == "Incomplete");
+                    // Dotted tree lines for children.
+                    if depth > 0 {
+                        let lx = x0 + 18.0;
+                        let mut yy = r.min.y;
+                        let end = if last { r.center().y } else { r.max.y };
+                        while yy < end {
+                            p.vline(lx, yy..=(yy + 1.0).min(end), dots);
+                            yy += 2.0;
+                        }
+                        let mut xx = lx;
+                        while xx < x0 + indent + 2.0 {
+                            p.hline(xx..=(xx + 1.0), r.center().y, dots);
+                            xx += 2.0;
+                        }
+                    }
+                    if let Some(open) = arrow {
+                        // arrow_drop_down / arrow_right
+                        p.text(
+                            egui::pos2(x0 + 5.0, r.center().y),
+                            egui::Align2::CENTER_CENTER,
+                            if open { "\u{e5c5}" } else { "\u{e5df}" },
+                            crate::fonts::icon(16.0),
+                            pl().dim,
+                        );
+                    }
+                    let gx = x0 + indent + 20.0;
+                    let label_x = gx + 13.0;
+                    let lw = p.layout_no_wrap(label.to_string(), egui::FontId::proportional(12.0), pl().txt).size().x;
+                    let count = n.map(|n| format!(" ({n})")).unwrap_or_default();
+                    let cw = p.layout_no_wrap(count.clone(), egui::FontId::proportional(11.0), pl().dim).size().x;
+                    let hl = egui::Rect::from_min_size(egui::pos2(label_x - 3.0, r.min.y + 1.0), egui::vec2(lw + cw + 6.0, row_h - 2.0));
+                    if on {
+                        p.rect(hl, 1.0, pl().sel_bg, egui::Stroke::new(1.0_f32, pl().sel_bd), egui::StrokeKind::Inside);
+                    } else if s.man.hover(&r) {
+                        p.rect_filled(hl, 1.0, pl().hover_bg);
+                    }
+                    p.text(egui::pos2(gx, r.center().y), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), tint);
+                    p.text(egui::pos2(label_x, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(12.0), pl().txt);
+                    if !count.is_empty() {
+                        p.text(egui::pos2(label_x + lw, r.center().y), egui::Align2::LEFT_CENTER, count, egui::FontId::proportional(11.0), pl().dim);
+                    }
+                    s.hits.push((HitKind::SideRow(key.to_string()), r));
+                    y += row_h;
+                };
+                row(self, 0, "All", &t("All Downloads"), Some(n_all), false, MI_FOLDER_OPEN, folder, Some(true));
+                let last = cats.len() - 1;
+                for (i, (key, label, icon, tint)) in cats.iter().enumerate() {
+                    let n = cat_n.get(key).copied().unwrap_or(0);
+                    row(self, 1, key, label, Some(n), i == last, icon, *tint, None);
+                }
+                // download / check_circle / queue
+                row(self, 0, "Unfinished", &t("Unfinished"), Some(n_incomplete), false, "\u{f090}", rgb(0xC77C02), Some(false));
+                row(self, 0, "Completed", &t("Finished"), Some(n_done), false, "\u{e86c}", rgb(0x2F855A), Some(false));
+                row(self, 0, "Queued", &t("Queues"), None, false, "\u{e03c}", folder, None);
+            });
+    }
+
     /// Petal's summary tiles: speed, active, queued and finished, each a
     /// card with its number large and a tinted glyph.
     fn petal_tiles(&mut self, ui: &mut egui::Ui) {
@@ -6278,7 +6585,7 @@ impl CraftApp {
         let running: Vec<(u64, String)> = self
             .downloads
             .iter()
-            .filter(|d| matches!(d.status, Status::Downloading))
+            .filter(|d| matches!(d.status, Status::Downloading) && !d.prefetch)
             .map(|d| {
                 let pct = d
                     .total_bytes
@@ -6582,7 +6889,7 @@ impl CraftApp {
                         if dl == 0 {
                             d.total_bytes = None;
                         }
-                        if !repaired {
+                        if !repaired && !d.prefetch {
                             crate::platform::play_event("failed");
                             notify(
                                 "Download Craft — download failed",
@@ -6602,8 +6909,17 @@ impl CraftApp {
                 if repaired_here {
                     repair_restart.push(id);
                 }
+                let hidden = self.downloads.iter().any(|d| d.id == id && d.prefetch);
+                if hidden {
+                    finished_info = None;
+                    msg = None;
+                    dead_links.retain(|(i, _)| *i != id);
+                }
                 if let Some((name, path)) = finished_info {
-                    self.on_download_finished(&name, &path);
+                    // One notice per finished download (issue #24 counted
+                    // three): the Download complete window when it is on,
+                    // else the system notification.
+                    self.on_download_finished_quiet(&name, &path, self.show_complete);
                     // IDM pops its "Download complete" dialog for a finished
                     // transfer (the dialog's own checkbox switches it off).
                     if self.show_complete {
@@ -6641,9 +6957,13 @@ impl CraftApp {
         self.maybe_finish_action();
     }
 
-    /// Called with an immutable borrow-safe snapshot after a download completes.
-    fn on_download_finished(&mut self, name: &str, path: &std::path::Path) {
-        notify("Download Craft — download finished", name);
+    /// Called with an immutable borrow-safe snapshot after a download
+    /// completes. `quiet` skips the system notification (the Download
+    /// complete window says it instead).
+    fn on_download_finished_quiet(&mut self, name: &str, path: &std::path::Path, quiet: bool) {
+        if !quiet {
+            notify("Download Craft — download finished", name);
+        }
         crate::model::record_finished_bytes(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
         self.stats_at = Instant::now().checked_sub(std::time::Duration::from_secs(60)).unwrap_or_else(Instant::now);
         crate::platform::play_event("complete");
@@ -7094,7 +7414,11 @@ impl CraftApp {
             let status = self.downloads.iter().find(|d| d.id == id).map(|d| d.status.clone());
             match status {
                 Some(Status::Queued) if !self.tasks.contains_key(&id) => {
-                    self.queue_running = true;
+                    // A Download window's background download starts on its
+                    // own; it does not set the whole queue going.
+                    if !self.downloads.iter().any(|d| d.id == id && d.prefetch) {
+                        self.queue_running = true;
+                    }
                     self.start(id);
                 }
                 // A dialog that found the row Paused asks to start it: resume,
@@ -7141,6 +7465,7 @@ impl CraftApp {
         let mut ids: Vec<u64> = self
             .downloads
             .iter()
+            .filter(|d| !d.prefetch)
             .filter(|d| Self::matches_filter(d, &self.filter))
             .filter(|d| q.is_empty() || d.filename.to_lowercase().contains(&q))
             .map(|d| d.id)
@@ -7552,6 +7877,11 @@ fn clipboard_watch(tx: std::sync::mpsc::Sender<String>) {
     let mut cb = arboard::Clipboard::new().ok();
     loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
+        // Settings → Appearance → Clipboard (issue #24): when off, the
+        // clipboard is read only on an Add URL click.
+        if !crate::model::ui_pref_bool("watch_clipboard", true) {
+            continue;
+        }
         let text = cb
             .as_mut()
             .and_then(|c| c.get_text().ok())
@@ -7908,7 +8238,7 @@ impl eframe::App for CraftApp {
         // `handle_window_edges`.
 
         // ---- per-frame counts, shared by the sidebar and the status bar ----
-        let n_all = self.downloads.len();
+        let n_all = self.downloads.iter().filter(|d| !d.prefetch).count();
         let mut n_done = 0usize;
         let mut n_active = 0usize;
         let mut n_paused = 0usize;
@@ -7916,7 +8246,7 @@ impl eframe::App for CraftApp {
         let mut n_queued = 0usize;
         let mut cat_n: std::collections::HashMap<&str, usize> =
             std::collections::HashMap::new();
-        for d in &self.downloads {
+        for d in self.downloads.iter().filter(|d| !d.prefetch) {
             *cat_n.entry(d.category()).or_default() += 1;
             match &d.status {
                 Status::Completed => n_done += 1,
@@ -8006,7 +8336,7 @@ impl eframe::App for CraftApp {
                 let ctrl_l = if self.os_caption {
                     bar.right()
                 } else {
-                    bar.right() - (28.0 * 3.0 + 2.0)
+                    bar.right() - (WIN_BTN_W * 3.0 + 4.0)
                 };
                 let buttons: &[(DmIcon, u8)] = if self.os_caption {
                     &[]
@@ -8022,8 +8352,8 @@ impl eframe::App for CraftApp {
                 };
                 for (i, (icon, kind)) in buttons.iter().enumerate() {
                     let r = egui::Rect::from_min_size(
-                        egui::pos2(ctrl_l + i as f32 * 29.0, cy - 13.0),
-                        egui::vec2(28.0, 26.0),
+                        egui::pos2(ctrl_l + i as f32 * (WIN_BTN_W + 1.0), cy - 15.0),
+                        egui::vec2(WIN_BTN_W, 30.0),
                     );
                     let hov = self.man.hover(&r);
                     let close = *kind == 2;
@@ -8032,14 +8362,14 @@ impl eframe::App for CraftApp {
                     }
                     dm_icon(
                         &p,
-                        egui::Rect::from_center_size(r.center(), egui::Vec2::splat(12.0)),
+                        egui::Rect::from_center_size(r.center(), egui::Vec2::splat(16.0)),
                         *icon,
                         if hov {
                             if close { egui::Color32::WHITE } else { pl().txt }
                         } else {
                             pl().dim
                         },
-                        2.0,
+                        1.6,
                     );
                     if self.man.clicked(&r) {
                         match kind {
@@ -8170,8 +8500,8 @@ impl eframe::App for CraftApp {
                 // the cursor or holds a search, and closes when you click
                 // elsewhere with it empty. ----
                 // As wide as the free stretch of the bar allows (issue #8),
-                // between the old 176 px and 320 px.
-                let search_full = (right - x - 24.0).clamp(176.0, 320.0);
+                // between 150 px and 230 px: a search box, not a bar.
+                let search_full = (right - x - 24.0).clamp(150.0, 230.0);
                 let search_id = egui::Id::new("search");
                 let focused = ui.memory(|m| m.has_focus(search_id));
                 let open_w = ctx.data(|d| d.get_temp::<f32>(egui::Id::new("search_w"))).unwrap_or(28.0);
@@ -8198,22 +8528,14 @@ impl eframe::App for CraftApp {
                     egui::pos2(right - w, cy - 14.0),
                     egui::vec2(w, 28.0),
                 );
-                if focused {
-                    // 3 px accent glow, where the concept uses box-shadow.
-                    p.rect_stroke(
-                        pill.expand(1.5),
-                        16.0,
-                        egui::Stroke::new(3.0, wash(pl().primary, 34)),
-                        egui::StrokeKind::Middle,
-                    );
-                }
+                // Focused: a hairline in the border colour, no accent glow.
                 p.rect(
                     pill,
                     14.0,
-                    wash(pl().txt, if focused { 13 } else if hov { 16 } else { 10 }),
+                    wash(pl().txt, if focused { 16 } else if hov { 16 } else { 10 }),
                     egui::Stroke::new(
                         1.0,
-                        if focused { pl().primary } else { egui::Color32::TRANSPARENT },
+                        if focused { pl().card_bd } else { egui::Color32::TRANSPARENT },
                     ),
                     egui::StrokeKind::Inside,
                 );
@@ -8221,12 +8543,12 @@ impl eframe::App for CraftApp {
                     egui::pos2(pill.left() + 14.0 + 3.5 * t, cy),
                     egui::Align2::CENTER_CENTER,
                     MI_SEARCH.to_string(),
-                    crate::fonts::icon(if t > 0.5 { 11.0 } else { 14.0 }),
+                    crate::fonts::icon(if t > 0.5 { 15.0 } else { 17.0 }),
                     if hov { pl().txt } else { pl().dim },
                 );
                 if t > 0.35 {
                     let inner = egui::Rect::from_min_max(
-                        egui::pos2(pill.left() + 30.0, pill.top() + 4.0),
+                        egui::pos2(pill.left() + 32.0, pill.top() + 4.0),
                         egui::pos2(pill.right() - 10.0, pill.bottom() - 4.0),
                     );
                     let mut fui = ui.new_child(
@@ -8320,6 +8642,8 @@ impl eframe::App for CraftApp {
         if petal {
             self.petal_toolbar(ctx);
             self.petal_sidebar(ctx, n_all, n_active, n_incomplete, n_done, n_failed, &cat_n);
+        } else if crate::skins::active() == "classic" {
+            self.classic_sidebar(ctx, n_all, n_incomplete, n_done, &cat_n);
         } else {
         egui::SidePanel::left("cats")
             .resizable(false)
@@ -8571,6 +8895,24 @@ impl eframe::App for CraftApp {
                 // Manual routing: paint (+record hit); process_hits acts.
                 let n_checked = self.selected_ids().len();
                 let mut tools: Vec<(ToolId, &str, &str, bool, &str)> = Vec::new();
+                let classic = crate::skins::active() == "classic";
+                let has_done = self.downloads.iter().any(|d| matches!(d.status, Status::Completed) && !d.prefetch);
+                if classic {
+                    // The classic download manager's toolbar, in its order.
+                    let t = |s: &'static str| crate::i18n::t(s);
+                    tools.push((ToolId::AddTorrent, MI_MAGNET, t("Add torrent"), true, t("Add a torrent: a magnet link on the clipboard, or pick .torrent files")));
+                    tools.push((ToolId::ResumeSel, MI_PLAY_CIRCLE, t("Resume"), true, t("Resume the selected downloads (all paused when none is selected)")));
+                    tools.push((ToolId::StopSel, MI_PAUSE_CIRCLE, t("Stop"), true, t("Stop the selected downloads (all active when none is selected)")));
+                    tools.push((ToolId::StopAll, MI_STOP_CIRCLE, t("Stop All"), true, t("Stop every active download now")));
+                    tools.push((ToolId::Delete, MI_DELETE, t("Delete"), n_checked > 0, t("Remove the selected downloads from the list")));
+                    tools.push((ToolId::ClearDone, MI_DELETE_SWEEP, t("Delete Completed"), has_done, t("Take every finished download off the list (the files stay)")));
+                    tools.push((ToolId::Settings, MI_TUNE, t("Options"), true, t("Open Settings")));
+                    tools.push((ToolId::Queues, MI_ALARM, t("Scheduler"), true, t("Queues and their schedules")));
+                    tools.push((ToolId::StartQueue, MI_QUEUE_PLAY, t("Start Queue"), true, t("Start the main queue")));
+                    tools.push((ToolId::StopQueue, MI_STOP, t("Stop Queue"), !self.tasks.is_empty(), t("Stop the main queue")));
+                    tools.push((ToolId::Grabber, MI_PUBLIC, t("Grabber"), true, t("Collect file links from a web page")));
+                }
+                if !classic {
                 // First after Add URL, so a narrow window drops it last.
                 tools.push((ToolId::AddTorrent, MI_MAGNET, crate::i18n::t("Add torrent"), true, crate::i18n::t("Add a torrent: a magnet link on the clipboard, or pick .torrent files")));
                 tools.push((ToolId::ResumeSel, MI_PLAY_CIRCLE, crate::i18n::t("Resume"), true, crate::i18n::t("Resume the selected downloads (all paused when none is checked)")));
@@ -8583,6 +8925,7 @@ impl eframe::App for CraftApp {
                     tools.push((ToolId::StartQueue, MI_QUEUE_PLAY, crate::i18n::t("Start Queue"), true, crate::i18n::t("Start the main queue")));
                     tools.push((ToolId::StopQueue, MI_STOP, crate::i18n::t("Stop Queue"), !self.tasks.is_empty(), crate::i18n::t("Stop the main queue")));
                 }
+                }
                 ui.add_space(7.0);
                 ui.horizontal(|ui| {
                     ui.add_space(7.0);
@@ -8590,8 +8933,9 @@ impl eframe::App for CraftApp {
                     // A narrow window: the buttons drop their labels, then
                     // the last ones go (Queues and Grabber are also in the
                     // Tasks / Tools menus), so nothing runs into Settings.
-                    let sq = if crate::skins::active() == "ledger" { LEDGER_TOOL_H } else { TOOL_H };
-                    let room = ui.available_width() - (sq + 8.0 + TOOL_GAP) - 6.0;
+                    let sq = if crate::skins::ledger_like() { LEDGER_TOOL_H } else { TOOL_H };
+                    // Classic has no Settings square at the end (Options is a tool).
+                    let room = ui.available_width() - if classic { 0.0 } else { sq + 8.0 + TOOL_GAP } - 6.0;
                     let font = egui::FontId::proportional(12.0);
                     let label_w = |l: &str| ui.painter().layout_no_wrap(l.to_owned(), font.clone(), pl().txt).size().x;
                     let _ = label_w;
@@ -8613,7 +8957,21 @@ impl eframe::App for CraftApp {
                         }
                     }
                     let mut fit = tools.len();
-                    if icons_only {
+                    if classic {
+                        // Classic keeps every label: a narrow window drops
+                        // the last tools instead (all are in the menus too).
+                        icons_only = false;
+                        let mut used = add_w + TOOL_GAP + sep_w;
+                        fit = 0;
+                        for t in &tools {
+                            let w = tool_w(ui, t.2) + TOOL_GAP;
+                            if used + w > room {
+                                break;
+                            }
+                            used += w;
+                            fit += 1;
+                        }
+                    } else if icons_only {
                         while fit > 0 && add_w + TOOL_GAP + sep_w + fit as f32 * (sq + TOOL_GAP) > room {
                             fit -= 1;
                         }
@@ -8629,12 +8987,15 @@ impl eframe::App for CraftApp {
                         let r = tool_button(ui, &self.man, icon, label, enabled, tip);
                         self.hits.push((HitKind::Tool(id), r));
                     }
-                    // Settings: an icon at the far end.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(8.0);
-                        let r = tool_button(ui, &self.man, MI_TUNE, "", true, crate::i18n::t("Open Settings in its own window"));
-                        self.hits.push((HitKind::Tool(ToolId::Settings), r));
-                    });
+                    // Settings: an icon at the far end (Classic has Options in
+                    // the row itself).
+                    if !classic {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(8.0);
+                            let r = tool_button(ui, &self.man, MI_TUNE, "", true, crate::i18n::t("Open Settings in its own window"));
+                            self.hits.push((HitKind::Tool(ToolId::Settings), r));
+                        });
+                    }
                 });
                 ui.add_space(7.0);
                 // The toolbar ends here: a hairline, then the list.
@@ -8687,7 +9048,8 @@ impl eframe::App for CraftApp {
                     // column right-aligned, and one rule under the header.
                     // Ledger: a compact list with grid lines, as desktop
                     // download managers have it.
-                    let ledger = crate::skins::active() == "ledger";
+                    let ledger = crate::skins::ledger_like();
+                    let classic_list = crate::skins::active() == "classic";
                     let row_h: f32 = if ledger { 26.0 } else { 34.0 };
                     let hdr_h: f32 = if ledger { 26.0 } else { 30.0 };
                     let cols = self.col_order.clone();
@@ -9002,6 +9364,18 @@ impl eframe::App for CraftApp {
                                         }
                                         SortCol::Size => {
                                             cell_text_center(&p, crect, &size_s, 11.0, pl().dim);
+                                        }
+                                        // Classic: the status as plain words (a
+                                        // percentage while unfinished).
+                                        SortCol::Status if classic_list => {
+                                            let (text, col) = match &st {
+                                                Status::Completed => ("Complete".to_string(), pl().txt),
+                                                Status::Failed(_) => ("Error".to_string(), pl().fail),
+                                                Status::Queued if prog <= 0.0 => (String::new(), pl().dim),
+                                                Status::Downloading if !preparing.is_empty() => (preparing.clone(), pl().txt),
+                                                _ => (format!("{:.2}%", prog * 100.0), pl().txt),
+                                            };
+                                            cell_text_center(&p, crect, &text, 11.0, col);
                                         }
                                         SortCol::Status => match &st {
                                             Status::Downloading => {
@@ -11083,6 +11457,7 @@ impl CraftApp {
                     26 => ("craft", look),
                     27 => ("ledger", look),
                     28 => ("petal", look),
+                    29 => ("classic", look),
                     40..=59 => {
                         let files = crate::theme_files::list();
                         match files.get((act - 40) as usize) {
@@ -11782,7 +12157,7 @@ impl CraftApp {
                                 // The Theme menu shows each look and mode
                                 // live while the pointer is on it.
                                 if area_id == "drop_menu" {
-                                    if let Some(HitKind::MenuItem(a @ (19..=22 | 26..=28 | 40..=59))) = hit {
+                                    if let Some(HitKind::MenuItem(a @ (19..=22 | 26..=29 | 40..=59))) = hit {
                                         self.theme_preview = Some(Self::theme_for_act(&self.theme, a));
                                     }
                                 }
@@ -12489,13 +12864,20 @@ impl CraftApp {
         // or the window losing focus (a click in another app or on the
         // desktop) closes menus too, as everywhere else on Windows. A click
         // inside a menu's own frame (its padding, a heading) keeps it.
-        if self.drop_menu.is_some() || self.ctx_menu.is_some() || self.add_recent_open {
+        // The click that opened a menu this frame (a right-click on a row,
+        // a menu title) never closes it: counting it made every right-click
+        // menu close the moment it opened. Focus loss is the moment it is
+        // lost (the event), not the window's focus flag, which can stay
+        // "unfocused" after the tray brings the window back and then closed
+        // every menu as it opened (issue #24).
+        let opened_now = open_ctx.is_some() || open_drop.is_some();
+        if !opened_now && (self.drop_menu.is_some() || self.ctx_menu.is_some() || self.add_recent_open) {
             let (click, pos, esc, unfocused) = ctx.input(|i| {
                 (
                     i.pointer.any_click(),
                     i.pointer.interact_pos(),
                     i.key_pressed(egui::Key::Escape),
-                    i.viewport().focused == Some(false),
+                    i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false))),
                 )
             });
             let on_menu = pos.and_then(|p| ctx.layer_id_at(p)).is_some_and(|l| {

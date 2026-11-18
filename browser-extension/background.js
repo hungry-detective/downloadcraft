@@ -11,7 +11,7 @@ let lastFallbackError = "";
 // Must match manifest version + content.js EXT_VER. Tabs running an older
 // content script are rejected with a "reload the tab" error instead of
 // failing mysteriously (their extension APIs are gone after a reload).
-const EXT_VER = "0.9.17";
+const EXT_VER = "0.9.18";
 
 // Promise-style calls (the `await api.*` ones below) go through this handle so
 // one file serves both engines: Firefox exposes the promise-returning
@@ -1945,10 +1945,9 @@ if (typeof DCBridge !== "undefined") {
     if (!sentCaptures.has(m.url)) return;
     const cfg = await settings();
     const name = m.name || m.url || "download";
-    if (m.event === "done") {
-      if (cfg.notify) notifyUser(`dc-${m.id}`, "Download complete", name);
-      return;
-    }
+    // Finished: the app says so itself (its Download complete window, or
+    // one notification). A second one from here made three (issue #24).
+    if (m.event === "done") return;
     if (m.event !== "failed") return;
     const c = sentCaptures.get(m.url);
     if (cfg.browserFallback && browserCanTake(c) && !String(m.error || "").includes("cancelled")) {

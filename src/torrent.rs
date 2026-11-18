@@ -87,6 +87,35 @@ fn source(url: &str) -> Result<AddTorrent<'static>> {
     }
 }
 
+/// Takes a torrent out of the session when the download ends in any way,
+/// including the task being aborted (Cancel and Stop in the app abort it at
+/// once). Without it an aborted download left its torrent running in the
+/// shared session: the row said Paused while it kept downloading, and a
+/// Resume then met the leftover.
+struct Leave {
+    session: Arc<Session>,
+    id: Option<librqbit::api::TorrentIdOrHash>,
+}
+
+impl Leave {
+    /// Keep it in the session (sharing after completion).
+    fn keep(mut self) {
+        self.id = None;
+    }
+}
+
+impl Drop for Leave {
+    fn drop(&mut self) {
+        let Some(id) = self.id.take() else { return };
+        let session = self.session.clone();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let _ = session.delete(id, false).await;
+            });
+        }
+    }
+}
+
 fn set_phase(shared: &SharedState, s: &str) {
     if let Ok(mut p) = shared.phase.lock() {
         if *p != s {
@@ -166,6 +195,8 @@ pub async fn download(url: &str, dest: &Path, shared: Arc<SharedState>, log: &st
         AddTorrentResponse::Added(id, h) | AddTorrentResponse::AlreadyManaged(id, h) => (id, h),
         AddTorrentResponse::ListOnly(_) => return Err(anyhow!("the torrent was not started")),
     };
+    let leave = Leave { session: session.clone(), id: Some(id.into()) };
+    let mut swarm = Swarm::default();
 
     // 3. Report progress; follow the row's pause, resume and cancel.
     let mut paused = false;
@@ -176,9 +207,20 @@ pub async fn download(url: &str, dest: &Path, shared: Arc<SharedState>, log: &st
         let want_pause = shared.paused.load(Ordering::SeqCst);
         if want_pause != paused {
             let r = if want_pause { session.pause(&handle).await } else { session.unpause(&handle).await };
-            if r.is_ok() {
-                paused = want_pause;
-            }
+            // librqbit refuses to pause a paused torrent (and to start a live
+            // one): what counts is the state it is in now, or the row and
+            // the torrent could disagree for good.
+            paused = match handle.stats().state {
+                librqbit::TorrentStatsState::Paused => true,
+                librqbit::TorrentStatsState::Live => false,
+                _ => {
+                    if r.is_ok() {
+                        want_pause
+                    } else {
+                        paused
+                    }
+                }
+            };
         }
         let st = handle.stats();
         if let Some(e) = st.error.clone() {
@@ -194,6 +236,9 @@ pub async fn download(url: &str, dest: &Path, shared: Arc<SharedState>, log: &st
             .map(|l| (l.download_speed.as_bytes(), l.snapshot.peer_stats.live))
             .unwrap_or((0, 0));
         shared.speed_bps.store(speed, Ordering::SeqCst);
+        if let Ok(mut t) = shared.torrent.lock() {
+            *t = Some(swarm.view(&handle, &st, &list, only.as_deref()));
+        }
         if st.finished {
             break Ok(());
         }
@@ -210,11 +255,15 @@ pub async fn download(url: &str, dest: &Path, shared: Arc<SharedState>, log: &st
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
     set_phase(&shared, "");
+    if let Ok(mut t) = shared.torrent.lock() {
+        *t = None;
+    }
     // Done: sharing goes on in the background up to Settings' ratio (0 =
     // none); stopped or failed: the torrent leaves the session at once.
     // Every byte on disk stays for a later resume.
     let ratio: f64 = crate::model::ui_pref_str("seed_ratio", "0").trim().parse().unwrap_or(0.0);
     if result.is_ok() && ratio > 0.0 {
+        leave.keep();
         let (session, handle, goal) = (session.clone(), handle.clone(), (total as f64 * ratio) as u64);
         crate::engine::job_log_pub(log, format!("torrent: sharing until {goal} bytes are uploaded (ratio {ratio})"));
         tokio::spawn(async move {
@@ -225,13 +274,81 @@ pub async fn download(url: &str, dest: &Path, shared: Arc<SharedState>, log: &st
             let _ = session.delete(id.into(), false).await;
         });
     } else {
-        let _ = session.delete(id.into(), false).await;
+        drop(leave); // out of the session now
     }
     match &result {
         Ok(()) => crate::engine::job_log_pub(log, "torrent: complete".to_string()),
         Err(e) => crate::engine::job_log_pub(log, format!("torrent: stopped: {e:#}")),
     }
     result
+}
+
+/// What the progress window's Part Info shows for a torrent: seeds and
+/// peers, each connected peer with what it sent and how fast, and each
+/// file's progress. Speeds come from the change since the last look.
+#[derive(Default)]
+struct Swarm {
+    last: std::collections::HashMap<String, (u64, std::time::Instant)>,
+    speeds: std::collections::HashMap<String, f64>,
+}
+
+impl Swarm {
+    fn view(
+        &mut self,
+        handle: &librqbit::ManagedTorrent,
+        st: &librqbit::TorrentStats,
+        files: &[(String, u64)],
+        only: Option<&[usize]>,
+    ) -> serde_json::Value {
+        let agg = st.live.as_ref().map(|l| &l.snapshot.peer_stats);
+        let (seeds, live, connecting, queued, seen) =
+            agg.map(|a| (a.live_seeders, a.live, a.connecting, a.queued, a.seen)).unwrap_or_default();
+        let now = std::time::Instant::now();
+        let mut peers: Vec<(String, String, u64, f64)> = Vec::new();
+        if let Some(l) = handle.live() {
+            let snap = l.per_peer_stats_snapshot(Default::default());
+            for (addr, p) in snap.peers {
+                let got = p.counters.fetched_bytes;
+                let speed = match self.last.get(&addr).copied() {
+                    Some((b, t)) => {
+                        let dt = now.duration_since(t).as_secs_f64();
+                        if dt >= 0.9 {
+                            let v = got.saturating_sub(b) as f64 / dt;
+                            self.speeds.insert(addr.clone(), v);
+                            self.last.insert(addr.clone(), (got, now));
+                        }
+                        self.speeds.get(&addr).copied().unwrap_or(0.0)
+                    }
+                    None => {
+                        self.last.insert(addr.clone(), (got, now));
+                        0.0
+                    }
+                };
+                peers.push((addr, p.client_name.unwrap_or_default(), got, speed));
+            }
+        }
+        // Fastest first; peers that sent nothing yet last.
+        peers.sort_by(|a, b| b.3.total_cmp(&a.3).then(b.2.cmp(&a.2)));
+        let known: std::collections::HashSet<String> = peers.iter().map(|p| p.0.clone()).collect();
+        self.last.retain(|k, _| known.contains(k));
+        self.speeds.retain(|k, _| known.contains(k));
+        let file_rows: Vec<serde_json::Value> = files
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| only.is_none_or(|o| o.contains(i)))
+            .map(|(i, (name, len))| serde_json::json!([name, len, st.file_progress.get(i).copied().unwrap_or(0)]))
+            .collect();
+        serde_json::json!({
+            "seeds": seeds,
+            "peers": live.saturating_sub(seeds),
+            "connecting": connecting,
+            "queued": queued,
+            "seen": seen,
+            "up": st.live.as_ref().map(|l| l.upload_speed.as_bytes()).unwrap_or(0),
+            "list": peers.iter().take(64).map(|(a, c, g, v)| serde_json::json!([a, c, g, v])).collect::<Vec<_>>(),
+            "files": file_rows,
+        })
+    }
 }
 
 async fn cancelled(shared: &SharedState) {

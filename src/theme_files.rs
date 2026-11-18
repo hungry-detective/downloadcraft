@@ -128,7 +128,7 @@ pub fn load(key: &str) -> Option<ThemeFile> {
 
 fn parse_json(text: &str, stem: &str) -> Option<ThemeFile> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    let layout = v.get("layout").and_then(|x| x.as_str()).filter(|l| ["craft", "ledger", "petal"].contains(l)).unwrap_or("craft");
+    let layout = v.get("layout").and_then(|x| x.as_str()).filter(|l| ["craft", "ledger", "petal", "classic"].contains(l)).unwrap_or("craft");
     let light = v.get("light").and_then(seeds_json);
     let dark = v.get("dark").and_then(seeds_json);
     // Colours at the top level count for both sides.
