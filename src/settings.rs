@@ -960,8 +960,8 @@ pub fn run() -> eframe::Result<()> {
         .with_app_id(crate::platform::app_id())
         // A little shorter than the main window's 500 px, so it never
         // stands taller than the window it belongs to.
-        .with_inner_size(if classic_look() { [452.0 * settings_scale(), 560.0 * settings_scale()] } else { [640.0 * settings_scale(), 460.0 * settings_scale()] })
-        .with_min_inner_size(if classic_look() { [420.0, 480.0] } else { [560.0, 400.0] })
+        .with_inner_size(if classic_look() { [452.0 * settings_scale(), CLASSIC_OPTIONS_H * settings_scale()] } else { [640.0 * settings_scale(), 460.0 * settings_scale()] })
+        .with_min_inner_size(if classic_look() { [420.0, 420.0] } else { [560.0, 400.0] })
         .with_resizable(true);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -977,6 +977,9 @@ pub fn run() -> eframe::Result<()> {
         }),
     )
 }
+
+/// Classic's Options window height: every page fits in it.
+const CLASSIC_OPTIONS_H: f32 = 510.0;
 
 /// Smallest and largest interface size, in percent (Appearance → Interface size).
 const UI_SCALE_MIN: u32 = 75;
@@ -1046,7 +1049,12 @@ impl eframe::App for SettingsApp {
         if !self.centered {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        if !self.centered && crate::model::center_window(ctx, egui::vec2(640.0, 520.0)) {
+        // Centred on the screen by the window's real size (Classic's is not
+        // the concept's 640 x 520).
+        let size = ctx.input(|i| i.viewport().outer_rect.map(|r| r.size())).filter(|s| s.x > 100.0).unwrap_or_else(|| {
+            if classic_look() { egui::vec2(452.0, CLASSIC_OPTIONS_H + 32.0) * settings_scale() } else { egui::vec2(640.0, 492.0) * settings_scale() }
+        });
+        if !self.centered && crate::model::center_window(ctx, size) {
             self.centered = true;
         }
         // The helpers' status is asked for when the pane is first opened,
@@ -1305,78 +1313,58 @@ impl SettingsApp {
     fn classic_frame(&mut self, ctx: &egui::Context) {
         let t = tok();
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::ZERO))
+            .frame(egui::Frame::new().fill(c_field()).inner_margin(egui::Margin::ZERO))
             .show(ctx, |ui| {
                 ui.spacing_mut().interact_size.y = C_H;
                 let full = ui.max_rect();
-                let foot_h = 40.0;
-                let row_h = 19.0;
+                let foot_h = 38.0;
                 let pad = 8.0;
-                let top = full.top() + 6.0;
-                let panel = Rect::from_min_max(egui::pos2(full.left() + pad, top + row_h * 2.0), egui::pos2(full.right() - pad, full.bottom() - foot_h));
-                let foot = Rect::from_min_max(egui::pos2(full.left(), full.bottom() - foot_h), full.max);
                 let p = ui.painter().clone();
-                p.rect_filled(full, 0.0, t.bg);
-                p.rect(panel, 0.0, t.bg, Stroke::new(1.0, t.border), StrokeKind::Inside);
+                p.rect_filled(full, 0.0, c_field());
 
-                // ---- two rows of tabs ----
-                let open_back = IDM_BACK.contains(&self.idm_page);
-                let rows: [(&[usize], f32); 2] = if open_back { [(IDM_FRONT, top), (IDM_BACK, top + row_h)] } else { [(IDM_BACK, top), (IDM_FRONT, top + row_h)] };
-                let mut open_tab: Option<Rect> = None;
-                for (pages, y) in rows {
-                    let w = panel.width() / pages.len() as f32;
-                    for (k, &page) in pages.iter().enumerate() {
-                        let on = self.idm_page == page;
-                        let label = crate::i18n::t(IDM_PAGES[page].0);
-                        let mut r = Rect::from_min_size(egui::pos2(panel.left() + k as f32 * w, y), egui::vec2(w + 1.0, row_h + 1.0));
-                        if on {
-                            r = Rect::from_min_max(r.min - Vec2::new(1.0, 2.0), r.max + Vec2::new(1.0, 0.0));
-                        }
-                        let resp = ui.interact(r, ui.id().with(("idm_tab", page)), Sense::click());
-                        let fill = if on { t.bg } else if resp.hovered() { blend(t.btn, t.accent, 0.10) } else { t.btn };
-                        p.rect(r, 0.0, fill, Stroke::new(1.0, t.border), StrokeKind::Inside);
-                        let (font, _) = legible(label, reg(C_FONT), t.text);
-                        let tsz = crate::shaped::measure(&p, label, &font, None);
-                        crate::shaped::paint(&p, r.center() - tsz / 2.0, label, &font, t.text, None);
-                        if on {
-                            open_tab = Some(r);
-                        }
-                        if resp.clicked() {
-                            self.idm_page = page;
-                            self.idm_sub = None;
-                            self.idm.sel = None;
-                        }
+                // ---- the tabs: one flowing row (two when they do not fit),
+                // the open one a soft tint ----
+                let tab_h = 22.0;
+                let tab_font = reg(C_FONT);
+                let mut x = full.left() + pad;
+                let mut y = full.top() + 6.0;
+                let right = full.right() - pad;
+                for page in 0..IDM_PAGES.len() {
+                    let on = self.idm_page == page;
+                    let label = crate::i18n::t(IDM_PAGES[page].0);
+                    let (font, _) = legible(label, if on { crate::fonts::semi(C_FONT) } else { tab_font.clone() }, t.text);
+                    let tsz = crate::shaped::measure(&p, label, &font, None);
+                    let w = tsz.x + 18.0;
+                    if x + w > right && x > full.left() + pad {
+                        x = full.left() + pad;
+                        y += tab_h + 2.0;
                     }
+                    let r = Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, tab_h));
+                    let resp = ui.interact(r, ui.id().with(("idm_tab", page)), Sense::click());
+                    let round = egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+                    if on {
+                        p.rect_filled(r, round, blend(c_field(), t.accent, 0.14));
+                    } else if resp.hovered() {
+                        p.rect_filled(r, round, blend(c_field(), t.accent, 0.06));
+                    }
+                    crate::shaped::paint(&p, r.center() - tsz / 2.0, label, &font, if on { t.accent } else { t.text2 }, None);
+                    if resp.clicked() {
+                        self.idm_page = page;
+                        self.idm_sub = None;
+                        self.idm.sel = None;
+                    }
+                    x += w + 2.0;
                 }
-                if let Some(r) = open_tab {
-                    p.hline((r.left() + 1.0)..=(r.right() - 1.0), panel.top() + 0.5, Stroke::new(2.0, t.bg));
-                }
+                let tabs_bottom = y + tab_h;
+                p.hline(full.x_range(), tabs_bottom + 0.5, Stroke::new(1.0, t.border));
+                let foot = Rect::from_min_max(egui::pos2(full.left(), full.bottom() - foot_h), full.max);
+                p.hline(full.x_range(), foot.top() + 0.5, Stroke::new(1.0, t.border));
 
-                // ---- the page: picture and subject, then its controls ----
-                let inner = panel.shrink2(Vec2::new(10.0, 6.0));
-                let (icon, title) = match self.idm_sub {
-                    Some(sub) => (IDM_SUBS[sub].1, IDM_SUBS[sub].0),
-                    None => (IDM_PAGES[self.idm_page].1, IDM_PAGES[self.idm_page].2),
-                };
-                let head = Rect::from_min_size(inner.min, egui::vec2(inner.width(), 38.0));
-                p.stext(egui::pos2(head.left() + 16.0, head.center().y), Align2::CENTER_CENTER, icon, crate::fonts::icon(30.0), t.accent);
-                let mut right = head.right() - 2.0;
-                if self.idm_sub.is_none() && self.idm_page == 5 {
-                    // Proxy: "Get System" sits right of the subject.
-                    let mut b = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(egui::pos2(head.right() - 100.0, head.top() + 4.0), egui::pos2(head.right(), head.top() + 28.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
-                    if c_btn(&mut b, "Get System", true, 92.0) {
-                        self.get_system_proxy();
-                    }
-                    right -= 108.0;
-                }
-                let title_t = crate::i18n::t(title);
-                let (tfont, _) = legible(title_t, crate::fonts::semi(12.5), t.text);
-                let tsz = crate::shaped::measure(&p, title_t, &tfont, None);
-                crate::shaped::paint(&p, egui::pos2(right - tsz.x, head.top() + 8.0), title_t, &tfont, t.text, None);
-                p.hline((head.left() + 38.0)..=head.right(), head.top() + 10.0 + tsz.y + 2.0, Stroke::new(1.0, t.border));
+                // ---- the page ----
+                let inner = Rect::from_min_max(egui::pos2(full.left() + 14.0, tabs_bottom + 8.0), egui::pos2(full.right() - 10.0, foot.top() - 2.0));
                 let mut body_ui = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(Rect::from_min_max(egui::pos2(inner.left(), head.bottom() + 2.0), inner.max))
+                        .max_rect(inner)
                         .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
                 let key = (self.idm_page, self.idm_sub);
@@ -1388,9 +1376,14 @@ impl SettingsApp {
                         ui.spacing_mut().interact_size.y = C_H;
                         classic_widgets(ui);
                         if let Some(sub) = self.idm_sub {
-                            if c_btn(ui, "‹ Back", true, 70.0) {
-                                self.idm_sub = None;
-                            }
+                            ui.horizontal(|ui| {
+                                if c_btn(ui, "‹ Back", true, 64.0) {
+                                    self.idm_sub = None;
+                                }
+                                let title = crate::i18n::t(IDM_SUBS[sub].0);
+                                let (f, c) = legible(title, crate::fonts::semi(12.0), tok().text);
+                                crate::shaped::label(ui, title, f, c, false);
+                            });
                             ui.add_space(4.0);
                             ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
                             match sub {
@@ -1427,14 +1420,14 @@ impl SettingsApp {
                 // ---- OK / Help (closing the window is Cancel) ----
                 let mut foot_ui = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(foot.shrink2(Vec2::new(pad + 2.0, 8.0)))
+                        .max_rect(foot.shrink2(Vec2::new(pad + 4.0, 7.0)))
                         .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 );
-                foot_ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
-                if c_btn(&mut foot_ui, "Help", true, 86.0) {
+                foot_ui.spacing_mut().item_spacing = Vec2::new(6.0, 0.0);
+                if c_btn(&mut foot_ui, "Help", true, 76.0) {
                     crate::platform::open_url("https://github.com/hungry-detective/downloadcraft#readme");
                 }
-                if c_btn(&mut foot_ui, "OK", true, 86.0) {
+                if c_btn_main(&mut foot_ui, "OK", 76.0) {
                     if save(&self.s) {
                         if self.ytdlp_rx.is_none() {
                             self.ytdlp_rx = Some(ytdlp_probe(false));
@@ -1469,30 +1462,26 @@ impl SettingsApp {
             }
             self.host_status = None;
         }
-        ui.add_space(2.0);
-        #[cfg(windows)]
-        c_check(ui, &mut self.s.start_with_windows, "Launch Download Craft on startup", true);
-        c_check(ui, &mut self.s.watch_clipboard, "Automatically start downloading of URLs placed to clipboard", true);
-        c_check(ui, &mut self.s.close_to_tray, "Minimize to system tray instead of quitting", true);
-        ui.add_space(4.0);
+        let s = &mut self.s;
+        c_group(ui, "Startup and clipboard", None, |ui| {
+            #[cfg(windows)]
+            c_check(ui, &mut s.start_with_windows, "Launch Download Craft on startup", true);
+            c_check(ui, &mut s.watch_clipboard, "Automatically start downloading of URLs placed to clipboard", true);
+            c_check(ui, &mut s.close_to_tray, "Minimize to system tray instead of quitting", true);
+        });
         let mut link: Option<&'static str> = None;
         let mut add_browser = false;
         c_group(ui, "Capture downloads from the following browsers:", None, |ui| {
             let names = [("chrome", "Google Chrome"), ("edge", "Microsoft Edge"), ("brave", "Brave"), ("opera", "Opera"), ("firefox", "Mozilla Firefox")];
-            let rows: Vec<Vec<String>> = names.iter().map(|(_, n)| vec![n.to_string()]).collect();
-            let mut checks: Vec<bool> = names.iter().map(|(k, _)| status.iter().any(|(b, ok)| b == k && *ok)).collect();
-            let was = checks.clone();
-            let mut sel = self.idm.sel;
-            c_list(ui, "idm_browsers", &[], &rows, &mut sel, 104.0, Some(&mut checks));
-            self.idm.sel = sel;
-            for (i, (k, _)) in names.iter().enumerate() {
-                if checks[i] && !was[i] {
-                    link = Some(k);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
+                for (k, n) in names {
+                    let on = status.iter().any(|(b, ok)| *b == k && *ok);
+                    if c_chip(ui, n, Some(on)) && !on {
+                        link = Some(k);
+                    }
                 }
-            }
-            ui.add_space(4.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                add_browser = c_btn(ui, "Add browser…", true, 104.0);
+                add_browser = c_chip(ui, "+ Add browser…", None);
             });
         });
         if let Some(b) = link {
@@ -1506,7 +1495,7 @@ impl SettingsApp {
         if !self.browser_msg.is_empty() {
             c_text_col(ui, &self.browser_msg.clone(), tok().muted);
         }
-        c_sep(ui);
+        ui.add_space(8.0);
         if c_row_btn(ui, "Customize keys to prevent or force downloading", "Keys…", true) {
             self.idm_sub = Some(4);
         }
@@ -1557,8 +1546,19 @@ impl SettingsApp {
     /// File types: "Downloaded file types".
     fn idm_file_types(&mut self, ui: &mut Ui) {
         let s = &mut self.s;
+        // Empty lists show their usual contents, as the dialog always has
+        // (once: emptying a box afterwards is the user's choice).
+        if !self.idm.lists_filled {
+            self.idm.lists_filled = true;
+            if s.capture_types.trim().is_empty() {
+                s.capture_types = DEFAULT_CAPTURE_TYPES.to_string();
+            }
+            if s.capture_skip_sites.trim().is_empty() {
+                s.capture_skip_sites = DEFAULT_SKIP_SITES.to_string();
+            }
+        }
         c_text(ui, "Automatically start downloading the following file types:");
-        c_multi(ui, "idm_types", &mut s.capture_types, 3);
+        c_multi(ui, "idm_types", &mut s.capture_types, 4);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             if c_btn(ui, "Default", true, 72.0) {
                 s.capture_types = DEFAULT_CAPTURE_TYPES.to_string();
@@ -1609,7 +1609,7 @@ impl SettingsApp {
         c_group(ui, "Save To…", None, |ui| {
             c_text(ui, "Category");
             ui.horizontal(|ui| {
-                let w = (ui.available_width() - 100.0).max(120.0);
+                let w = (ui.available_width() - 150.0).max(120.0);
                 let mut pick = cat;
                 egui::ComboBox::from_id_salt("idm_cat").selected_text(crate::i18n::t(&name).to_string()).width(w).show_ui(ui, |ui| {
                     ui.selectable_value(&mut pick, 0, crate::i18n::t("General"));
@@ -1622,17 +1622,15 @@ impl SettingsApp {
                     self.idm.cat_edit = false;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    if c_btn(ui, "New", true, 84.0) {
+                    if c_btn(ui, "Edit…", cat > 0, 64.0) {
+                        self.idm.cat_edit = !self.idm.cat_edit;
+                    }
+                    if c_btn(ui, "New", true, 64.0) {
                         self.s.folder_rules.push(FolderRule { exts: String::new(), folder: crate::i18n::t("New category").to_string() });
                         self.idm.cat = self.s.folder_rules.len();
                         self.idm.cat_edit = true;
                     }
                 });
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                if c_btn(ui, "Edit…", cat > 0, 84.0) {
-                    self.idm.cat_edit = !self.idm.cat_edit;
-                }
             });
             let cat = self.idm.cat;
             if cat > 0 && self.idm.cat_edit {
@@ -1709,7 +1707,7 @@ impl SettingsApp {
                 }
             });
             ui.add_space(2.0);
-            c_text(ui, "Temporary directory is required for storing file parts during download. Empty = next to the file. If you have several physical drives on your computer, you should select different physical drives for temporary directory and \"Save To\" folders for faster assembling of downloaded files.");
+            c_text_col(ui, "Temporary directory is required for storing file parts during download. Empty = next to the file. If you have several physical drives on your computer, you should select different physical drives for temporary directory and \"Save To\" folders for faster assembling of downloaded files.", tok().muted);
         });
         ui.add_space(4.0);
         if c_row_btn(ui, "File name template and rules", "Edit…", true) {
@@ -1734,7 +1732,7 @@ impl SettingsApp {
             }
         });
         c_check(ui, &mut self.s.show_complete, "Show download complete dialog", true);
-        c_text(ui, "Note: These settings don't relate to queue processing");
+        c_text_col(ui, "Note: These settings don't relate to queue processing", tok().muted);
         c_sep(ui);
         let mut pre = crate::model::ui_pref_bool("prefetch_on", true);
         if c_check(ui, &mut pre, "Start downloading immediately while displaying \"Download File Info\" dialog", true) {
@@ -1771,7 +1769,7 @@ impl SettingsApp {
         c_text(ui, "User-Agent for manually added downloads:");
         let w = ui.available_width();
         c_edit(ui, "idm_ua", &mut self.s.user_agent, w, true, false);
-        c_sep(ui);
+        ui.add_space(6.0);
         if c_row_btn(ui, "Virus checking and what happens when a download finishes", "Edit…", true) {
             self.idm_sub = Some(6);
         }
@@ -1799,9 +1797,9 @@ impl SettingsApp {
             let mut edit = false;
             ui.horizontal(|ui| {
                 let lw = (ui.available_width() - 84.0).max(140.0);
-                ui.allocate_ui_with_layout(Vec2::new(lw, 120.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.allocate_ui_with_layout(Vec2::new(lw, 92.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                     let mut sel = self.idm.sel;
-                    c_list(ui, "idm_exc", &[("Server", 0.72), ("Number", 0.28)], &rows, &mut sel, 120.0, None);
+                    c_list(ui, "idm_exc", &[("Server", 0.72), ("Number", 0.28)], &rows, &mut sel, 92.0, None);
                     self.idm.sel = sel;
                 });
                 ui.vertical(|ui| {
@@ -1895,6 +1893,9 @@ impl SettingsApp {
 
     /// Proxy / Socks: "Proxy / socks configuration".
     fn idm_proxy(&mut self, ui: &mut Ui) {
+        if c_row_btn(ui, "Proxy / socks configuration", "Get System", true) {
+            self.get_system_proxy();
+        }
         let s = &mut self.s;
         c_check(ui, &mut s.proxy_from_browser, "Use proxy/socks from a browser's request if there are download errors for the downloads intercepted from the browser", true);
         c_sep(ui);
@@ -1911,13 +1912,13 @@ impl SettingsApp {
                     c_edit(ui, "idm_pac", &mut s.proxy_pac, w, en, false);
                 });
             }
-            c_sep(ui);
         }
         if c_radio(ui, s.proxy_mode == "manual", "Manual proxy/socks configuration") {
             s.proxy_mode = "manual".to_string();
         }
         let en = s.proxy_mode == "manual";
-        let full = ui.available_width() - 20.0;
+        // Four boxes and the gaps between them fit the page (no sideways scroll).
+        let full = ui.available_width() - 20.0 - 24.0;
         let (aw, pw, uw) = (full * 0.36, full * 0.14, full * 0.24);
         ui.horizontal(|ui| {
             ui.add_space(20.0);
@@ -1949,7 +1950,7 @@ impl SettingsApp {
                 crate::model::ui_pref_set_bool("proxy_ftp", ftp);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                adv = c_btn(ui, "Advanced / Socks…", en, 150.0);
+                adv = c_btn(ui, "Advanced / Socks…", en, 120.0);
             });
         });
         if adv {
@@ -1973,11 +1974,12 @@ impl SettingsApp {
                 });
             });
         }
-        ui.add_space(14.0);
-        let mut pasv = crate::model::ui_pref_bool("ftp_pasv", true);
-        if c_check(ui, &mut pasv, "Use FTP in PASV mode", true) {
-            crate::model::ui_pref_set_bool("ftp_pasv", pasv);
-        }
+        c_group(ui, "FTP", None, |ui| {
+            let mut pasv = crate::model::ui_pref_bool("ftp_pasv", true);
+            if c_check(ui, &mut pasv, "Use FTP in PASV mode", true) {
+                crate::model::ui_pref_set_bool("ftp_pasv", pasv);
+            }
+        });
     }
 
     /// Fill the manual proxy from Windows' own proxy settings.
@@ -1998,18 +2000,16 @@ impl SettingsApp {
     fn idm_logins(&mut self, ui: &mut Ui) {
         let rows: Vec<Vec<String>> = self.s.logins.iter().map(|l| vec![l.host.clone(), l.user.clone(), "•".repeat(l.pass.chars().count().min(8))]).collect();
         let mut sel = self.idm.sel;
-        let h = (ui.available_height() - 110.0).clamp(150.0, 300.0);
+        c_group(ui, "User names and passwords for servers/sites", None, |_| {});
+        let h = if self.idm.login.is_some() { 110.0 } else { 200.0 };
         let dbl = c_list(ui, "idm_logins", &[("Site/path", 0.56), ("User", 0.24), ("Password", 0.20)], &rows, &mut sel, h, None);
         self.idm.sel = sel.filter(|i| *i < self.s.logins.len());
-        ui.add_space(8.0);
+        ui.add_space(2.0);
         let (mut new, mut edit, mut remove) = (false, false, false);
-        ui.horizontal(|ui| {
-            ui.add_space(10.0);
-            new = c_btn(ui, "New", true, 74.0);
-            ui.add_space(14.0);
-            edit = c_btn(ui, "Edit", self.idm.sel.is_some(), 74.0);
-            ui.add_space(14.0);
-            remove = c_btn(ui, "Remove", self.idm.sel.is_some(), 74.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            remove = c_btn(ui, "Remove", self.idm.sel.is_some(), 70.0);
+            edit = c_btn(ui, "Edit", self.idm.sel.is_some(), 70.0);
+            new = c_btn(ui, "New", true, 70.0);
         });
         if new {
             self.idm.login = Some((None, crate::model::SiteLogin::default()));
@@ -2180,28 +2180,26 @@ impl SettingsApp {
                 .collect();
             let mut checks: Vec<bool> = self.s.sounds_ev.iter().map(|e| e.1).collect();
             let mut sel = self.idm.sel;
-            let h = (ui.available_height() - 60.0).clamp(150.0, 280.0);
+            let h = 150.0;
             c_list(ui, "idm_sounds", &[("Event", 0.55), ("Sound file", 0.45)], &rows, &mut sel, h, Some(&mut checks));
             self.idm.sel = sel.filter(|i| *i < self.s.sounds_ev.len());
             for (e, c) in self.s.sounds_ev.iter_mut().zip(checks) {
                 e.1 = c;
             }
-            ui.add_space(6.0);
+            ui.add_space(2.0);
             let has = self.idm.sel.is_some();
-            ui.horizontal(|ui| {
-                ui.add_space((ui.available_width() - 260.0).max(0.0) / 2.0);
-                if c_btn(ui, "Browse…", has, 110.0) {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if c_btn(ui, "Play", has, 70.0) {
+                    if let Some(i) = self.idm.sel {
+                        let (k, _, f) = &self.s.sounds_ev[i];
+                        crate::platform::play_sound_file(k, f);
+                    }
+                }
+                if c_btn(ui, "Browse…", has, 70.0) {
                     if let Some(i) = self.idm.sel {
                         if let Some(p) = rfd::FileDialog::new().add_filter("Sound", &["wav"]).pick_file() {
                             self.s.sounds_ev[i].2 = p.to_string_lossy().to_string();
                         }
-                    }
-                }
-                ui.add_space(30.0);
-                if c_btn(ui, "Play", has, 110.0) {
-                    if let Some(i) = self.idm.sel {
-                        let (k, _, f) = &self.s.sounds_ev[i];
-                        crate::platform::play_sound_file(k, f);
                     }
                 }
             });
@@ -2229,6 +2227,8 @@ struct IdmState {
     /// File types: the address list editor.
     addr_open: bool,
     addr: String,
+    /// File types: the empty lists were filled with their defaults once.
+    lists_filled: bool,
     /// Connection: an exception being added or edited (row, server, number).
     exc: Option<(Option<usize>, String, String)>,
     /// Proxy: the type picker under "Advanced / Socks…".
@@ -2241,7 +2241,7 @@ struct IdmState {
     dial_pass: String,
 }
 
-const DEFAULT_CAPTURE_TYPES: &str = "3gp 7z aac ace aif apk arj asf avi bin bz2 exe gz gzip img iso lzh m4a m4v mkv mov mp3 mp4 mpa mpe mpeg mpg msi msu ogg ogv pdf plj pps ppt qt r0* r1* ra rar rm rmvb sea sit sitx tar tif tiff wav wma wmv z zip";
+const DEFAULT_CAPTURE_TYPES: &str = "3gp 7z aac ace aif apk appx arj asf avi bin bz2 deb dmg doc docx epub exe flac flv gz gzip img iso jar lzh m4a m4b m4v mkv mov mp3 mp4 mpa mpe mpeg mpg msi msix msu ogg ogv opus pdf pkg plj pps ppt pptx qt r0* r1* ra rar rm rmvb rpm sea sit sitx tar tgz tif tiff torrent ts wav webm wma wmv xls xlsx xz z zip zst";
 const DEFAULT_SKIP_SITES: &str = "*.update.microsoft.com download.windowsupdate.com *.download.windowsupdate.com siteseal.thawte.com ecom.cimetz.com *.voice2page.com";
 
 /// "If a duplicate download link is added:" — key, words.
@@ -2437,7 +2437,7 @@ fn classic_widgets(ui: &mut Ui) {
     for (w, bd) in [(&mut v.widgets.inactive, t.btn_bd), (&mut v.widgets.hovered, t.accent), (&mut v.widgets.active, t.accent), (&mut v.widgets.open, t.accent)] {
         w.weak_bg_fill = c_field();
         w.bg_fill = c_field();
-        w.corner_radius = egui::CornerRadius::same(2);
+        w.corner_radius = egui::CornerRadius::same(4);
         w.bg_stroke = Stroke::new(1.0, bd);
         w.fg_stroke = Stroke::new(1.0, t.text);
         w.expansion = 0.0;
@@ -2446,39 +2446,59 @@ fn classic_widgets(ui: &mut Ui) {
 
 /// A push button; returns whether it was clicked.
 fn c_btn(ui: &mut Ui, label: &str, enabled: bool, min_w: f32) -> bool {
+    c_btn_face(ui, label, enabled, min_w, false)
+}
+
+/// The window's main button (OK): the accent's tint.
+fn c_btn_main(ui: &mut Ui, label: &str, min_w: f32) -> bool {
+    c_btn_face(ui, label, true, min_w, true)
+}
+
+fn c_btn_face(ui: &mut Ui, label: &str, enabled: bool, min_w: f32, main: bool) -> bool {
     let t = tok();
     let label = crate::i18n::t(label);
     let (font, _) = legible(label, reg(C_FONT), t.text);
     let tsz = crate::shaped::measure(ui.painter(), label, &font, None);
     let w = (tsz.x + 20.0).max(min_w);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 23.0), if enabled { Sense::click() } else { Sense::hover() });
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, C_H), if enabled { Sense::click() } else { Sense::hover() });
     let hov = enabled && resp.hovered();
     let p = ui.painter();
-    p.rect(rect, 3.0, if hov { blend(t.btn, t.accent, 0.12) } else { t.btn }, Stroke::new(1.0, if hov { t.accent } else { t.btn_bd }), StrokeKind::Inside);
-    crate::shaped::paint(p, rect.center() - tsz / 2.0, label, &font, if enabled { t.text } else { t.muted }, None);
+    let (fill, edge, ink) = if main {
+        (blend(c_field(), t.accent, if hov { 0.24 } else { 0.14 }), t.accent, t.accent)
+    } else {
+        (if hov { blend(t.btn, t.accent, 0.10) } else { t.btn }, if hov { t.accent } else { t.btn_bd }, t.text)
+    };
+    p.rect(rect, 5.0, fill, Stroke::new(1.0, edge), StrokeKind::Inside);
+    if !enabled {
+        p.rect_filled(rect, 5.0, c_field().gamma_multiply(0.45));
+    }
+    crate::shaped::paint(p, rect.center() - tsz / 2.0, label, &font, if enabled { ink } else { t.muted }, None);
     enabled && resp.clicked()
 }
 
-/// A line of text right-aligned before a button at the right end.
+/// Width of the buttons at the end of a settings row ("Edit…", "Keys…"):
+/// one width for all, so they line up.
+const C_ROW_BTN_W: f32 = 76.0;
+
+/// A setting's line: its words on the left, a button at the right end
+/// (all such buttons one width), a hairline above.
 fn c_row_btn(ui: &mut Ui, label: &str, button: &str, enabled: bool) -> bool {
-    let mut clicked = false;
-    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 27.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        clicked = c_btn(ui, button, enabled, 72.0);
-        let label = crate::i18n::t(label);
-        let t = tok();
-        let (font, col) = legible(label, reg(C_FONT), t.text);
-        // Too long for the room left: it wraps instead of running off.
-        let room = ui.available_width();
-        if crate::shaped::measure(ui.painter(), label, &font, None).x > room {
-            ui.allocate_ui_with_layout(Vec2::new(room, 27.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                crate::shaped::label(ui, label, font, col, true);
-            });
-        } else {
-            crate::shaped::label(ui, label, font, col, false);
-        }
-    });
-    clicked
+    let t = tok();
+    let label = crate::i18n::t(label);
+    let w = ui.available_width();
+    let (font, col) = legible(label, reg(C_FONT), t.text2);
+    let room = (w - C_ROW_BTN_W - 12.0).max(60.0);
+    let tsz = crate::shaped::measure(ui.painter(), label, &font, Some(room));
+    let h = (tsz.y + 8.0).max(28.0);
+    let first = ui.min_rect().height() < 2.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+    if !first {
+        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, t.border));
+    }
+    crate::shaped::paint(ui.painter(), egui::pos2(rect.left(), rect.center().y - tsz.y / 2.0), label, &font, col, Some(room));
+    let br = Rect::from_min_size(egui::pos2(rect.right() - C_ROW_BTN_W, rect.center().y - C_H / 2.0), Vec2::new(C_ROW_BTN_W, C_H));
+    let mut b = ui.new_child(egui::UiBuilder::new().max_rect(br).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    c_btn(&mut b, button, enabled, C_ROW_BTN_W)
 }
 
 /// A check box and its label (wrapping); returns whether it changed.
@@ -2530,7 +2550,7 @@ fn c_radio(ui: &mut Ui, on: bool, label: &str) -> bool {
 fn c_edit(ui: &mut Ui, id: &str, buf: &mut String, w: f32, enabled: bool, password: bool) -> Response {
     let t = tok();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w.max(20.0), C_H), Sense::hover());
-    ui.painter().rect(rect, 2.0, if enabled { c_field() } else { t.bg }, Stroke::new(1.0, t.border), StrokeKind::Inside);
+    ui.painter().rect(rect, 4.0, if enabled { c_field() } else { t.bg }, Stroke::new(1.0, t.border), StrokeKind::Inside);
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("c_edit", id)).max_rect(rect.shrink2(Vec2::new(5.0, 3.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     child.add_enabled(
         enabled,
@@ -2544,8 +2564,11 @@ fn c_multi(ui: &mut Ui, id: &str, buf: &mut String, rows: usize) -> Response {
     let w = ui.available_width();
     let h = rows as f32 * 15.0 + 8.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
-    ui.painter().rect(rect, 2.0, c_field(), Stroke::new(1.0, t.border), StrokeKind::Inside);
-    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("c_multi", id)).max_rect(rect.shrink2(Vec2::new(5.0, 4.0))));
+    ui.painter().rect(rect, 4.0, c_field(), Stroke::new(1.0, t.border), StrokeKind::Inside);
+    let inner = rect.shrink2(Vec2::new(5.0, 4.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("c_multi", id)).max_rect(inner));
+    // Long text scrolls inside the box, never over what follows it.
+    child.set_clip_rect(inner.intersect(ui.clip_rect()));
     let mut out = None;
     egui::ScrollArea::vertical().id_salt(("c_multi_s", id)).max_height(h - 8.0).show(&mut child, |ui| {
         out = Some(ui.add(egui::TextEdit::multiline(buf).id_salt(("c_multi_in", id)).frame(false).desired_width(w - 22.0).desired_rows(rows).font(reg(C_FONT)).margin(egui::Margin::ZERO)));
@@ -2553,49 +2576,67 @@ fn c_multi(ui: &mut Ui, id: &str, buf: &mut String, rows: usize) -> Response {
     out.unwrap_or_else(|| ui.allocate_response(Vec2::ZERO, Sense::hover()))
 }
 
-/// A thin etched line across the page.
+/// A thin line across the page.
 fn c_sep(ui: &mut Ui) {
-    ui.add_space(3.0);
+    ui.add_space(2.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter().hline(rect.x_range(), rect.center().y, Stroke::new(1.0, tok().border));
-    ui.add_space(3.0);
+    ui.add_space(2.0);
 }
 
-/// A group box: a thin frame with its title (or a check box) in the top edge.
+/// A rounded chip: a check box and a name (Some), or a dashed action (None).
+/// Returns whether it was clicked.
+fn c_chip(ui: &mut Ui, label: &str, on: Option<bool>) -> bool {
+    let t = tok();
+    let label = crate::i18n::t(label);
+    let (font, _) = legible(label, reg(C_FONT), t.text);
+    let tsz = crate::shaped::measure(ui.painter(), label, &font, None);
+    let lead = if on.is_some() { 19.0 } else { 0.0 };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(tsz.x + lead + 18.0, C_H), Sense::click());
+    let p = ui.painter();
+    let hov = resp.hovered();
+    let edge = if hov { t.accent } else { t.btn_bd };
+    p.rect(rect, C_H / 2.0, if hov { blend(c_field(), t.accent, 0.06) } else { c_field() }, Stroke::new(1.0, edge), StrokeKind::Inside);
+    if let Some(v) = on {
+        let bx = Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.center().y - 6.5), Vec2::splat(13.0));
+        p.rect(bx, 2.0, if v { t.accent } else { c_field() }, Stroke::new(1.0, if v { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+        if v {
+            crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 1.8);
+        }
+    }
+    crate::shaped::paint(p, egui::pos2(rect.min.x + 9.0 + lead, rect.center().y - tsz.y / 2.0), label, &font, if on.is_some() { t.text } else { t.text2 }, None);
+    resp.clicked()
+}
+
+/// A section: its title in small grey letters (with a check box in front
+/// when it switches the section on), then its controls. No frame.
 fn c_group(ui: &mut Ui, title: &str, check: Option<&mut bool>, body: impl FnOnce(&mut Ui)) {
     let t = tok();
-    let title = crate::i18n::t(title);
-    ui.add_space(9.0);
-    let (font, _) = legible(title, reg(C_FONT), t.text);
-    let tsz = crate::shaped::measure(ui.painter(), title, &font, None);
-    let resp = egui::Frame::new()
-        .stroke(Stroke::new(1.0, t.border))
-        .corner_radius(2.0)
-        .inner_margin(egui::Margin { left: 10, right: 10, top: 12, bottom: 8 })
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
-            body(ui);
-        });
-    let r = resp.response.rect;
+    let title = crate::i18n::t(title).trim_end_matches(':').trim_end_matches('…').trim().to_string();
+    ui.add_space(6.0);
     if !title.is_empty() {
+        let (font, col) = legible(&title, crate::fonts::semi(11.0), t.text2);
+        let tsz = crate::shaped::measure(ui.painter(), &title, &font, None);
         let extra = if check.is_some() { 19.0 } else { 0.0 };
-        let lab = Rect::from_min_size(egui::pos2(r.min.x + 7.0, r.min.y - tsz.y / 2.0), Vec2::new(tsz.x + 6.0 + extra, tsz.y));
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(tsz.x + extra + 4.0, tsz.y.max(15.0) + 2.0), if check.is_some() { Sense::click() } else { Sense::hover() });
         let p = ui.painter();
-        p.rect_filled(lab, 0.0, t.bg);
         if let Some(on) = check {
-            let bx = Rect::from_min_size(egui::pos2(lab.min.x + 3.0, lab.center().y - 6.5), Vec2::splat(13.0));
+            let bx = Rect::from_min_size(egui::pos2(rect.min.x + 1.0, rect.center().y - 6.5), Vec2::splat(13.0));
             p.rect(bx, 2.0, if *on { t.accent } else { c_field() }, Stroke::new(1.0, if *on { t.accent } else { t.btn_bd }), StrokeKind::Inside);
             if *on {
                 crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 1.8);
             }
-            if ui.interact(lab, ui.id().with(("c_group_cb", title)), Sense::click()).clicked() {
+            if resp.clicked() {
                 *on = !*on;
             }
         }
-        crate::shaped::paint(ui.painter(), egui::pos2(lab.min.x + 3.0 + extra, lab.min.y), title, &font, t.text, None);
+        crate::shaped::paint(ui.painter(), egui::pos2(rect.min.x + extra, rect.center().y - tsz.y / 2.0), &title, &font, col, None);
     }
-    ui.add_space(2.0);
+    ui.vertical(|ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+        body(ui);
+    });
 }
 
 /// A list view: column titles (name, share of the width; none = no title
@@ -2606,7 +2647,7 @@ fn c_list(ui: &mut Ui, id: &str, cols: &[(&str, f32)], rows: &[Vec<String>], sel
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
     let p = ui.painter().clone();
-    p.rect(rect, 0.0, c_field(), Stroke::new(1.0, t.border), StrokeKind::Inside);
+    p.rect(rect, 4.0, c_field(), Stroke::new(1.0, t.border), StrokeKind::Inside);
     let head_h = if cols.is_empty() { 0.0 } else { 20.0 };
     let inner = rect.shrink(1.0);
     let xs: Vec<f32> = {

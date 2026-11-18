@@ -1936,6 +1936,11 @@ fn petal_category_tint(cat: &str) -> egui::Color32 {
 /// Ledger gives every toolbar action a colour of its own.
 fn ledger_icon_color(icon: &str) -> egui::Color32 {
     let dark = pl().txt.r() > 128;
+    // Classic: every tool in the text's ink, white on dark, black on light.
+    if crate::skins::active() == "classic" {
+        let _ = (icon, dark);
+        return pl().txt;
+    }
     let c = match icon {
         MI_ADD | MI_PLAY_CIRCLE => 0x2E9E44,
         MI_PAUSE_CIRCLE => 0xD98200,
@@ -2174,8 +2179,7 @@ fn tool_button(
             // (black on light, white on dark); only Add download is blue.
             pl().txt
         } else if look == "classic" {
-            // Classic: every action its own colour, as classic download
-            // managers paint their toolbars.
+            // Classic: every action in the text's ink.
             ledger_icon_color(icon)
         } else {
             // Ledger: the text's ink (black on light, white on dark).
@@ -6298,10 +6302,16 @@ impl CraftApp {
                                 ToolId::AddTorrent => "Add a torrent: a magnet link on the clipboard, or pick .torrent files",
                                 _ => "",
                             };
+                            // A link waiting on the clipboard: Add URL breathes
+                            // in a tint of the accent (bright, then normal), no
+                            // border. Painted under the glyph.
+                            let glow = (*id == ToolId::AddUrl && self.clipboard_url.is_some()).then(|| ui.painter().add(egui::Shape::Noop));
                             let r = tool_button(ui, &self.man, icon, label, *enabled, tip);
-                            // A link waiting on the clipboard: Add URL glows.
-                            if *id == ToolId::AddUrl && self.clipboard_url.is_some() {
-                                ui.painter().rect_stroke(r.shrink(1.0), 8.0, egui::Stroke::new(1.5_f32, pl().acc), egui::StrokeKind::Inside);
+                            if let Some(slot) = glow {
+                                let now = ui.input(|i| i.time);
+                                let pulse = 0.5 + 0.5 * ((now as f32) * 2.4).sin();
+                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(70));
+                                ui.painter().set(slot, egui::Shape::rect_filled(r, 10.0, wash(pl().acc, (26.0 + 46.0 * pulse) as u8)));
                             }
                             used += r.width() + 2.0;
                             self.hits.push((HitKind::Tool(*id), r));
@@ -6433,32 +6443,48 @@ impl CraftApp {
             });
     }
 
-    /// Classic's left pane: the Categories tree of a classic download
-    /// manager. "All Downloads" holds the file-type folders; Unfinished,
-    /// Finished and Queues follow. Folder glyphs, dotted tree lines, the
-    /// open one in the list view's selection blue.
+    /// Classic's left pane, laid out as Ledger's: All, then a CATEGORIES and
+    /// a STATUS section (each folds away from its header), and the day's
+    /// figures pinned at the foot. Classic keeps its own filled glyphs, in
+    /// the text's ink, on a white rounded card.
+    #[allow(clippy::too_many_arguments)]
     fn classic_sidebar(
         &mut self,
         ctx: &egui::Context,
         n_all: usize,
-        n_incomplete: usize,
+        n_active: usize,
+        n_queued: usize,
+        n_paused: usize,
         n_done: usize,
+        n_failed: usize,
+        n_incomplete: usize,
         cat_n: &std::collections::HashMap<&str, usize>,
     ) {
         let t = |s: &str| crate::i18n::t(s).to_string();
         let cur = self.filter.clone();
-        let rgb = |c: u32| egui::Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8);
-        let folder = rgb(0xE0A82E);
-        // (key, label, icon, colour): every folder its own picture, as a
-        // classic download manager's tree has them.
-        let cats: [(&str, String, &str, egui::Color32); 6] = [
-            ("Compressed", t("Compressed"), "\u{e149}", rgb(0xB7791F)), // archive
-            ("Document", t("Documents"), "\u{e873}", rgb(0x2B6CB0)),   // description
-            ("Music", t("Music"), "\u{e405}", rgb(0x6B46C1)),          // music_note
-            ("Apps", t("Programs"), "\u{e069}", rgb(0x2F855A)),        // web_asset
-            ("Video", t("Video"), "\u{e02c}", rgb(0x2C7A7B)),          // movie
-            ("Image", t("Pictures"), "\u{e3f4}", rgb(0xC05621)),       // image
+        // Glyphs in the text's ink: white on dark, black on light.
+        let blue = pl().txt;
+        // (key, label, glyph): Classic's own pictures.
+        let cats: [(&str, String, &str); 6] = [
+            ("Image", t("Pictures"), "\u{e3f4}"),     // image
+            ("Video", t("Videos"), "\u{e02c}"),       // movie
+            ("Music", t("Music"), "\u{e405}"),        // music_note
+            ("Document", t("Documents"), "\u{e873}"), // description
+            ("Compressed", t("Compressed"), "\u{e149}"), // archive
+            ("Apps", t("Apps"), "\u{e069}"),          // web_asset
         ];
+        let statuses: [(&str, String, &str, usize); 6] = [
+            ("Downloading", t("Downloading"), "\u{f090}", n_active), // download
+            ("Queued", t("Queued"), "\u{e03c}", n_queued),           // queue
+            ("Paused", t("Paused"), "\u{e035}", n_paused),           // pause_circle_filled
+            ("Completed", t("Finished"), "\u{e86c}", n_done),        // check_circle
+            ("Failed", t("Failed"), "\u{e000}", n_failed),           // error
+            ("Unfinished", t("Unfinished"), "\u{e8b5}", n_incomplete), // schedule
+        ];
+        let foot = {
+            let s = crate::i18n::t("{active} active · {total} total").replace("{active}", &n_active.to_string()).replace("{total}", &n_all.to_string());
+            if self.stats_line.is_empty() { s } else { format!("{s} · {}", self.stats_line) }
+        };
         egui::SidePanel::left("classic_side")
             .resizable(false)
             .exact_width(196.0)
@@ -6469,98 +6495,62 @@ impl CraftApp {
             .show(ctx, |ui| {
                 let pane = ui.max_rect();
                 let p = ui.painter().clone();
-                // The pane: one white rounded card, its title on the same white
-                // with a hairline under it.
                 p.rect(pane, 10.0, pl().central_bg, egui::Stroke::new(1.0_f32, pl().card_bd), egui::StrokeKind::Inside);
-                let head = egui::Rect::from_min_size(pane.min, egui::vec2(pane.width(), 30.0));
-                p.hline((head.min.x + 1.0)..=(head.max.x - 1.0), head.max.y, egui::Stroke::new(1.0_f32, pl().card_bd));
-                p.stext(egui::pos2(head.min.x + 12.0, head.center().y), egui::Align2::LEFT_CENTER, t("Categories"), egui::FontId::proportional(12.5), pl().txt);
-                // The rows share the pane's height: All Downloads open and the
-                // rest closed (the usual state) fill it top to bottom.
-                let open = self.classic_open;
-                let shown_rows = 1 + 2 + 1 + open.iter().filter(|o| **o).count() * 6;
-                let room = pane.max.y - head.max.y - 12.0;
-                let row_h = (room / shown_rows as f32).clamp(21.0, 32.0);
-                let mut y = head.max.y + 6.0;
-                let x0 = pane.min.x + 8.0;
-                let dots = egui::Stroke::new(1.0_f32, pl().card_bd);
-                // `arrow`: Some((open, toggle)) on a branch of the tree.
-                let mut row = |s: &mut Self, depth: usize, key: &str, label: &str, n: Option<usize>, last: bool, icon: &str, tint: egui::Color32, arrow: Option<(bool, u8)>| {
-                    // Children line up under their folder's icon (no indent).
-                    let indent = 0.0_f32 * depth as f32;
-                    let r = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(pane.max.x - 4.0 - x0, row_h));
+                // Footer: a hairline and the figures.
+                const FOOT_H: f32 = 26.0;
+                let fr = egui::Rect::from_min_max(egui::pos2(pane.min.x + 8.0, pane.max.y - FOOT_H), egui::pos2(pane.max.x - 8.0, pane.max.y));
+                p.hline(fr.x_range(), fr.min.y, egui::Stroke::new(1.0_f32, pl().card_bd));
+                let ft = truncate_to_width(&p, &foot, egui::FontId::proportional(10.0), pl().dim, fr.width());
+                p.stext(egui::pos2(fr.min.x + 2.0, fr.center().y + 1.0), egui::Align2::LEFT_CENTER, ft, egui::FontId::proportional(10.0), pl().dim);
+                // The rows share the room above the footer.
+                const HEAD_H: f32 = 22.0;
+                let (cats_open, status_open) = (self.cats_open, self.status_open);
+                let n_rows = 1 + if cats_open { cats.len() } else { 0 } + if status_open { statuses.len() } else { 0 };
+                let room = fr.min.y - pane.min.y - 12.0 - HEAD_H * 2.0 - 8.0;
+                let row_h = (room / n_rows as f32).clamp(22.0, 30.0);
+                let x0 = pane.min.x + 6.0;
+                let x1 = pane.max.x - 6.0;
+                let mut y = pane.min.y + 6.0;
+                let row = |s: &mut Self, y: &mut f32, key: &str, label: &str, icon: &str, n: usize| {
+                    let r = egui::Rect::from_min_max(egui::pos2(x0, *y), egui::pos2(x1, *y + row_h));
                     let on = cur == key || (key == "Unfinished" && cur == "Incomplete");
-                    // Dotted tree lines for children.
-                    if depth > 0 {
-                        let lx = x0 + 18.0;
-                        let mut yy = r.min.y;
-                        let end = if last { r.center().y } else { r.max.y };
-                        while yy < end {
-                            p.vline(lx, yy..=(yy + 1.0).min(end), dots);
-                            yy += 2.0;
-                        }
-                        let mut xx = lx;
-                        while xx < x0 + indent + 2.0 {
-                            p.hline(xx..=(xx + 1.0), r.center().y, dots);
-                            xx += 2.0;
-                        }
-                    }
-                    // No arrows: a branch opens and closes by clicking it.
-                    let _ = arrow;
-                    let toggle: Option<(u8, egui::Rect)> = None;
-                    let gx = x0 + indent + 12.0;
-                    let label_x = gx + 14.0;
-                    // The whole row lights up, as in the other looks' sidebars.
-                    let hl = egui::Rect::from_min_max(egui::pos2(x0 + indent, r.min.y + 1.0), egui::pos2(r.max.x - 2.0, r.max.y - 1.0));
+                    let hl = r.shrink2(egui::vec2(0.0, 1.0));
                     if on {
                         p.rect_filled(hl, 6.0, pl().sel_bg);
                     } else if s.man.hover(&r) {
                         p.rect_filled(hl, 6.0, pl().hover_bg);
                     }
-                    p.stext(egui::pos2(gx, r.center().y), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), tint);
-                    p.stext(egui::pos2(label_x, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(12.0), pl().txt);
-                    if let Some(n) = n {
-                        p.stext(egui::pos2(r.max.x - 10.0, r.center().y), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(11.0), pl().dim);
-                    }
+                    p.stext(egui::pos2(r.min.x + 15.0, r.center().y), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), blue);
+                    let lw = r.width() - 30.0 - 34.0;
+                    let lt = truncate_to_width(&p, label, egui::FontId::proportional(12.0), pl().txt, lw);
+                    p.stext(egui::pos2(r.min.x + 31.0, r.center().y), egui::Align2::LEFT_CENTER, lt, egui::FontId::proportional(12.0), pl().txt);
+                    p.stext(egui::pos2(r.max.x - 8.0, r.center().y), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(11.0), if on { blue } else { pl().dim });
                     s.hits.push((HitKind::SideRow(key.to_string()), r));
-                    // The arrow over the row (later hits are on top).
-                    if let Some((which, ar)) = toggle {
-                        s.hits.push((HitKind::SideToggle(10 + which), ar));
-                    }
-                    y += row_h;
+                    *y += row_h;
                 };
-                // Counts of each category among unfinished / finished rows.
-                let mut by_status: [std::collections::HashMap<&str, usize>; 2] = Default::default();
-                for d in self.downloads.iter().filter(|d| !d.prefetch) {
-                    let i = if matches!(d.status, Status::Completed) { 1 } else { 0 };
-                    *by_status[i].entry(d.category()).or_default() += 1;
-                }
-                let last = cats.len() - 1;
-                row(self, 0, "All", &t("All Downloads"), Some(n_all), false, if open[0] { MI_FOLDER_OPEN } else { "\u{e2c7}" }, folder, Some((open[0], 0)));
-                if open[0] {
-                    for (i, (key, label, icon, tint)) in cats.iter().enumerate() {
-                        let n = cat_n.get(key).copied().unwrap_or(0);
-                        row(self, 1, key, label, Some(n), i == last, icon, *tint, None);
+                let head = |s: &mut Self, y: &mut f32, title: &str, open: bool, which: u8| {
+                    let r = egui::Rect::from_min_max(egui::pos2(x0, *y), egui::pos2(x1, *y + HEAD_H));
+                    let c = if s.man.hover(&r) { pl().txt } else { pl().dim };
+                    p.stext(egui::pos2(r.min.x + 9.0, r.center().y), egui::Align2::CENTER_CENTER, if open { MI_EXPAND_MORE } else { MI_CHEVRON_RIGHT }, crate::fonts::icon(13.0), c);
+                    p.stext(egui::pos2(r.min.x + 20.0, r.center().y), egui::Align2::LEFT_CENTER, crate::i18n::t(title).to_uppercase(), egui::FontId::proportional(9.5), c);
+                    s.hits.push((HitKind::SideToggle(which), r));
+                    *y += HEAD_H;
+                };
+                row(self, &mut y, "All", &t("All"), "\u{e2c7}", n_all);
+                y += 4.0;
+                head(self, &mut y, "Categories", cats_open, 0);
+                if cats_open {
+                    for (key, label, icon) in &cats {
+                        row(self, &mut y, key, label, icon, cat_n.get(key).copied().unwrap_or(0));
                     }
                 }
-                // download / check_circle, each opening into the categories.
-                for (b, (key, label, icon, tint, n)) in [
-                    ("Unfinished", t("Unfinished"), "\u{f090}", rgb(0xC77C02), n_incomplete),
-                    ("Completed", t("Finished"), "\u{e86c}", rgb(0x2F855A), n_done),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    row(self, 0, key, &label, Some(n), false, icon, tint, Some((open[b + 1], (b + 1) as u8)));
-                    if open[b + 1] {
-                        for (i, (cat, clabel, cicon, ctint)) in cats.iter().enumerate() {
-                            let cn = by_status[b].get(cat).copied().unwrap_or(0);
-                            row(self, 1, &format!("{key}/{cat}"), clabel, Some(cn), i == last, cicon, *ctint, None);
-                        }
+                y += 4.0;
+                head(self, &mut y, "Status", status_open, 1);
+                if status_open {
+                    for (key, label, icon, n) in &statuses {
+                        row(self, &mut y, key, label, icon, *n);
                     }
                 }
-                // queue
-                row(self, 0, "Queued", &t("Queues"), None, false, "\u{e03c}", folder, None);
             });
     }
 
@@ -9002,7 +8992,7 @@ impl eframe::App for CraftApp {
             self.petal_toolbar(ctx);
             self.petal_sidebar(ctx, n_all, n_active, n_incomplete, n_done, n_failed, &cat_n);
         } else if crate::skins::active() == "classic" {
-            self.classic_sidebar(ctx, n_all, n_incomplete, n_done, &cat_n);
+            self.classic_sidebar(ctx, n_all, n_active, n_queued, n_paused, n_done, n_failed, n_incomplete, &cat_n);
         } else {
         egui::SidePanel::left("cats")
             .resizable(false)
@@ -13071,23 +13061,6 @@ impl CraftApp {
                         if key == "Queues" {
                             self.show_queues = true;
                         } else {
-                            // Classic's tree has no arrows: a branch opens when
-                            // picked (closing the others), and closes when
-                            // clicked again while it is the one shown.
-                            if crate::skins::active() == "classic" {
-                                let branch = match key.as_str() {
-                                    "All" => Some(0),
-                                    "Unfinished" | "Incomplete" => Some(1),
-                                    "Completed" => Some(2),
-                                    _ => None,
-                                };
-                                if let Some(b) = branch {
-                                    let was = self.filter == key || (b == 1 && self.filter == "Incomplete");
-                                    let open = if was { !self.classic_open[b] } else { true };
-                                    self.classic_open = [false; 3];
-                                    self.classic_open[b] = open;
-                                }
-                            }
                             self.filter = key.clone();
                         }
                     }
