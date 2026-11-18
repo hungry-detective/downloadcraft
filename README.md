@@ -112,9 +112,9 @@ Three layouts, each in dark and light (GitHub shows the one that matches your th
 </table>
 
 <p align="center">
-  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/extension-small-button-dark.png"><img src="docs/images/extension-small-button-light.png" alt="The small round download button on a video player, and the extension's Settings tab with Small download button switched on" width="100%"></picture><br>
-  <b>On every player</b>: a download button in the corner. Switch on <b>Small download button</b> in the
-  extension's Settings and it is just this round icon.
+  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/extension-buttons-dark.png"><img src="docs/images/extension-buttons-light.png" alt="The Download button and the small round download button on a video player, and the extension's Settings tab" width="100%"></picture><br>
+  <b>On every player</b>: a <b>Download</b> button by the video. Switch on <b>Small download button</b> in the
+  extension's Settings and it becomes a small round icon in the corner.
 </p>
 
 ---
