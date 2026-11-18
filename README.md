@@ -31,9 +31,29 @@ yt-dlp, and an extension that works with the app — or on its own.
 
 <br><br>
 
-<img src="docs/screenshot-main-window.png" alt="Download Craft main window with active, paused, finished and failed downloads" width="92%">
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/showcase-dark.png"><img src="docs/images/showcase-light.png" alt="Download Craft main window with a progress window and the Download File Info window" width="96%"></picture>
 
 </div>
+
+## 💡 Why switch to Download Craft
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/why-dark.svg"><img src="docs/images/why-light.svg" alt="Faster than IDM in all 4 speed tests, free forever, torrents built in, 10 languages" width="100%"></picture></p>
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/race-dark.svg"><img src="docs/images/race-light.svg" alt="Speed against IDM 6.43: 2.2 times faster on a 1 GB file, 3.2 times with connections cut, 1.2 times on a capped server, 14.8 times on a 1 MB file" width="100%"></picture><br>
+<sub>Same PC and local test server, 8 connections each. <a href="#speed-measured">How we measured</a></sub></p>
+
+|  | Download Craft | IDM 6.43 |
+|---|---|---|
+| Price | **Free forever** (MIT licence) | Paid licence after a trial |
+| Torrents | **Built in**: magnet links and .torrent files, sharing up to a ratio you set | Not included |
+| YouTube and 1,000+ sites | **Built in**, with its own yt-dlp kept up to date | Needs the browser extension |
+| HLS / DASH streams, live recording | **Yes**, with size and time left | Through its browser extension |
+| Browser extension works without the app | **Yes** | No |
+| Languages | **10**, switched live | Many |
+| Windows, macOS and Linux | **All three** | Windows only |
+| Source code | **Open** | Closed |
+
+---
 
 ## 🎬 See it in 90 seconds
 
@@ -58,84 +78,25 @@ Full notes: [Release 0.10.0](https://github.com/hungry-detective/downloadcraft/r
 
 ---
 
-## 💡 Why switch to Download Craft
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/why-dark.svg">
-    <img src="docs/images/why-light.svg" alt="Faster than IDM in all 4 speed tests, free forever, torrents built in, 10 languages" width="100%">
-  </picture>
-</p>
-
-|  | Download Craft | IDM 6.43 |
-|---|---|---|
-| Price | **Free forever** (MIT licence) | Paid licence after a trial |
-| Torrents | **Built in**: magnet links and .torrent files, sharing up to a ratio you set | Not included |
-| YouTube and 1,000+ sites | **Built in**, with its own yt-dlp kept up to date | Needs the browser extension |
-| HLS / DASH streams, live recording | **Yes**, with size and time left | Through its browser extension |
-| Browser extension works without the app | **Yes** | No |
-| Languages | **10**, switched live | Many |
-| Windows, macOS and Linux | **All three** | Windows only |
-| Source code | **Open** | Closed |
-
-### Speed, measured
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-dark.svg">
-    <img src="docs/images/bench-light.svg" alt="Time to finish: Download Craft, IDM 6.43 and a one-connection download in four tests" width="100%">
-  </picture>
-</p>
-
-Download Craft, IDM 6.43 build 18 and a one-connection download (what a browser does), on the
-same PC and the same local test server, with the same files. Both download managers used 8
-connections. Every program is timed the same way: from the first request it sends to the server
-until the whole file is in place and the program has let go of it. Each test ran three times and
-the chart shows the middle run. Every file up to 300 MB was checked byte for byte against the
-original, and the 1 GB file by its size.
-
-| Test | Download Craft | IDM 6.43 | |
-|---|---|---|---|
-| 1 GB file | **2.9 s** | 6.5 s | **2.2× faster** |
-| 300 MB, each connection capped at 4 MB/s | **9.4 s** | 10.8 s | **1.2× faster** |
-| 300 MB, connections cut every 20 MB | **0.89 s** | 2.8 s | **3.2× faster** |
-| 1 MB file | **18 ms** | 266 ms | **15× faster** |
-
-IDM was handed each download from Chrome through its extension, and our script pressed its
-Start Download button the moment its window opened, so IDM's times include that window (a
-person would take longer). Download Craft ran from its command line (`download_craft get`).
-
-A local server shows what each program does, not your internet speed. On a real connection the
-gain depends on the server. The test scripts and these results are in [`tools/bench`](tools/bench),
-so you can run it yourself.
-
-### Built our own way
-
-Download Craft is not a copy of Internet Download Manager and was not reverse-engineered from it.
-We used IDM, liked how it works, and built the same ideas again from scratch, our own
-way, in Rust. It contains no IDM code.
-
----
-
 ## 📸 Screenshots
+
+Three layouts, each in dark and light (GitHub shows the one that matches your theme). Pick one in
+**Theme → Layout**.
 
 <table>
   <tr>
-    <td width="55%" valign="top">
-      <img src="docs/screenshot-download-file-info.png" alt="Download File Info dialog">
-      <p><b>Capture a link</b> — the app checks its real name and size before it starts.</p>
-    </td>
-    <td width="45%" valign="top">
-      <img src="docs/screenshot-progress-window.png" alt="Progress window with eight connections">
-      <p><b>Watch it fly</b> — live speed, time left and every parallel connection.</p>
-    </td>
+    <td width="50%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screens/main-craft-dark.png"><img src="docs/images/screens/main-craft-light.png" alt="Craft layout"></picture><p align="center"><b>Craft</b>: the app's own layout</p></td>
+    <td width="50%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screens/main-classic-dark.png"><img src="docs/images/screens/main-classic-light.png" alt="Classic layout"></picture><p align="center"><b>Classic</b>: a classic download manager's toolbar and sidebar</p></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screens/main-petal-dark.png"><img src="docs/images/screens/main-petal-light.png" alt="Petal layout"></picture><p align="center"><b>Petal</b>: summary tiles and downloads as cards</p></td>
+    <td width="50%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screens/fileinfo-craft-dark.png"><img src="docs/images/screens/fileinfo-craft-light.png" alt="Download File Info window"></picture><p align="center"><b>Download File Info</b>: the real name and size before it starts</p></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screens/progress-craft-dark.png"><img src="docs/images/screens/progress-craft-light.png" alt="Progress window with eight connections"></picture><p align="center"><b>Progress</b>: speed, time left and every connection</p></td>
+    <td width="50%" valign="top"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/screens/settings-classic-dark.png"><img src="docs/images/screens/settings-classic-light.png" alt="Classic Options window"></picture><p align="center"><b>Options</b>: the Classic layout's compact settings</p></td>
   </tr>
 </table>
-
-<p align="center">
-  <img src="docs/screenshot-download-all-links.png" alt="Download all links window" width="92%"><br>
-  <b>Download all links</b> — every file on a page with its type and size; check, filter, download.
-</p>
 
 <table>
   <tr>
@@ -155,18 +116,10 @@ way, in Rust. It contains no IDM code.
   <b>On every player</b> — a small <i>Download this video</i> bar, see-through until you need it.
 </p>
 
-<table>
-  <tr>
-    <td width="58%" valign="top">
-      <img src="docs/screenshot-settings.png" alt="Settings window, Plugins page">
-      <p><b>Settings</b> — yt-dlp, FFmpeg and the JavaScript runtime install and update themselves.</p>
-    </td>
-    <td width="42%" valign="top">
-      <img src="docs/screenshot-download-complete.png" alt="Download complete dialog">
-      <p><b>Done</b> — open the file, open it with another app, or show its folder.</p>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/screenshot-video-bar.jpg" alt="Download this video bar on a playing video" width="92%"><br>
+  <b>On every player</b>: a small <i>Download this video</i> bar, see-through until you need it.
+</p>
 
 ---
 
@@ -239,6 +192,47 @@ let done = downloadcraft_engine::Downloader::new(reqwest::Client::new())
     .download(Job::new(url, "file.iso"), progress, control)
     .await?;
 ```
+
+---
+
+<a id="speed-measured"></a>
+
+## ⏱️ Speed, measured
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-dark.svg">
+    <img src="docs/images/bench-light.svg" alt="Time to finish: Download Craft, IDM 6.43 and a one-connection download in four tests" width="100%">
+  </picture>
+</p>
+
+Download Craft, IDM 6.43 build 18 and a one-connection download (what a browser does), on the
+same PC and the same local test server, with the same files. Both download managers used 8
+connections. Every program is timed the same way: from the first request it sends to the server
+until the whole file is in place and the program has let go of it. Each test ran three times and
+the chart shows the middle run. Every file up to 300 MB was checked byte for byte against the
+original, and the 1 GB file by its size.
+
+| Test | Download Craft | IDM 6.43 | |
+|---|---|---|---|
+| 1 GB file | **2.9 s** | 6.5 s | **2.2× faster** |
+| 300 MB, each connection capped at 4 MB/s | **9.4 s** | 10.8 s | **1.2× faster** |
+| 300 MB, connections cut every 20 MB | **0.89 s** | 2.8 s | **3.2× faster** |
+| 1 MB file | **18 ms** | 266 ms | **15× faster** |
+
+IDM was handed each download from Chrome through its extension, and our script pressed its
+Start Download button the moment its window opened, so IDM's times include that window (a
+person would take longer). Download Craft ran from its command line (`download_craft get`).
+
+A local server shows what each program does, not your internet speed. On a real connection the
+gain depends on the server. The test scripts and these results are in [`tools/bench`](tools/bench),
+so you can run it yourself.
+
+## 🛠️ Built our own way
+
+Download Craft is not a copy of Internet Download Manager and was not reverse-engineered from it.
+We used IDM, liked how it works, and built the same ideas again from scratch, our own
+way, in Rust. It contains no IDM code.
 
 ---
 

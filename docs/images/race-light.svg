@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="176" viewBox="0 0 760 176" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+<rect x="4.0" y="4" width="179.0" height="168" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="20.0" y="30" font-size="13" fill="#59636e">1 GB file</text>
+<text x="20.0" y="64" font-size="28" font-weight="700" fill="#16a34a">2.2×</text>
+<text x="20.0" y="84" font-size="12" fill="#59636e">faster than IDM</text>
+<rect x="20.0" y="104" width="66.3" height="8" rx="4" fill="#16a34a"/>
+<text x="20.0" y="126" font-size="11.5" fill="#1f2328">Download Craft</text>
+<text x="167.0" y="126" font-size="11.5" text-anchor="end" fill="#1f2328">2.9 s</text>
+<rect x="20.0" y="134" width="147.0" height="8" rx="4" fill="#94a3b8"/>
+<text x="20.0" y="156" font-size="11.5" fill="#1f2328">IDM 6.43</text>
+<text x="167.0" y="156" font-size="11.5" text-anchor="end" fill="#1f2328">6.5 s</text>
+<rect x="195.0" y="4" width="179.0" height="168" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="211.0" y="30" font-size="13" fill="#59636e">Connections cut</text>
+<text x="211.0" y="64" font-size="28" font-weight="700" fill="#16a34a">3.2×</text>
+<text x="211.0" y="84" font-size="12" fill="#59636e">faster than IDM</text>
+<rect x="211.0" y="104" width="45.7" height="8" rx="4" fill="#16a34a"/>
+<text x="211.0" y="126" font-size="11.5" fill="#1f2328">Download Craft</text>
+<text x="358.0" y="126" font-size="11.5" text-anchor="end" fill="#1f2328">885 ms</text>
+<rect x="211.0" y="134" width="147.0" height="8" rx="4" fill="#94a3b8"/>
+<text x="211.0" y="156" font-size="11.5" fill="#1f2328">IDM 6.43</text>
+<text x="358.0" y="156" font-size="11.5" text-anchor="end" fill="#1f2328">2.8 s</text>
+<rect x="386.0" y="4" width="179.0" height="168" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="402.0" y="30" font-size="13" fill="#59636e">Capped server</text>
+<text x="402.0" y="64" font-size="28" font-weight="700" fill="#16a34a">1.2×</text>
+<text x="402.0" y="84" font-size="12" fill="#59636e">faster than IDM</text>
+<rect x="402.0" y="104" width="127.7" height="8" rx="4" fill="#16a34a"/>
+<text x="402.0" y="126" font-size="11.5" fill="#1f2328">Download Craft</text>
+<text x="549.0" y="126" font-size="11.5" text-anchor="end" fill="#1f2328">9.4 s</text>
+<rect x="402.0" y="134" width="147.0" height="8" rx="4" fill="#94a3b8"/>
+<text x="402.0" y="156" font-size="11.5" fill="#1f2328">IDM 6.43</text>
+<text x="549.0" y="156" font-size="11.5" text-anchor="end" fill="#1f2328">10.8 s</text>
+<rect x="577.0" y="4" width="179.0" height="168" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="593.0" y="30" font-size="13" fill="#59636e">1 MB file</text>
+<text x="593.0" y="64" font-size="28" font-weight="700" fill="#16a34a">14.8×</text>
+<text x="593.0" y="84" font-size="12" fill="#59636e">faster than IDM</text>
+<rect x="593.0" y="104" width="9.9" height="8" rx="4" fill="#16a34a"/>
+<text x="593.0" y="126" font-size="11.5" fill="#1f2328">Download Craft</text>
+<text x="740.0" y="126" font-size="11.5" text-anchor="end" fill="#1f2328">18 ms</text>
+<rect x="593.0" y="134" width="147.0" height="8" rx="4" fill="#94a3b8"/>
+<text x="593.0" y="156" font-size="11.5" fill="#1f2328">IDM 6.43</text>
+<text x="740.0" y="156" font-size="11.5" text-anchor="end" fill="#1f2328">266 ms</text>
+</svg>
