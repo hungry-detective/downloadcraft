@@ -1,9 +1,20 @@
 [package]
 name = "download_craft"
-version = "0.9.18"
+version = "0.10.0"
 edition = "2021"
 description = "Download Craft — a lightweight, offline-first download manager (egui GUI + CLI)"
 license = "MIT"
+
+# Text shaping (Bangla and the other Indic scripts) runs every frame: even a
+# debug build compiles these optimised, or a Bangla interface crawls there.
+[profile.dev.package.rustybuzz]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3
+[profile.dev.package.ab_glyph]
+opt-level = 3
+[profile.dev.package.ab_glyph_rasterizer]
+opt-level = 3
 
 [profile.release]
 # Smaller and a little faster: whole-program optimisation, one codegen unit,
@@ -16,6 +27,7 @@ strip = true
 members = [".", "crates/downloadcraft-engine"]
 
 [dependencies]
+tokio-socks = "0.5"
 downloadcraft-engine = { path = "crates/downloadcraft-engine", version = "0.1.0" }
 eframe = "0.32"
 egui = "0.32"
@@ -63,6 +75,7 @@ sevenz-rust2 = { version = "0.24", default-features = false, features = ["aes256
 unrar = "0.5"
 
 [target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.8"
 tray-icon = "0.20"
 # The fallback renderer for PCs whose OpenGL driver cannot open the window
 # (old Intel GPUs on Windows 11): Direct3D 12, or Windows' WARP rasterizer.

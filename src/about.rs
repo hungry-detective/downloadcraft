@@ -9,6 +9,7 @@
 //! the update check. The four looks: up to date, update available,
 //! installing, ready to restart.
 
+use crate::shaped::ShapeText;
 use crate::app::pl;
 use crate::dm::*;
 use crate::fonts::{reg, semi};
@@ -18,8 +19,12 @@ use std::time::{Duration, Instant};
 
 const AW: f32 = 520.0;
 /// Opening height; the window then fits itself to its content.
-const AH: f32 = 560.0;
+const AH: f32 = 470.0;
+/// One helper row (yt-dlp, FFmpeg, Deno).
+const HELPER_ROW: f32 = 32.0;
 const REPO: &str = "https://github.com/hungry-detective/downloadcraft";
+/// Set on an About window started by an older one after an update.
+const RELAUNCH: &str = "DOWNLOAD_CRAFT_ABOUT_RELAUNCH";
 
 /// Keep what the About window shows about the newest release: its tag, page
 /// and the first few headline points of its notes.
@@ -83,6 +88,8 @@ pub(crate) struct UpdState {
     pub(crate) status: String,
     pub(crate) size: u64,
     pub(crate) running: u64,
+    /// The main window's version (empty from an older one).
+    pub(crate) version: String,
 }
 
 #[derive(Default, Clone)]
@@ -105,6 +112,7 @@ pub(crate) fn read_state() -> UpdState {
         status: v.get("status").and_then(|x| x.as_str()).unwrap_or("").into(),
         size: v.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
         running: v.get("running").and_then(|x| x.as_u64()).unwrap_or(0),
+        version: v.get("version").and_then(|x| x.as_str()).unwrap_or("").into(),
     }
 }
 
@@ -152,7 +160,17 @@ fn close_soon(ctx: &egui::Context) {
 }
 
 pub fn run() -> eframe::Result<()> {
-    let Some(_slot) = claim_window("about") else {
+    // Reopened by an older About after an update: that one is still letting
+    // go of the window slot.
+    let relaunched = std::env::var_os(RELAUNCH).is_some();
+    let mut slot = claim_window("about");
+    let mut tries = 0;
+    while slot.is_none() && relaunched && tries < 20 {
+        std::thread::sleep(Duration::from_millis(100));
+        slot = claim_window("about");
+        tries += 1;
+    }
+    let Some(_slot) = slot else {
         return Ok(());
     };
     let (tx, rx) = channel();
@@ -207,6 +225,29 @@ impl eframe::App for AboutApp {
                     self.pending = None;
                 }
             }
+            // The main window now runs another version (it updated and
+            // restarted): this window is the old program and would keep
+            // saying so. The new one takes over.
+            // Only toward a newer version, and only once (a reopened window
+            // that is still behind would otherwise reopen without end).
+            let newer = {
+                let v = |x: &str| x.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+                v(&s.version) > v(crate::model::APP_VERSION)
+            };
+            if newer && std::env::var_os(RELAUNCH).is_none() {
+                if let Ok(exe) = crate::platform::launch_path() {
+                    let mut cmd = std::process::Command::new(exe);
+                    cmd.arg("--about").env(RELAUNCH, "1");
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        cmd.creation_flags(0x0000_0008);
+                    }
+                    if cmd.spawn().is_ok() {
+                        std::process::exit(0);
+                    }
+                }
+            }
             self.state = s;
             self.release = read_release();
         }
@@ -238,13 +279,13 @@ fn button(ui: &egui::Ui, p: &egui::Painter, r: egui::Rect, id: &str, label: &str
     if primary {
         let fill = if hov { t.primary.gamma_multiply(0.85) } else { t.primary };
         p.rect_filled(r, 8.0, fill.gamma_multiply(if enabled { 1.0 } else { 0.5 }));
-        p.text(r.center(), egui::Align2::CENTER_CENTER, label, semi(13.0), egui::Color32::WHITE);
+        p.stext(r.center(), egui::Align2::CENTER_CENTER, label, semi(13.0), egui::Color32::WHITE);
     } else {
         if hov {
             p.rect_filled(r, 8.0, t.surface_lt);
         }
         p.rect_stroke(r, 8.0, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
-        p.text(r.center(), egui::Align2::CENTER_CENTER, label, semi(12.5), t.txt);
+        p.stext(r.center(), egui::Align2::CENTER_CENTER, label, semi(12.5), t.txt);
     }
     enabled && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
@@ -271,13 +312,13 @@ impl AboutApp {
         let ok = DM_OK;
 
         // ---- title bar ----
-        let bar = egui::Rect::from_min_size(o, egui::vec2(full.width(), 50.0));
+        let bar = egui::Rect::from_min_size(o, egui::vec2(full.width(), 44.0));
         let drag = ui.interact(bar.with_max_x(bar.max.x - 50.0), egui::Id::new("about-drag"), egui::Sense::click_and_drag());
         if drag.drag_started() {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
-        p.text(egui::pos2(x0 - 6.0, o.y + 25.0), egui::Align2::LEFT_CENTER, "About", semi(14.0), t.txt);
-        let close = egui::Rect::from_center_size(egui::pos2(full.max.x - 27.0, o.y + 25.0), egui::vec2(30.0, 30.0));
+        p.stext(egui::pos2(x0 - 6.0, o.y + 22.0), egui::Align2::LEFT_CENTER, "About", semi(14.0), t.txt);
+        let close = egui::Rect::from_center_size(egui::pos2(full.max.x - 27.0, o.y + 22.0), egui::vec2(30.0, 30.0));
         let cr = ui.interact(close, egui::Id::new("about-x"), egui::Sense::click()).on_hover_text("Close");
         if cr.hovered() {
             p.rect_filled(close, 7.0, t.surface_lt);
@@ -289,23 +330,24 @@ impl AboutApp {
         p.hline(full.x_range(), bar.max.y, egui::Stroke::new(1.0, t.card_bd));
 
         // ---- the app ----
-        let mut y = bar.max.y + 22.0;
-        let tile = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(60.0, 60.0));
+        // Compact, so the window stays shorter than the main one.
+        let mut y = bar.max.y + 14.0;
+        let tile = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(50.0, 50.0));
         p.rect(tile, 16.0, t.primary.gamma_multiply(0.14), egui::Stroke::new(1.0, t.primary.gamma_multiply(0.45)), egui::StrokeKind::Inside);
         let c = tile.center();
         p.circle_stroke(c, 13.5, egui::Stroke::new(2.4, t.primary));
         p.line_segment([egui::pos2(c.x, c.y - 7.0), egui::pos2(c.x, c.y + 5.0)], egui::Stroke::new(2.4, t.primary));
         p.line_segment([egui::pos2(c.x - 5.0, c.y), egui::pos2(c.x, c.y + 5.5)], egui::Stroke::new(2.4, t.primary));
         p.line_segment([egui::pos2(c.x + 5.0, c.y), egui::pos2(c.x, c.y + 5.5)], egui::Stroke::new(2.4, t.primary));
-        p.text(egui::pos2(tile.max.x + 16.0, y + 20.0), egui::Align2::LEFT_CENTER, "Download Craft", semi(21.0), t.txt);
-        p.text(
-            egui::pos2(tile.max.x + 16.0, y + 44.0),
+        p.stext(egui::pos2(tile.max.x + 16.0, y + 15.0), egui::Align2::LEFT_CENTER, "Download Craft", semi(20.0), t.txt);
+        p.stext(
+            egui::pos2(tile.max.x + 16.0, y + 37.0),
             egui::Align2::LEFT_CENTER,
             format!("Version {} · Free and open source · MIT", crate::model::APP_VERSION),
             reg(12.5),
             t.dim,
         );
-        y = tile.max.y + 20.0;
+        y = tile.max.y + 14.0;
 
         // ---- the update card ----
         let phase = self.pending.map(|(s, _)| s.to_string()).unwrap_or_else(|| self.state.phase.clone());
@@ -333,14 +375,14 @@ impl AboutApp {
         match phase.as_str() {
             "available" => {
                 p.circle_filled(ic, 18.0, t.primary.gamma_multiply(0.22));
-                p.text(ic, egui::Align2::CENTER_CENTER, crate::app::MI_ARROW_DOWN, crate::fonts::icon(20.0), t.primary);
-                p.text(egui::pos2(title_x, card.min.y + 27.0), egui::Align2::LEFT_CENTER, format!("Version {next} is ready"), semi(15.0), t.txt);
+                p.stext(ic, egui::Align2::CENTER_CENTER, crate::app::MI_ARROW_DOWN, crate::fonts::icon(20.0), t.primary);
+                p.stext(egui::pos2(title_x, card.min.y + 27.0), egui::Align2::LEFT_CENTER, format!("Version {next} is ready"), semi(15.0), t.txt);
                 let size = if self.state.size > 0 { format!("{} · ", format_bytes(self.state.size)) } else { String::new() };
-                p.text(egui::pos2(title_x, card.min.y + 47.0), egui::Align2::LEFT_CENTER, format!("{size}your settings and downloads list are kept"), reg(12.0), t.dim);
+                p.stext(egui::pos2(title_x, card.min.y + 47.0), egui::Align2::LEFT_CENTER, format!("{size}your settings and downloads list are kept"), reg(12.0), t.dim);
                 let mut hy = card.min.y + 78.0;
                 for h in &self.release.highlights {
                     let line = crate::app::truncate_to_width(&p, &format!("•  {h}"), reg(12.5), t.txt, card.width() - 36.0);
-                    p.text(egui::pos2(ix, hy), egui::Align2::LEFT_CENTER, line, reg(12.5), t.txt);
+                    p.stext(egui::pos2(ix, hy), egui::Align2::LEFT_CENTER, line, reg(12.5), t.txt);
                     hy += 20.0;
                 }
                 let by = card.max.y - 50.0;
@@ -350,7 +392,7 @@ impl AboutApp {
                 if !self.release.url.is_empty() {
                     let lr = egui::Rect::from_min_size(egui::pos2(ix + 140.0, by), egui::vec2(150.0, 36.0));
                     let resp = ui.interact(lr, egui::Id::new("about-notes"), egui::Sense::click());
-                    p.text(egui::pos2(lr.min.x, lr.center().y), egui::Align2::LEFT_CENTER, "Full release notes", reg(12.5), if resp.hovered() { t.txt } else { t.primary });
+                    p.stext(egui::pos2(lr.min.x, lr.center().y), egui::Align2::LEFT_CENTER, "Full release notes", reg(12.5), if resp.hovered() { t.txt } else { t.primary });
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         crate::platform::open_url(&self.release.url);
                     }
@@ -358,9 +400,9 @@ impl AboutApp {
             }
             "installing" => {
                 let frac = percent(&self.state.status);
-                p.text(egui::pos2(ix, card.min.y + 26.0), egui::Align2::LEFT_CENTER, format!("Updating to {next}"), semi(15.0), t.txt);
+                p.stext(egui::pos2(ix, card.min.y + 26.0), egui::Align2::LEFT_CENTER, format!("Updating to {next}"), semi(15.0), t.txt);
                 if let Some(f) = frac {
-                    p.text(egui::pos2(card.max.x - 18.0, card.min.y + 26.0), egui::Align2::RIGHT_CENTER, format!("{}%", (f * 100.0).round()), reg(12.5), t.dim);
+                    p.stext(egui::pos2(card.max.x - 18.0, card.min.y + 26.0), egui::Align2::RIGHT_CENTER, format!("{}%", (f * 100.0).round()), reg(12.5), t.dim);
                 }
                 let track = egui::Rect::from_min_size(egui::pos2(ix, card.min.y + 48.0), egui::vec2(card.width() - 36.0, 8.0));
                 p.rect_filled(track, 4.0, t.bg);
@@ -384,20 +426,20 @@ impl AboutApp {
                     } else {
                         p.circle_stroke(dc, 6.0, egui::Stroke::new(1.5, t.dim.gamma_multiply(0.6)));
                     }
-                    p.text(egui::pos2(ix + 24.0, sy), egui::Align2::LEFT_CENTER, *label, reg(12.5), if *done || k == current { t.txt } else { t.dim });
+                    p.stext(egui::pos2(ix + 24.0, sy), egui::Align2::LEFT_CENTER, *label, reg(12.5), if *done || k == current { t.txt } else { t.dim });
                 }
-                p.text(egui::pos2(ix, card.max.y - 18.0), egui::Align2::LEFT_CENTER, "You can keep downloading meanwhile. If anything goes wrong, nothing is changed.", reg(11.5), t.dim);
+                p.stext(egui::pos2(ix, card.max.y - 18.0), egui::Align2::LEFT_CENTER, "You can keep downloading meanwhile. If anything goes wrong, nothing is changed.", reg(11.5), t.dim);
             }
             "ready" => {
                 p.circle_filled(ic, 18.0, ok.gamma_multiply(0.18));
                 dm_icon(&p, egui::Rect::from_center_size(ic, egui::vec2(16.0, 16.0)), DmIcon::Check, ok, 2.8);
-                p.text(egui::pos2(title_x, card.min.y + 27.0), egui::Align2::LEFT_CENTER, format!("{next} is installed"), semi(15.0), t.txt);
-                p.text(egui::pos2(title_x, card.min.y + 47.0), egui::Align2::LEFT_CENTER, "Restart to start using it.", reg(12.0), t.dim);
+                p.stext(egui::pos2(title_x, card.min.y + 27.0), egui::Align2::LEFT_CENTER, format!("{next} is installed"), semi(15.0), t.txt);
+                p.stext(egui::pos2(title_x, card.min.y + 47.0), egui::Align2::LEFT_CENTER, "Restart to start using it.", reg(12.0), t.dim);
                 let mut by = card.min.y + 70.0;
                 if self.state.running > 0 {
                     let n = self.state.running;
                     let s = format!("{n} download{} still running — they carry on after the restart.", if n == 1 { " is" } else { "s are" });
-                    p.text(egui::pos2(ix, by + 4.0), egui::Align2::LEFT_CENTER, s, reg(12.0), t.txt);
+                    p.stext(egui::pos2(ix, by + 4.0), egui::Align2::LEFT_CENTER, s, reg(12.0), t.txt);
                     by += 26.0;
                 }
                 if button(ui, &p, egui::Rect::from_min_size(egui::pos2(ix, by + 4.0), egui::vec2(124.0, 36.0)), "restart", "Restart now", true, true) {
@@ -412,8 +454,8 @@ impl AboutApp {
             }
             "checking" => {
                 spin(&p, ic);
-                p.text(egui::pos2(title_x, card.min.y + 27.0), egui::Align2::LEFT_CENTER, "Checking for updates…", semi(15.0), t.txt);
-                p.text(egui::pos2(title_x, card.min.y + 47.0), egui::Align2::LEFT_CENTER, "Asking GitHub for the newest release", reg(12.0), t.dim);
+                p.stext(egui::pos2(title_x, card.min.y + 27.0), egui::Align2::LEFT_CENTER, "Checking for updates…", semi(15.0), t.txt);
+                p.stext(egui::pos2(title_x, card.min.y + 47.0), egui::Align2::LEFT_CENTER, "Asking GitHub for the newest release", reg(12.0), t.dim);
                 self.auto_row(ui, &p, card);
             }
             _ => {
@@ -421,7 +463,7 @@ impl AboutApp {
                 let checked = phase == "uptodate";
                 if failed {
                     p.circle_filled(ic, 18.0, t.warning.gamma_multiply(0.18));
-                    p.text(ic, egui::Align2::CENTER_CENTER, "!", semi(16.0), t.warning);
+                    p.stext(ic, egui::Align2::CENTER_CENTER, "!", semi(16.0), t.warning);
                 } else if checked {
                     p.circle_filled(ic, 18.0, ok.gamma_multiply(0.18));
                     dm_icon(&p, egui::Rect::from_center_size(ic, egui::vec2(16.0, 16.0)), DmIcon::Check, ok, 2.8);
@@ -435,9 +477,9 @@ impl AboutApp {
                 } else {
                     ("Updates".to_string(), "Not checked yet this session".to_string())
                 };
-                p.text(egui::pos2(title_x, card.min.y + 27.0), egui::Align2::LEFT_CENTER, title, semi(15.0), t.txt);
+                p.stext(egui::pos2(title_x, card.min.y + 27.0), egui::Align2::LEFT_CENTER, title, semi(15.0), t.txt);
                 let sub = crate::app::truncate_to_width(&p, &sub, reg(12.0), t.dim, card.width() - 48.0 - 150.0);
-                p.text(egui::pos2(title_x, card.min.y + 47.0), egui::Align2::LEFT_CENTER, sub, reg(12.0), if failed { t.warning } else { t.dim });
+                p.stext(egui::pos2(title_x, card.min.y + 47.0), egui::Align2::LEFT_CENTER, sub, reg(12.0), if failed { t.warning } else { t.dim });
                 let label = if checked { "Check again" } else if failed { "Try again" } else { "Check now" };
                 let bw = label_width(&p, label, &semi(12.5)) + 32.0;
                 if button(ui, &p, egui::Rect::from_min_size(egui::pos2(card.max.x - 18.0 - bw, card.min.y + 18.0), egui::vec2(bw, 36.0)), "check", label, false, true) {
@@ -446,28 +488,28 @@ impl AboutApp {
                 self.auto_row(ui, &p, card);
             }
         }
-        y = card.max.y + 22.0;
+        y = card.max.y + 16.0;
 
         // ---- helpers ----
-        p.text(egui::pos2(x0, y), egui::Align2::LEFT_CENTER, "HELPERS", semi(11.0), t.dim);
+        p.stext(egui::pos2(x0, y), egui::Align2::LEFT_CENTER, "HELPERS", semi(11.0), t.dim);
         y += 14.0;
         let rows = if self.helpers.is_empty() {
             vec![("yt-dlp", "Checking…".to_string(), false), ("FFmpeg", "Checking…".to_string(), false), ("Deno", "Checking…".to_string(), false)]
         } else {
             self.helpers.clone()
         };
-        let box_r = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(w, 42.0 * rows.len() as f32));
+        let box_r = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(w, HELPER_ROW * rows.len() as f32));
         p.rect_stroke(box_r, 12.0, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
         for (k, (name, detail, ready)) in rows.iter().enumerate() {
-            let ry = y + 21.0 + k as f32 * 42.0;
+            let ry = y + HELPER_ROW / 2.0 + k as f32 * HELPER_ROW;
             if k > 0 {
-                p.hline(box_r.x_range(), y + k as f32 * 42.0, egui::Stroke::new(1.0, t.card_bd));
+                p.hline(box_r.x_range(), y + k as f32 * HELPER_ROW, egui::Stroke::new(1.0, t.card_bd));
             }
-            p.text(egui::pos2(x0 + 16.0, ry), egui::Align2::LEFT_CENTER, *name, reg(13.0), t.txt);
+            p.stext(egui::pos2(x0 + 16.0, ry), egui::Align2::LEFT_CENTER, *name, reg(13.0), t.txt);
             let (txt, col) = if *ready { (detail.clone(), ok) } else if detail == "Checking…" { (detail.clone(), t.dim) } else { ("Not installed — Help → Get ready".to_string(), DM_YEL) };
-            p.text(egui::pos2(box_r.max.x - 16.0, ry), egui::Align2::RIGHT_CENTER, txt, reg(12.0), col);
+            p.stext(egui::pos2(box_r.max.x - 16.0, ry), egui::Align2::RIGHT_CENTER, txt, reg(12.0), col);
         }
-        y = box_r.max.y + 20.0;
+        y = box_r.max.y + 16.0;
 
         // ---- links ----
         let mut lx = x0;
@@ -480,7 +522,7 @@ impl AboutApp {
             let lw = label_width(&p, label, &reg(12.5));
             let r = egui::Rect::from_min_size(egui::pos2(lx, y - 9.0), egui::vec2(lw, 18.0));
             let resp = ui.interact(r, egui::Id::new(("about-link", label)), egui::Sense::click());
-            p.text(egui::pos2(lx, y), egui::Align2::LEFT_CENTER, label, reg(12.5), if resp.hovered() { t.txt } else { t.primary });
+            p.stext(egui::pos2(lx, y), egui::Align2::LEFT_CENTER, label, reg(12.5), if resp.hovered() { t.txt } else { t.primary });
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 crate::platform::open_url(&url);
             }
@@ -488,7 +530,7 @@ impl AboutApp {
         }
 
         // Fit the window: the links row, then the footer, no empty space.
-        let want = (y - o.y) + 26.0 + 62.0;
+        let want = (y - o.y) + 20.0 + 56.0;
         if (want - self.win_h).abs() > 1.0 {
             self.win_h = want;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(AW, want)));
@@ -497,7 +539,7 @@ impl AboutApp {
         // ---- footer ----
         let fy = full.max.y - 32.0;
         p.hline(full.x_range(), fy - 24.0, egui::Stroke::new(1.0, t.card_bd));
-        p.text(egui::pos2(x0, fy), egui::Align2::LEFT_CENTER, "Made with Rust + egui", reg(11.5), t.dim);
+        p.stext(egui::pos2(x0, fy), egui::Align2::LEFT_CENTER, "Made with Rust + egui", reg(11.5), t.dim);
         if button(ui, &p, egui::Rect::from_min_size(egui::pos2(full.max.x - 26.0 - 96.0, fy - 17.0), egui::vec2(96.0, 34.0)), "close", "Close", true, true) {
             close_soon(&ctx);
         }
@@ -510,8 +552,8 @@ impl AboutApp {
         p.hline(egui::Rangef::new(ix, card.max.x - 18.0), card.min.y + 72.0, egui::Stroke::new(1.0, t.card_bd));
         let row = egui::Rect::from_min_max(egui::pos2(ix, card.min.y + 76.0), egui::pos2(card.max.x - 18.0, card.max.y - 6.0));
         let resp = ui.interact(row, egui::Id::new("about-auto"), egui::Sense::click());
-        p.text(egui::pos2(ix, row.center().y - 8.0), egui::Align2::LEFT_CENTER, "Update automatically", reg(13.0), t.txt);
-        p.text(egui::pos2(ix, row.center().y + 10.0), egui::Align2::LEFT_CENTER, "Installs new versions in the background; restarts when no download is running.", reg(11.0), t.dim);
+        p.stext(egui::pos2(ix, row.center().y - 8.0), egui::Align2::LEFT_CENTER, "Update automatically", reg(13.0), t.txt);
+        p.stext(egui::pos2(ix, row.center().y + 10.0), egui::Align2::LEFT_CENTER, "Installs new versions in the background; restarts when no download is running.", reg(11.0), t.dim);
         let sw = egui::Rect::from_min_size(egui::pos2(row.max.x - 34.0, row.center().y - 9.0), egui::vec2(34.0, 18.0));
         p.rect_filled(sw, 9.0, if self.auto { t.primary } else { t.surface_lt });
         let kx = if self.auto { sw.max.x - 9.0 } else { sw.min.x + 9.0 };

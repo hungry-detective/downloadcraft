@@ -11,6 +11,7 @@
 //! (type icons, two-line names, type pills, sortable and resizable columns,
 //! Shift-click ranges) and a footer (selection, Save to, actions).
 
+use crate::shaped::ShapeText;
 use crate::app::pl;
 use crate::engine::{self, EngineOpts};
 use crate::fonts::{icon, reg, semi};
@@ -233,7 +234,46 @@ enum SortBy {
     From,
 }
 
+/// What the queue picker returned this frame.
+pub(crate) enum QueuePick {
+    Open,
+    Closed,
+    /// The queue picked ("" = Main).
+    Picked(String),
+}
+
+/// A small list of queues by `at` ("Download Later" / "Add to queue" with
+/// Options -> Downloads -> "Show queue selection panel" on).
+pub(crate) fn queue_picker(ctx: &egui::Context, id: &str, at: Pos2, names: &[String]) -> QueuePick {
+    let mut out = QueuePick::Open;
+    let resp = egui::Area::new(egui::Id::new(("queue_pick", id)))
+        .fixed_pos(at)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(170.0);
+                ui.label(egui::RichText::new(crate::i18n::t("Add to which queue?")).small().weak());
+                if ui.selectable_label(false, crate::i18n::t("Main queue")).clicked() {
+                    out = QueuePick::Picked(String::new());
+                }
+                for n in names {
+                    if ui.selectable_label(false, n).clicked() {
+                        out = QueuePick::Picked(n.clone());
+                    }
+                }
+            });
+        });
+    if matches!(out, QueuePick::Open) && ctx.input(|i| i.pointer.any_pressed()) && !resp.response.contains_pointer() {
+        out = QueuePick::Closed;
+    }
+    out
+}
+
 struct LinksApp {
+    /// The queue picker is open at this point.
+    queue_pick: Option<Pos2>,
+    /// The queue the checked links join ("" = Main).
+    target_queue: String,
     /// The native title bar has been themed.
     caption_done: bool,
     page_url: String,
@@ -422,6 +462,7 @@ impl LinksApp {
             }
             item.description = r.text.clone();
             item.total_bytes = r.size;
+            item.queue = self.target_queue.clone();
             match crate::model::append_to_queue(&mut item) {
                 crate::model::AppendResult::Added(id) => added.push(id),
                 crate::model::AppendResult::AlreadyQueued(_) => already += 1,
@@ -468,7 +509,7 @@ impl LinksApp {
         // Page mark.
         let fav = Rect::from_min_size(rect.min + Vec2::new(0.0, 3.0), Vec2::splat(34.0));
         p.rect_filled(fav, 8.0, t.primary.gamma_multiply(0.16));
-        p.text(fav.center(), Align2::CENTER_CENTER, MI_GLOBE, icon(18.0), t.primary);
+        p.stext(fav.center(), Align2::CENTER_CENTER, MI_GLOBE, icon(18.0), t.primary);
         // Stats, right to left.
         let mut right = rect.max.x;
         let stats = [
@@ -482,8 +523,8 @@ impl LinksApp {
             let w = wn + wl + 18.0;
             let r = Rect::from_min_size(Pos2::new(right - w, rect.center().y - 12.0), Vec2::new(w, 24.0));
             p.rect(r, 6.0, t.surface, Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
-            p.text(Pos2::new(r.min.x + 9.0, r.center().y), Align2::LEFT_CENTER, &n, semi(11.5), t.txt);
-            p.text(Pos2::new(r.min.x + 9.0 + wn, r.center().y), Align2::LEFT_CENTER, label, reg(11.5), t.dim);
+            p.stext(Pos2::new(r.min.x + 9.0, r.center().y), Align2::LEFT_CENTER, &n, semi(11.5), t.txt);
+            p.stext(Pos2::new(r.min.x + 9.0 + wn, r.center().y), Align2::LEFT_CENTER, label, reg(11.5), t.dim);
             right = r.min.x - 6.0;
         }
         // Title and address.
@@ -493,7 +534,7 @@ impl LinksApp {
         let title = crate::app::truncate_to_width(p, &title, semi(14.5), t.txt, max_w);
         crate::shaped::draw(p, Pos2::new(x, rect.min.y + 4.0), Align2::LEFT_TOP, &title, semi(14.5), t.txt);
         let url = crate::app::truncate_to_width(p, &self.page_url, reg(11.0), t.dim, max_w);
-        p.text(Pos2::new(x, rect.min.y + 25.0), Align2::LEFT_TOP, url, reg(11.0), t.dim);
+        p.stext(Pos2::new(x, rect.min.y + 25.0), Align2::LEFT_TOP, url, reg(11.0), t.dim);
     }
 
     // ------------------------------------------------------------ toolbar --
@@ -551,7 +592,7 @@ impl LinksApp {
         let r = rect_of(0);
         let focused = ui.memory(|m| m.focused() == Some(egui::Id::new("links-q")));
         p.rect(r, H / 2.0, t.bg, Stroke::new(1.0, if focused { t.primary } else { t.card_bd }), egui::StrokeKind::Inside);
-        p.text(Pos2::new(r.min.x + 16.0, r.center().y), Align2::CENTER_CENTER, crate::app::MI_SEARCH, icon(14.0), t.dim);
+        p.stext(Pos2::new(r.min.x + 16.0, r.center().y), Align2::CENTER_CENTER, crate::app::MI_SEARCH, icon(14.0), t.dim);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(Pos2::new(r.min.x + 28.0, r.min.y + 4.0), Pos2::new(r.max.x - 10.0, r.max.y - 4.0))));
         child.add_sized(
             child.available_size(),
@@ -582,8 +623,8 @@ impl LinksApp {
                 x += 12.0;
             }
             let lw = crate::shaped::width(&p, &label, &reg(11.5));
-            p.text(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, &label, reg(11.5), fg);
-            p.text(Pos2::new(x + lw + 5.0, r.center().y), Align2::LEFT_CENTER, &num, reg(10.5), if on { t.primary } else { t.dim });
+            p.stext(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, &label, reg(11.5), fg);
+            p.stext(Pos2::new(x + lw + 5.0, r.center().y), Align2::LEFT_CENTER, &num, reg(10.5), if on { t.primary } else { t.dim });
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 self.chip = k;
             }
@@ -598,7 +639,7 @@ impl LinksApp {
         if on {
             crate::dm::dm_icon(&p, b.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 2.8);
         }
-        p.text(Pos2::new(r.min.x + 31.0, r.center().y), Align2::LEFT_CENTER, hide_label, reg(11.5), if resp.hovered() { t.txt } else { t.dim });
+        p.stext(Pos2::new(r.min.x + 31.0, r.center().y), Align2::LEFT_CENTER, hide_label, reg(11.5), if resp.hovered() { t.txt } else { t.dim });
         if resp.on_hover_text("Folder listings, site pages and social links").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.hide_pages = !self.hide_pages;
         }
@@ -651,9 +692,9 @@ impl LinksApp {
             };
             let text = format!("{}{arrow}", label.to_uppercase());
             if k == 2 {
-                p.text(Pos2::new(r.max.x - 10.0, r.center().y), Align2::RIGHT_CENTER, text, semi(10.5), fg);
+                p.stext(Pos2::new(r.max.x - 10.0, r.center().y), Align2::RIGHT_CENTER, text, semi(10.5), fg);
             } else {
-                p.text(Pos2::new(r.min.x + 10.0, r.center().y), Align2::LEFT_CENTER, text, semi(10.5), fg);
+                p.stext(Pos2::new(r.min.x + 10.0, r.center().y), Align2::LEFT_CENTER, text, semi(10.5), fg);
             }
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 self.sort = Some((*by, if sorted { !self.sort.map(|(_, a)| a).unwrap_or(true) } else { true }));
@@ -687,7 +728,7 @@ impl LinksApp {
         // ---- rows ----
         let body = Rect::from_min_max(Pos2::new(inner.min.x, hdr.max.y + 1.0), inner.max);
         if shown.is_empty() {
-            p.text(body.center(), Align2::CENTER_CENTER, "Nothing matches — clear the search or pick another type.", reg(12.0), t.dim);
+            p.stext(body.center(), Align2::CENTER_CENTER, "Nothing matches — clear the search or pick another type.", reg(12.0), t.dim);
             ui.allocate_rect(card, Sense::hover());
             return;
         }
@@ -725,7 +766,7 @@ impl LinksApp {
                     match row.kind.line_key() {
                         Some(k) => crate::app::line_icon(p, mark, 17.0, k, mono),
                         None => {
-                            p.text(mark, Align2::CENTER_CENTER, MI_GLOBE, icon(17.0), mono);
+                            p.stext(mark, Align2::CENTER_CENTER, MI_GLOBE, icon(17.0), mono);
                         }
                     }
                     let nx = xs[0] + 38.0;
@@ -741,12 +782,12 @@ impl LinksApp {
                     let pill = Rect::from_min_size(Pos2::new(xs[1] + 10.0, cy - 10.0), Vec2::new(pw.min(widths[1] - 16.0), 20.0));
                     p.rect_filled(pill, 5.0, col.gamma_multiply(0.16));
                     let pt = crate::app::truncate_to_width(p, &pill_txt, semi(10.5), col, pill.width() - 12.0);
-                    p.text(Pos2::new(pill.min.x + 8.0, cy), Align2::LEFT_CENTER, pt, semi(10.5), col);
+                    p.stext(Pos2::new(pill.min.x + 8.0, cy), Align2::LEFT_CENTER, pt, semi(10.5), col);
                     // Size, or a shimmer while it is being checked.
                     let sx = xs[2] + widths[2] - 10.0;
                     match (row.size, row.probe) {
                         (Some(s), _) => {
-                            p.text(Pos2::new(sx, cy), Align2::RIGHT_CENTER, format_bytes(s), reg(12.0), t.txt.gamma_multiply(dim));
+                            p.stext(Pos2::new(sx, cy), Align2::RIGHT_CENTER, format_bytes(s), reg(12.0), t.txt.gamma_multiply(dim));
                         }
                         (None, Probe::Pending) => {
                             let bar = Rect::from_min_size(Pos2::new(sx - 58.0, cy - 5.0), Vec2::new(58.0, 10.0));
@@ -755,7 +796,7 @@ impl LinksApp {
                             ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
                         }
                         _ => {
-                            p.text(Pos2::new(sx, cy), Align2::RIGHT_CENTER, "—", reg(12.0), t.dim);
+                            p.stext(Pos2::new(sx, cy), Align2::RIGHT_CENTER, "—", reg(12.0), t.dim);
                         }
                     }
                     // Download from: host + last folder tag.
@@ -764,7 +805,7 @@ impl LinksApp {
                     let hw = (widths[3] - 20.0).max(20.0);
                     let host_s = crate::app::truncate_to_width(p, &host, reg(12.0), t.dim, hw * 0.65);
                     let host_w = crate::shaped::width(p, &host_s, &reg(12.0));
-                    p.text(Pos2::new(hx, cy), Align2::LEFT_CENTER, &host_s, reg(12.0), t.dim);
+                    p.stext(Pos2::new(hx, cy), Align2::LEFT_CENTER, &host_s, reg(12.0), t.dim);
                     if !folder.is_empty() {
                         let room = hw - host_w - 14.0;
                         if room > 24.0 {
@@ -807,11 +848,11 @@ impl LinksApp {
             let mut x = area.min.x;
             for (s, f, col) in [(a, semi(12.0), t.txt), (b, reg(12.0), t.dim), (c, semi(12.0), t.txt)] {
                 let w = crate::shaped::width(&p, &s, &f);
-                p.text(Pos2::new(x, line_y), Align2::LEFT_CENTER, s, f, col);
+                p.stext(Pos2::new(x, line_y), Align2::LEFT_CENTER, s, f, col);
                 x += w;
             }
         } else {
-            p.text(Pos2::new(area.min.x, line_y), Align2::LEFT_CENTER, "Nothing checked yet — tick the files you want.", reg(12.0), t.dim);
+            p.stext(Pos2::new(area.min.x, line_y), Align2::LEFT_CENTER, "Nothing checked yet — tick the files you want.", reg(12.0), t.dim);
         }
         let right_note = if self.probes_left > 0 {
             format!("Checking sizes · {} left", self.probes_left)
@@ -821,7 +862,7 @@ impl LinksApp {
             String::new()
         };
         if !right_note.is_empty() {
-            p.text(Pos2::new(area.max.x, line_y), Align2::RIGHT_CENTER, right_note, reg(11.0), t.dim);
+            p.stext(Pos2::new(area.max.x, line_y), Align2::RIGHT_CENTER, right_note, reg(11.0), t.dim);
         }
         let bar = Rect::from_min_size(Pos2::new(area.min.x, line_y + 12.0), Vec2::new(area.width(), 3.0));
         p.rect_filled(bar, 1.5, t.surface_lt);
@@ -831,7 +872,7 @@ impl LinksApp {
         }
         // Save to: label, segmented choice, folder field + Browse.
         let row_y = area.max.y - 18.0;
-        p.text(Pos2::new(area.min.x, row_y), Align2::LEFT_CENTER, "Save to", reg(11.5), t.dim);
+        p.stext(Pos2::new(area.min.x, row_y), Align2::LEFT_CENTER, "Save to", reg(11.5), t.dim);
         let seg = Rect::from_min_size(Pos2::new(area.min.x + 50.0, row_y - 15.0), Vec2::new(214.0, 30.0));
         p.rect(seg, 6.0, t.surface, Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
         for (k, (label, val)) in [("Category folders", true), ("One folder", false)].into_iter().enumerate() {
@@ -843,7 +884,7 @@ impl LinksApp {
             } else if resp.hovered() {
                 p.rect_filled(r, 4.0, t.surface_lt);
             }
-            p.text(r.center(), Align2::CENTER_CENTER, label, reg(11.5), if on { Color32::WHITE } else { t.dim });
+            p.stext(r.center(), Align2::CENTER_CENTER, label, reg(11.5), if on { Color32::WHITE } else { t.dim });
             let resp = if val {
                 resp.on_hover_text("Every file into its category folder (Settings → Folders)")
             } else {
@@ -868,7 +909,7 @@ impl LinksApp {
             // What "category folders" means, spelled out.
             let shown = format!("{}\\<type>", self.prefs.save_dir.trim_end_matches(['\\', '/']));
             let s = crate::app::truncate_to_width(&p, &shown, reg(11.0), t.dim, path.width() - 20.0);
-            p.text(Pos2::new(path.min.x + 9.0, path.center().y), Align2::LEFT_CENTER, s, reg(11.0), t.dim.gamma_multiply(0.7));
+            p.stext(Pos2::new(path.min.x + 9.0, path.center().y), Align2::LEFT_CENTER, s, reg(11.0), t.dim.gamma_multiply(0.7));
         } else {
             ui.put(
                 Rect::from_min_max(Pos2::new(path.min.x + 6.0, path.min.y + 4.0), Pos2::new(browse.min.x - 4.0, path.max.y - 4.0)),
@@ -876,8 +917,8 @@ impl LinksApp {
             );
             let resp = ui.interact(browse, egui::Id::new("links-browse"), Sense::click());
             p.rect(browse, 4.0, if resp.hovered() { t.surface_lt } else { t.surface }, Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
-            p.text(Pos2::new(browse.min.x + 8.0, browse.center().y), Align2::LEFT_CENTER, MI_FOLDER, icon(12.0), t.dim);
-            p.text(Pos2::new(browse.min.x + 24.0, browse.center().y), Align2::LEFT_CENTER, "Browse", reg(10.5), t.txt);
+            p.stext(Pos2::new(browse.min.x + 8.0, browse.center().y), Align2::LEFT_CENTER, MI_FOLDER, icon(12.0), t.dim);
+            p.stext(Pos2::new(browse.min.x + 24.0, browse.center().y), Align2::LEFT_CENTER, "Browse", reg(10.5), t.txt);
             if resp.clicked() {
                 if let Some(d) = rfd::FileDialog::new().set_directory(&self.one_dir).pick_folder() {
                     self.one_dir = d.to_string_lossy().to_string();
@@ -906,20 +947,29 @@ impl LinksApp {
             p.rect(r, 6.0, fill.gamma_multiply(a), Stroke::new(1.0, bd.gamma_multiply(a)), egui::StrokeKind::Inside);
             let mut x = r.min.x + 16.0;
             if let Some(g) = glyph {
-                p.text(Pos2::new(x + 7.0, r.center().y), Align2::CENTER_CENTER, g, icon(15.0), fg.gamma_multiply(a));
+                p.stext(Pos2::new(x + 7.0, r.center().y), Align2::CENTER_CENTER, g, icon(15.0), fg.gamma_multiply(a));
                 x += 20.0;
             }
-            p.text(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, label, semi(12.0), fg.gamma_multiply(a));
+            p.stext(Pos2::new(x, r.center().y), Align2::LEFT_CENTER, label, semi(12.0), fg.gamma_multiply(a));
             if resp.on_hover_text(tip).clicked() {
                 match id {
                     "dl" => self.commit(true),
-                    "queue" => self.commit(false),
+                    "queue" => {
+                        // Options -> Downloads: "Show queue selection panel
+                        // on closing batch download dialogs".
+                        let names = crate::model::queue_names();
+                        if crate::model::ui_pref_bool("queue_panel_batch", true) && !names.is_empty() {
+                            self.queue_pick = Some(Pos2::new(r.min.x, r.max.y + 4.0));
+                        } else {
+                            self.commit(false);
+                        }
+                    }
                     _ => self.done = true,
                 }
             }
         }
         if !self.notice.is_empty() {
-            p.text(Pos2::new(right, area.max.y - 18.0), Align2::RIGHT_CENTER, &self.notice, reg(11.0), t.warning);
+            p.stext(Pos2::new(right, area.max.y - 18.0), Align2::RIGHT_CENTER, &self.notice, reg(11.0), t.warning);
         }
     }
 }
@@ -931,7 +981,7 @@ fn paint_check(p: &egui::Painter, r: Rect, on: bool, mixed: bool, hover: bool) {
     if on || mixed {
         p.rect_filled(r, 4.0, t.primary);
         if on {
-            p.text(r.center(), Align2::CENTER_CENTER, MI_CHECK, icon(13.0), Color32::WHITE);
+            p.stext(r.center(), Align2::CENTER_CENTER, MI_CHECK, icon(13.0), Color32::WHITE);
         } else {
             p.rect_filled(Rect::from_center_size(r.center(), Vec2::new(7.0, 2.0)), 1.0, Color32::WHITE);
         }
@@ -1108,6 +1158,8 @@ pub fn run() -> eframe::Result<()> {
         probes_left: 0,
         _rt: rt,
         notice: String::new(),
+        queue_pick: None,
+        target_queue: String::new(),
         centered: false,
         caption_done: false,
         focused: false,
@@ -1153,6 +1205,17 @@ fn links_size(work: Option<egui::Rect>) -> egui::Vec2 {
 
 impl eframe::App for LinksApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(at) = self.queue_pick {
+            match queue_picker(ctx, "links", at, &crate::model::queue_names()) {
+                QueuePick::Picked(q) => {
+                    self.queue_pick = None;
+                    self.target_queue = q;
+                    self.commit(false);
+                }
+                QueuePick::Closed => self.queue_pick = None,
+                QueuePick::Open => {}
+            }
+        }
         if let Some(text) = crate::i18n::take_font_text() {
             crate::fonts::ensure_text(ctx, &text);
         }

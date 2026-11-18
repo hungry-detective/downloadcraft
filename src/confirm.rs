@@ -10,6 +10,7 @@
 //! It writes straight to the shared `queue.json` (+ `wake.json` for
 //! Start Download), so it works even when the main app is closed.
 
+use crate::shaped::ShapeText;
 use crate::app::pl;
 use crate::dm::*;
 use crate::engine::{self, EngineOpts};
@@ -323,6 +324,10 @@ struct ConfirmApp {
     /// The name the dialog made up itself (no `--filename`), while the user
     /// has not changed it: a server/title name may replace exactly that.
     auto_name: Option<String>,
+    /// "Download Later" queue picker, open at this point.
+    queue_pick: Option<egui::Pos2>,
+    /// The queue the download joins ("" = Main).
+    target_queue: String,
     probe_rx: Option<Receiver<(Option<u64>, Option<String>)>>,
     rt: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     centered: bool,
@@ -434,7 +439,7 @@ fn options_menu(
                             ui.painter().rect_filled(r, 4.0, pl().dm_hover);
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
-                        ui.painter().text(
+                        ui.painter().stext(
                             egui::pos2(r.left() + 8.0, r.center().y),
                             egui::Align2::LEFT_CENTER,
                             elide_left(o, 52),
@@ -468,7 +473,7 @@ fn combo(
     }
     let p = ui.painter();
     dm_box(p, rect);
-    p.text(
+    p.stext(
         egui::pos2(rect.left() + 13.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         elide_left(current, 26),
@@ -509,7 +514,7 @@ fn check_row(
         egui::Vec2::splat(16.0),
     );
     dm_check(ui.painter(), box_r, checked);
-    ui.painter().text(
+    ui.painter().stext(
         egui::pos2(box_r.right() + 8.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
@@ -616,6 +621,12 @@ impl ConfirmApp {
         if self.pre_tried || self.probing || self.done {
             return;
         }
+        // Options → Downloads: "Start downloading immediately while
+        // displaying the Download File Info dialog" turned off.
+        if !crate::model::ui_pref_bool("prefetch_on", true) {
+            self.pre_tried = true;
+            return;
+        }
         // The main app runs: the download starts there, out of sight, so
         // Download simply shows it - same connections, same progress, never
         // a second start from "Connecting...".
@@ -676,12 +687,16 @@ impl ConfirmApp {
     fn prefetch_in_app(&mut self) {
         let url = self.url.trim().to_string();
         let youtube = url.contains("youtube.com") || url.contains("youtu.be");
+        // A magnet or .torrent link: no HTTP probe can size it, the torrent's
+        // metadata (from its peers) does, so it starts in the app at once and
+        // the size shows here as soon as that metadata arrives.
+        let torrent = crate::torrent::is_torrent(&url);
         let plain = is_download_url(&url)
             && self.pair_url.is_empty()
             && !self.page_mime.contains("text/html")
             && !engine::is_stream_manifest(&url, None, &self.page_mime)
             && self.probe_size.unwrap_or(0) > 0;
-        if !(plain || (youtube && is_download_url(&url))) {
+        if !(plain || torrent || (youtube && is_download_url(&url))) {
             return;
         }
         self.pre_tried = true;
@@ -722,6 +737,7 @@ impl ConfirmApp {
             item.pair_mime = self.pair_mime.clone();
         }
         item.quality_pref = self.quality_pref.trim().to_string();
+        item.queue = self.target_queue.clone();
         item.duration_secs = self.duration_secs;
         item.expects_audio = self.expects_audio;
         item
@@ -1008,6 +1024,13 @@ impl ConfirmApp {
     }
 }
 
+/// The total the main app has for a running download (`progress.json`).
+fn prefetch_total(id: u64) -> Option<u64> {
+    let p = crate::model::config_dir()?.join("progress.json");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+    v.get("items")?.get(id.to_string())?.get("total")?.as_u64().filter(|t| *t > 0)
+}
+
 /// Ask the main app to start these ids (consumed on its next poll, or at
 /// startup when we launch it below).
 pub(crate) fn wake_ids(targets: &[u64]) {
@@ -1182,6 +1205,8 @@ pub fn run() -> eframe::Result<()> {
         adding_cat: false,
         new_cat: String::new(),
         custom_cats: Vec::new(),
+        queue_pick: None,
+        target_queue: String::new(),
     };
     // Prefill filename from server when the extension sent none useful.
     // A browser-known size skips probing entirely (server re-probes of
@@ -1190,6 +1215,37 @@ pub fn run() -> eframe::Result<()> {
         app.start_probe();
     }
     let _rt_keepalive = rt;
+
+    // Options -> Downloads: "Show start download dialog" off. The capture
+    // is added without this window: the server's name is waited for a few
+    // seconds, then it starts (or only joins the queue when "Do not start
+    // downloading, only add files to the queue" is ticked). Whatever cannot
+    // be done that way (the app does not come up, the queue cannot be
+    // written) still opens the window to say so.
+    if !crate::model::ui_pref_bool("show_start_dialog", true) {
+        if let Some(rx) = app.probe_rx.take() {
+            if let Ok((sz, nm)) = rx.recv_timeout(std::time::Duration::from_secs(6)) {
+                app.probe_size = sz.or(app.browser_size);
+                if let Some(n) = nm {
+                    if app.auto_name.as_deref() == Some(app.filename.as_str()) || crate::model::is_fallback_filename(&app.filename) {
+                        app.filename = crate::model::apply_rename_template(&app.rename_template, &n, &app.url);
+                    }
+                }
+            }
+        }
+        let start = !crate::model::ui_pref_bool("start_dialog_queue_only", false);
+        if start && !main_app_running() {
+            std::thread::spawn(launch_main_app);
+            let t0 = std::time::Instant::now();
+            while !main_app_running() && t0.elapsed() < START_WAIT {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        }
+        app.commit(start);
+        if app.done {
+            std::process::exit(0);
+        }
+    }
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Add download")
@@ -1224,6 +1280,30 @@ impl eframe::App for ConfirmApp {
     /// Same bulletproofing as the progress window: Close can no-op, so back
     /// it with a delayed exit once the dialog is done.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(at) = self.queue_pick {
+            match crate::links::queue_picker(ctx, "confirm", at, &crate::model::queue_names()) {
+                crate::links::QueuePick::Picked(q) => {
+                    self.queue_pick = None;
+                    self.target_queue = q;
+                    self.commit(false);
+                }
+                crate::links::QueuePick::Closed => self.queue_pick = None,
+                crate::links::QueuePick::Open => {}
+            }
+        }
+        // The size the app's background download has found (a torrent's,
+        // from its metadata): shown here once known.
+        if let Some(id) = self.prefetch_id.filter(|_| self.probe_size.unwrap_or(0) == 0) {
+            let now = ctx.input(|i| i.time);
+            let last = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(egui::Id::new("prefetch-size"), || -10.0f64));
+            if now - last >= 0.5 {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("prefetch-size"), now));
+                if let Some(total) = prefetch_total(id) {
+                    self.probe_size = Some(total);
+                }
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         if let Some(text) = crate::i18n::take_font_text() {
             crate::fonts::ensure_text(ctx, &text);
         }
@@ -1353,7 +1433,7 @@ impl eframe::App for ConfirmApp {
             );
             // ---- header: mark + title + window controls (drag to move) ----
             dm_mark(&p, at(15.0, 11.0, 18.0, 18.0));
-            p.text(
+            p.stext(
                 egui::pos2(o.x + 41.0, o.y + 20.0),
                 egui::Align2::LEFT_CENTER,
                 "Download File Info",
@@ -1689,7 +1769,7 @@ impl eframe::App for ConfirmApp {
                 );
                 cy += DM_BOX_H + 8.0;
                 let row = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, 30.0));
-                p.text(
+                p.stext(
                     egui::pos2(row.min.x, row.center().y),
                     egui::Align2::LEFT_CENTER,
                     "Connections",
@@ -1704,7 +1784,7 @@ impl eframe::App for ConfirmApp {
                 if let Some(nf) = slider_row(ui, srect, "conns", frac) {
                     self.connections = ((nf * 31.0).round() as usize + 1).clamp(1, 32);
                 }
-                p.text(
+                p.stext(
                     egui::pos2(row.max.x, row.center().y),
                     egui::Align2::RIGHT_CENTER,
                     format!("{}", self.connections),
@@ -1726,7 +1806,7 @@ impl eframe::App for ConfirmApp {
                 }
                 cy += 22.0;
                 for n in &notes {
-                    p.text(
+                    p.stext(
                         egui::pos2(cx, cy + 6.0),
                         egui::Align2::LEFT_CENTER,
                         n,
@@ -1755,7 +1835,7 @@ impl eframe::App for ConfirmApp {
             if d_b.hovered() {
                 p.rect_filled(dl_r, DM_RAD, egui::Color32::from_white_alpha(22));
             }
-            p.text(
+            p.stext(
                 dl_r.center(),
                 egui::Align2::CENTER_CENTER,
                 crate::i18n::t("Download"),
@@ -1767,7 +1847,14 @@ impl eframe::App for ConfirmApp {
                 ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             if a_b.clicked() {
-                self.commit(false);
+                // Options -> Downloads: "Show queue selection panel on
+                // pressing Download Later" (when there is a queue to pick).
+                let names = crate::model::queue_names();
+                if crate::model::ui_pref_bool("queue_panel_later", true) && !names.is_empty() {
+                    self.queue_pick = Some(egui::pos2(add_r.min.x, add_r.min.y - 8.0 - 26.0 * (names.len() as f32 + 2.0)));
+                } else {
+                    self.commit(false);
+                }
             }
             if d_b.clicked() {
                 self.commit(true);
@@ -1780,7 +1867,7 @@ impl eframe::App for ConfirmApp {
             // ---- notice (the window grew 16px for it) ----
             if !self.notice.is_empty() {
                 let shown: String = self.notice.chars().take(78).collect();
-                p.text(
+                p.stext(
                     egui::pos2(o.x + DM_X, act_y + 36.0 + 10.0),
                     egui::Align2::LEFT_CENTER,
                     shown,

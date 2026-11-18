@@ -29,7 +29,12 @@ use std::sync::OnceLock;
 
 /// Cap on the raster caches: file names churn, and one texture per distinct
 /// (text, size) would grow without bound over a long session.
-const CACHE_MAX: usize = 256;
+/// A Bangla interface has hundreds of distinct strings on screen at once:
+/// with room for only 256, the cache emptied itself every frame and every
+/// label was shaped and rasterised again each frame (the app crawled).
+const CACHE_MAX: usize = 1500;
+/// Widths are tiny; word wrapping measures many partial lines.
+const WIDTH_MAX: usize = 20000;
 
 /// Supersampling factor for the raster.
 ///
@@ -44,7 +49,7 @@ const SS: f32 = 3.0;
 /// Coverage to alpha, with the gamma that brings an unhinted raster up to the
 /// weight egui's text has.
 fn coverage_to_alpha(cov: f32) -> u8 {
-    (cov.clamp(0.0, 1.0).powf(0.85) * 255.0 + 0.5) as u8
+    (cov.clamp(0.0, 1.0).powf(0.72) * 255.0 + 0.5) as u8
 }
 
 /// Does this text need the shaper?
@@ -420,6 +425,8 @@ struct Entry {
 thread_local! {
     static CACHE: RefCell<HashMap<(String, u32), Entry>> = RefCell::new(HashMap::new());
     static WIDTHS: RefCell<HashMap<(String, u32), f32>> = RefCell::new(HashMap::new());
+    /// Wrapped lines per (text, size, width): a paragraph is broken once.
+    static LINES: RefCell<HashMap<(String, u32, u32), Vec<String>>> = RefCell::new(HashMap::new());
 }
 
 fn build(ctx: &egui::Context, text: &str, size: f32) -> Option<Entry> {
@@ -480,12 +487,152 @@ pub fn width(p: &egui::Painter, text: &str, font: &egui::FontId) -> f32 {
         .unwrap_or(0.0);
     WIDTHS.with(|c| {
         let mut c = c.borrow_mut();
-        if c.len() >= CACHE_MAX {
+        if c.len() >= WIDTH_MAX {
             c.clear();
         }
         c.insert(key, w);
     });
     w
+}
+
+/// The height of one line of `font` (what egui gives a line of Latin text),
+/// so shaped lines stack the way egui's own do.
+pub fn line_height(p: &egui::Painter, font: &egui::FontId) -> f32 {
+    p.layout_no_wrap("Ag".to_owned(), font.clone(), egui::Color32::WHITE).size().y
+}
+
+/// `text` broken into lines no wider than `max_w`, at spaces (a word longer
+/// than the line stays whole). Measured with the shaper, so Bangla wraps
+/// where it really ends.
+pub fn wrap_lines(p: &egui::Painter, text: &str, font: &egui::FontId, max_w: f32) -> Vec<String> {
+    let key = (text.to_owned(), qsize(font.size), max_w.round().max(0.0) as u32);
+    if let Some(lines) = LINES.with(|c| c.borrow().get(&key).cloned()) {
+        return lines;
+    }
+    let out = wrap_lines_uncached(p, text, font, max_w);
+    LINES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= CACHE_MAX {
+            c.clear();
+        }
+        c.insert(key, out.clone());
+    });
+    out
+}
+
+fn wrap_lines_uncached(p: &egui::Painter, text: &str, font: &egui::FontId, max_w: f32) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for word in para.split(' ') {
+            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if !line.is_empty() && width(p, &candidate, font) > max_w {
+                out.push(std::mem::take(&mut line));
+                line = word.to_string();
+            } else {
+                line = candidate;
+            }
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// The size `text` takes: one line, or wrapped at `max_w`.
+pub fn measure(p: &egui::Painter, text: &str, font: &egui::FontId, max_w: Option<f32>) -> egui::Vec2 {
+    if !needs_shaping(text) {
+        let g = match max_w {
+            Some(w) => p.layout(text.to_owned(), font.clone(), egui::Color32::WHITE, w),
+            None => p.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE),
+        };
+        return g.size();
+    }
+    let lh = line_height(p, font);
+    match max_w {
+        Some(w) => {
+            let lines = wrap_lines(p, text, font, w);
+            let widest = lines.iter().map(|l| width(p, l, font)).fold(0.0_f32, f32::max);
+            egui::vec2(widest, lh * lines.len() as f32)
+        }
+        None => egui::vec2(width(p, text, font), lh),
+    }
+}
+
+/// Paint `text` with its top-left at `pos`: one line, or wrapped at `max_w`.
+/// Shaped where it needs to be, egui's own galley otherwise. Returns its size.
+pub fn paint(
+    p: &egui::Painter,
+    pos: egui::Pos2,
+    text: &str,
+    font: &egui::FontId,
+    color: egui::Color32,
+    max_w: Option<f32>,
+) -> egui::Vec2 {
+    if !needs_shaping(text) {
+        let g = match max_w {
+            Some(w) => p.layout(text.to_owned(), font.clone(), color, w),
+            None => p.layout_no_wrap(text.to_owned(), font.clone(), color),
+        };
+        let size = g.size();
+        p.galley(pos, g, color);
+        return size;
+    }
+    let lh = line_height(p, font);
+    let lines = match max_w {
+        Some(w) => wrap_lines(p, text, font, w),
+        None => vec![text.to_string()],
+    };
+    let mut widest = 0.0_f32;
+    for (i, l) in lines.iter().enumerate() {
+        let y = pos.y + lh * i as f32 + lh / 2.0;
+        let s = draw(p, egui::pos2(pos.x, y), egui::Align2::LEFT_CENTER, l, font.clone(), color);
+        widest = widest.max(s.x);
+    }
+    egui::vec2(widest, lh * lines.len() as f32)
+}
+
+/// A label in a layout: allocates its size and paints it (wrapped at the
+/// width the layout has when `wrap`).
+pub fn label(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: egui::Color32, wrap: bool) -> egui::Response {
+    let max_w = wrap.then(|| ui.available_width().max(40.0));
+    let size = measure(ui.painter(), text, &font, max_w);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    paint(ui.painter(), rect.min, text, &font, color, max_w);
+    resp
+}
+
+/// `Painter::text` for every window: text in a script egui cannot shape
+/// (Bengali and the other Indic ones, emoji) goes through [`draw`]; anything
+/// else is exactly `Painter::text`, so Latin text cannot change. Used for the
+/// whole interface, so a Bangla interface reads as it should, not only file
+/// names.
+pub trait ShapeText {
+    fn stext(
+        &self,
+        pos: egui::Pos2,
+        align: egui::Align2,
+        text: impl ToString,
+        font: egui::FontId,
+        color: egui::Color32,
+    ) -> egui::Rect;
+}
+
+impl ShapeText for egui::Painter {
+    fn stext(
+        &self,
+        pos: egui::Pos2,
+        align: egui::Align2,
+        text: impl ToString,
+        font: egui::FontId,
+        color: egui::Color32,
+    ) -> egui::Rect {
+        let s = text.to_string();
+        if needs_shaping(&s) {
+            let size = draw(self, pos, align, &s, font, color);
+            return align.anchor_size(pos, size);
+        }
+        self.text(pos, align, s, font, color)
+    }
 }
 
 /// Drop-in replacement for `Painter::text` that shapes (and font-falls-back)

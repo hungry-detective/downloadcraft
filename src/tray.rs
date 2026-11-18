@@ -168,6 +168,23 @@ fn round_corners(hwnd: isize) {
     }
 }
 
+/// The tray menu in the app's mode: "dark", "light", or anything else to
+/// follow Windows (the system mode). Applied when it changes.
+pub fn set_menu_mode(mode: &str) {
+    static LAST: std::sync::Mutex<i32> = std::sync::Mutex::new(0);
+    let want = match mode {
+        "dark" | "black" => 2,
+        "light" => 3,
+        _ => 1,
+    };
+    let Ok(mut last) = LAST.lock() else { return };
+    if *last == want {
+        return;
+    }
+    *last = want;
+    unsafe { win32::set_app_mode(want) };
+}
+
 pub fn is_parked() -> bool {
     PARKED.load(Ordering::SeqCst)
 }
@@ -793,8 +810,28 @@ mod win32 {
         set_window_composition_attribute(hwnd, &mut data);
     }
 
+    /// Native menus (the tray's) dark or light: uxtheme's SetPreferredAppMode
+    /// (ordinal 135) then FlushMenuThemes (136), as Explorer itself does.
+    /// `mode`: 1 = follow Windows' app mode, 2 = dark, 3 = light.
+    pub unsafe fn set_app_mode(mode: i32) {
+        let name: Vec<u16> = "uxtheme.dll ".encode_utf16().collect();
+        let lib = LoadLibraryW(name.as_ptr());
+        if lib == 0 {
+            return;
+        }
+        if let Some(f) = GetProcAddress(lib, 135usize as *const u8) {
+            let set: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(f);
+            set(mode);
+        }
+        if let Some(f) = GetProcAddress(lib, 136usize as *const u8) {
+            let flush: unsafe extern "system" fn() = std::mem::transmute(f);
+            flush();
+        }
+    }
+
     #[link(name = "kernel32")]
     extern "system" {
+        pub fn LoadLibraryW(name: *const u16) -> isize;
         pub fn GetCurrentThreadId() -> u32;
         pub fn GetModuleHandleW(name: *const u16) -> isize;
         pub fn GetProcAddress(

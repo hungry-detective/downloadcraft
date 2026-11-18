@@ -11,7 +11,7 @@ let lastFallbackError = "";
 // Must match manifest version + content.js EXT_VER. Tabs running an older
 // content script are rejected with a "reload the tab" error instead of
 // failing mysteriously (their extension APIs are gone after a reload).
-const EXT_VER = "0.9.18";
+const EXT_VER = "0.10.0";
 
 // Promise-style calls (the `await api.*` ones below) go through this handle so
 // one file serves both engines: Firefox exposes the promise-returning
@@ -79,6 +79,9 @@ async function settings() {
   if (Number.isFinite(a.minSizeKB)) s.minSizeKB = a.minSizeKB;
   if (typeof a.blockHosts === "string") s.blockHosts = a.blockHosts;
   if (extraBlocked.length) s.blockHosts = [s.blockHosts, ...extraBlocked].filter(Boolean).join(", ");
+  // The app's "Don't start downloading automatically from the following
+  // addresses" (one per line, * matches anything): checked with the sites.
+  if (typeof a.blockUrls === "string" && a.blockUrls.trim()) s.blockHosts = [s.blockHosts, a.blockUrls].filter(Boolean).join(" ");
   s.captureTypes = typeof a.captureTypes === "string" ? a.captureTypes : "";
   s.notify = a.notify !== false;
   s.browserFallback = a.browserFallback !== false;
@@ -122,11 +125,21 @@ async function syncBrowserDownloadUI() {
 function hostBlocked(url, blockHosts) {
   try {
     const h = new URL(url).hostname.toLowerCase();
+    const full = String(url).toLowerCase();
     const blocked = String(blockHosts || "")
       .split(/[\s,;]+/)
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
-    return blocked.some((b) => h === b || h.endsWith("." + b));
+    return blocked.some((b) => {
+      // An address pattern (it has a path): * matches anything.
+      if (b.includes("/")) {
+        const re = new RegExp("^" + b.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + (b.endsWith("*") ? "" : ".*") + "$");
+        return re.test(full) || re.test(full.replace(/^https?:\/\//, ""));
+      }
+      // A site, or "*.site" for its subdomains.
+      const site = b.replace(/^\*\./, "");
+      return h === site || h.endsWith("." + site);
+    });
   } catch (e) {
     return false;
   }
@@ -1571,6 +1584,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (msg && msg.target === "offscreen") return false;
+  // The app's list, its files and its controls are the popup's: never a
+  // web page's (a content script runs inside one).
+  if (msg && ["appList", "appReadFile", "appControl"].includes(msg.type) && (!sender || sender.id !== chrome.runtime.id || sender.tab)) {
+    sendResponse({ ok: false, error: "not allowed" });
+    return false;
+  }
   (async () => {
     if (!msg || typeof msg !== "object") return { ok: false };
     if (msg.type === "getVideoBarPosition") {
@@ -1579,8 +1598,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg.type === "setVideoBarPosition") {
       const p=msg.position;
+      // null: back to the player's corner (another video is playing).
+      if(p===null){await api.storage.session.remove("videoBarPosition");return {ok:true};}
       if(!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || p.x<0 || p.x>1 || p.y<0 || p.y>1)return {ok:false};
-      await api.storage.session.set({videoBarPosition:{x:p.x,y:p.y}});
+      const href=typeof p.href==="string" && /^https?:\/\//i.test(p.href) ? p.href.slice(0,2000) : undefined;
+      await api.storage.session.set({videoBarPosition:{x:p.x,y:p.y,href}});
       return {ok:true};
     }
     if (msg.type === "download" && msg.url) {

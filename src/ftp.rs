@@ -119,13 +119,10 @@ fn split_boxed<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(s: S) -> (Ctl
 /// Connect the control connection, TLS first when the URL asks for it, and
 /// read the greeting.
 async fn connect_control(t: &FtpTarget, connect_to: u64) -> Result<(CtlR, CtlW)> {
-    let tcp = tokio::time::timeout(
-        std::time::Duration::from_secs(connect_to),
-        tokio::net::TcpStream::connect((t.host.as_str(), t.port)),
-    )
-    .await
-    .map_err(|_| anyhow!("ftp connect timed out ({connect_to}s) — resuming"))?
-    .map_err(|e| anyhow!("ftp connect: {e}"))?;
+    let tcp = tokio::time::timeout(std::time::Duration::from_secs(connect_to), ftp_tcp(&t.host, t.port))
+        .await
+        .map_err(|_| anyhow!("ftp connect timed out ({connect_to}s) — resuming"))?
+        .map_err(|e| anyhow!("ftp connect: {e}"))?;
     let _ = tcp.set_nodelay(true);
     match t.tls {
         Tls::None => {
@@ -161,6 +158,58 @@ async fn greeting<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<()> {
     Ok(())
 }
 
+/// How the data connection is made: passive (we connect to the server, as
+/// PASV names it) or active (the server connects to us after PORT).
+enum DataPlan {
+    Passive(tokio::net::TcpStream),
+    Active(tokio::net::TcpListener),
+}
+
+impl DataPlan {
+    /// The data connection, once RETR was accepted.
+    async fn connected(self) -> Result<tokio::net::TcpStream> {
+        match self {
+            DataPlan::Passive(s) => Ok(s),
+            DataPlan::Active(l) => {
+                let (s, _) = tokio::time::timeout(std::time::Duration::from_secs(30), l.accept())
+                    .await
+                    .map_err(|_| anyhow!("ftp server never connected back (active mode) — turn PASV mode on in Options > Proxy / Socks"))?
+                    .map_err(|e| anyhow!("ftp data accept: {e}"))?;
+                let _ = s.set_nodelay(true);
+                Ok(s)
+            }
+        }
+    }
+}
+
+/// Options -> Proxy / Socks: "Use FTP in PASV mode" (on by default). Off,
+/// the server connects back to us (PORT); some old servers only do that.
+async fn prepare_data(t: &FtpTarget, w: &mut CtlW, r: &mut CtlR) -> Result<DataPlan> {
+    // Through a proxy only passive mode works (the server cannot reach us).
+    if crate::model::ui_pref_bool("ftp_pasv", true) || ftp_proxy().is_some() {
+        let (code, text) = cmd(w, r, "PASV").await?;
+        if !(200..300).contains(&code) {
+            return Err(anyhow!("ftp PASV refused ({code} {text})"));
+        }
+        return Ok(DataPlan::Passive(open_data(t, &text).await?));
+    }
+    // Our address as the server sees it on this network (the route to it).
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| anyhow!("ftp active mode: {e}"))?;
+    probe.connect((t.host.as_str(), t.port)).map_err(|e| anyhow!("ftp active mode: {e}"))?;
+    let ip = match probe.local_addr().map_err(|e| anyhow!("ftp active mode: {e}"))?.ip() {
+        std::net::IpAddr::V4(a) => a,
+        std::net::IpAddr::V6(_) => return Err(anyhow!("ftp active mode needs IPv4 — turn PASV mode on")),
+    };
+    let listener = tokio::net::TcpListener::bind((ip, 0)).await.map_err(|e| anyhow!("ftp active mode: {e}"))?;
+    let port = listener.local_addr().map_err(|e| anyhow!("ftp active mode: {e}"))?.port();
+    let o = ip.octets();
+    let (code, text) = cmd(w, r, &format!("PORT {},{},{},{},{},{}", o[0], o[1], o[2], o[3], port >> 8, port & 0xff)).await?;
+    if !(200..300).contains(&code) {
+        return Err(anyhow!("ftp PORT refused ({code} {text}) — turn PASV mode on in Options > Proxy / Socks"));
+    }
+    Ok(DataPlan::Active(listener))
+}
+
 /// The data connection for a PASV reply. Some servers behind NAT announce a
 /// private or empty address: then the control connection's host is used.
 async fn open_data(t: &FtpTarget, pasv_text: &str) -> Result<tokio::net::TcpStream> {
@@ -169,8 +218,69 @@ async fn open_data(t: &FtpTarget, pasv_text: &str) -> Result<tokio::net::TcpStre
         Ok(a) if a.is_unspecified() || (a.is_private() && !host_is_private(&t.host)) => t.host.clone(),
         _ => ip,
     };
-    let s = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(|e| anyhow!("ftp data connect: {e}"))?;
+    let s = ftp_tcp(&host, port).await.map_err(|e| anyhow!("ftp data connect: {e}"))?;
     let _ = s.set_nodelay(true);
+    Ok(s)
+}
+
+/// The proxy FTP goes through: Options -> Proxy / Socks with "ftp" ticked
+/// under the manual proxy. (kind, host, port, user, password)
+fn ftp_proxy() -> Option<(String, String, u16, String, String)> {
+    use crate::model::{ui_pref_bool, ui_pref_str};
+    if !ui_pref_bool("proxy_ftp", false) || ui_pref_str("proxy_mode", "system") != "manual" {
+        return None;
+    }
+    let host = ui_pref_str("proxy_host", "").trim().to_string();
+    let port = ui_pref_str("proxy_port", "").trim().parse::<u16>().ok()?;
+    if host.is_empty() {
+        return None;
+    }
+    Some((ui_pref_str("proxy_kind", "http"), host, port, ui_pref_str("proxy_user", ""), ui_pref_str("proxy_pass", "")))
+}
+
+/// A TCP connection to (host, port), through the FTP proxy when one is set:
+/// SOCKS 4/5 directly, an HTTP(S) proxy by a CONNECT tunnel.
+async fn ftp_tcp(host: &str, port: u16) -> std::io::Result<tokio::net::TcpStream> {
+    let Some((kind, ph, pp, user, pass)) = ftp_proxy() else {
+        return tokio::net::TcpStream::connect((host, port)).await;
+    };
+    let other = |e: String| std::io::Error::other(e);
+    if kind.starts_with("socks4") {
+        let s = tokio_socks::tcp::Socks4Stream::connect((ph.as_str(), pp), (host, port)).await.map_err(|e| other(format!("SOCKS 4 proxy: {e}")))?;
+        return Ok(s.into_inner());
+    }
+    if kind.starts_with("socks") {
+        let s = if user.is_empty() {
+            tokio_socks::tcp::Socks5Stream::connect((ph.as_str(), pp), (host, port)).await
+        } else {
+            tokio_socks::tcp::Socks5Stream::connect_with_password((ph.as_str(), pp), (host, port), &user, &pass).await
+        }
+        .map_err(|e| other(format!("SOCKS 5 proxy: {e}")))?;
+        return Ok(s.into_inner());
+    }
+    // An HTTP proxy: ask it for a tunnel to the FTP server.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect((ph.as_str(), pp)).await?;
+    let mut req = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n");
+    if !user.is_empty() {
+        let token = crate::model::base64_encode(format!("{user}:{pass}").as_bytes());
+        req.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).await?;
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") && head.len() < 8192 {
+        if s.read(&mut b).await? == 0 {
+            break;
+        }
+        head.push(b[0]);
+    }
+    let line = String::from_utf8_lossy(&head);
+    let ok = line.split_whitespace().nth(1).is_some_and(|c| c.starts_with('2'));
+    if !ok {
+        return Err(other(format!("the proxy refused a tunnel to {host}:{port} ({})", line.lines().next().unwrap_or("").trim())));
+    }
     Ok(s)
 }
 
@@ -463,14 +573,10 @@ async fn transfer_once(
     shared: &Arc<SharedState>,
     limiter: &Arc<RateLimiter>,
 ) -> Result<bool> {
-    let (code, text) = cmd(w, r, "PASV").await?;
-    if !(200..300).contains(&code) {
-        return Err(anyhow!("ftp PASV refused ({code} {text})"));
-    }
     // Open the data connection as soon as PASV names it, before RETR: some
     // servers (vsftpd, ProFTPD) wait for it before sending "150", while we
     // used to wait for "150" before connecting, so both sides waited.
-    let data_tcp = open_data(t, &text).await?;
+    let plan = prepare_data(t, w, r).await?;
     if offset > 0 {
         let (code, text) = cmd(w, r, &format!("REST {offset}")).await?;
         if !(300..400).contains(&code) {
@@ -481,6 +587,7 @@ async fn transfer_once(
     if !(100..200).contains(&code) {
         return Err(anyhow!("ftp retrieve refused ({code} {text})"));
     }
+    let data_tcp = plan.connected().await?;
     let mut data = start_data(t, data_tcp).await?;
     #[allow(clippy::suspicious_open_options)]
     let mut file = tokio::fs::OpenOptions::new()
@@ -594,11 +701,7 @@ async fn ftp_part(
         let before = done.load(Ordering::SeqCst);
         let attempt: Result<()> = async {
             let (mut r, mut w) = ftp_login(&t, connect_to).await?;
-            let (code, text) = cmd(&mut w, &mut r, "PASV").await?;
-            if !(200..300).contains(&code) {
-                return Err(anyhow!("ftp PASV refused ({code} {text})"));
-            }
-            let data_tcp = open_data(&t, &text).await?;
+            let plan = prepare_data(&t, &mut w, &mut r).await?;
             let at = start + done.load(Ordering::SeqCst);
             if at > 0 {
                 let (code, text) = cmd(&mut w, &mut r, &format!("REST {at}")).await?;
@@ -610,6 +713,7 @@ async fn ftp_part(
             if !(100..200).contains(&code) {
                 return Err(anyhow!("ftp retrieve refused ({code} {text})"));
             }
+            let data_tcp = plan.connected().await?;
             let mut sock = start_data(&t, data_tcp).await?;
             let mut file = tokio::fs::OpenOptions::new().write(true).open(&data).await.map_err(|e| anyhow!(io_message(&e)))?;
             file.seek(std::io::SeekFrom::Start(at)).await?;

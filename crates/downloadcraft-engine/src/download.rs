@@ -313,7 +313,8 @@ impl Run {
                 return Err(Fail::Fatal(Error::FileChanged(format!("its ETag changed ({a} → {b})"))));
             }
         }
-        if let (Some(a), Some(b)) = (&meta.last_modified, &lm) {
+        let compare_dates = !self.dl.config.ignore_modified;
+        if let (true, Some(a), Some(b)) = (compare_dates, &meta.last_modified, &lm) {
             if a != b {
                 return Err(Fail::Fatal(Error::FileChanged(format!("Last-Modified changed ({a} → {b})"))));
             }
@@ -773,6 +774,7 @@ async fn finish(run: &Arc<Run>) -> Result<Outcome, Error> {
         peak_connections: run.peak.load(Ordering::SeqCst),
         url_refreshed: run.refreshed.load(Ordering::SeqCst),
         detected,
+        last_modified: meta.last_modified.clone(),
     })
 }
 

@@ -15,6 +15,7 @@
 //! manager window drives a manual hit table, the popup uses egui responses),
 //! so hover state arrives as a plain `bool`.
 
+use crate::shaped::ShapeText;
 use crate::app::pl;
 
 // ================= tokens =================
@@ -285,7 +286,7 @@ pub fn dm_icon(p: &egui::Painter, r: egui::Rect, icon: DmIcon, color: egui::Colo
             // The hand-traced "cog" (a ring with eight inward spokes) read as a
             // sunburst at 14 px, not as settings. Use the bundled Material gear
             // glyph instead - it is drawn as a real cog outline.
-            p.text(
+            p.stext(
                 r.center(),
                 egui::Align2::CENTER_CENTER,
                 "\u{e8b8}".to_string(),
@@ -488,7 +489,7 @@ pub fn btn_flat_c(
         egui::Stroke::new(1.0, pl().dm_box_bd),
         egui::StrokeKind::Inside,
     );
-    p.text(
+    p.stext(
         r.center(),
         egui::Align2::CENTER_CENTER,
         label.to_string(),

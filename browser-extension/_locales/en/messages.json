@@ -127,5 +127,11 @@
   },
   "panelSocialHint": {
     "message": "The app fetches this post's video with its sound."
+  },
+  "popSmallButton": {
+    "message": "Small download button"
+  },
+  "popSmallButtonHint": {
+    "message": "Show only the download icon on video players, without the text."
   }
 }

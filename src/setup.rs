@@ -12,6 +12,7 @@
 //! Every check and fix runs on a worker thread: version probes and downloads
 //! never freeze the window.
 
+use crate::shaped::ShapeText;
 use crate::app::pl;
 use crate::dm::*;
 use crate::fonts::{reg, semi};
@@ -21,7 +22,7 @@ use std::time::{Duration, Instant};
 
 const SW: f32 = 520.0;
 /// Opening height; the window then fits itself to its rows.
-const SH: f32 = 470.0;
+const SH: f32 = 440.0;
 const BROWSERS: &[&str] = crate::platform::HOST_BROWSERS;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -357,21 +358,22 @@ impl SetupApp {
         let w = full.width() - 44.0;
 
         // ---- header: title, drag, close ----
-        let head = egui::Rect::from_min_size(o, egui::vec2(full.width(), 64.0));
+        // Compact, so the window stays shorter than the main one.
+        let head = egui::Rect::from_min_size(o, egui::vec2(full.width(), 54.0));
         let drag = ui.interact(head.with_max_x(head.max.x - 48.0), egui::Id::new("setup-drag"), egui::Sense::click_and_drag());
         if drag.drag_started() {
             ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
         let ready = self.states.iter().filter(|(_, s)| s.ready()).count();
         let all = self.states.len();
-        p.text(egui::pos2(x0, o.y + 24.0), egui::Align2::LEFT_CENTER, "Get ready", semi(17.0), t.txt);
+        p.stext(egui::pos2(x0, o.y + 20.0), egui::Align2::LEFT_CENTER, "Get ready", semi(16.0), t.txt);
         let sub = if ready == all {
             "Everything is ready.".to_string()
         } else {
             format!("{ready} of {all} ready — fix the rest with one click.")
         };
-        p.text(egui::pos2(x0, o.y + 46.0), egui::Align2::LEFT_CENTER, sub, reg(12.0), t.dim);
-        let close = egui::Rect::from_center_size(egui::pos2(full.max.x - 28.0, o.y + 28.0), egui::vec2(30.0, 30.0));
+        p.stext(egui::pos2(x0, o.y + 40.0), egui::Align2::LEFT_CENTER, sub, reg(12.0), t.dim);
+        let close = egui::Rect::from_center_size(egui::pos2(full.max.x - 28.0, o.y + 24.0), egui::vec2(30.0, 30.0));
         let cr = ui.interact(close, egui::Id::new("setup-close"), egui::Sense::click()).on_hover_text("Close");
         if cr.hovered() {
             p.rect_filled(close, 6.0, t.surface_lt);
@@ -382,16 +384,18 @@ impl SetupApp {
         }
 
         // ---- rows ----
-        let mut y = o.y + 76.0;
+        let mut y = o.y + 62.0;
         let parts: Vec<(Part, State)> = self.states.clone();
         let mut to_fix: Option<Part> = None;
         for (part, state) in parts {
             let tall = part == Part::Extension && !state.ready();
-            let h = if tall { 150.0 } else { 54.0 };
+            // The extension row: two lines, three steps, then its buttons
+            // under them (they sat over step 3 at 128 px).
+            let h = if tall { 146.0 } else { 44.0 };
             let card = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(w, h));
             p.rect(card, 10.0, t.surface, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
             // Status dot / tick.
-            let c = egui::pos2(card.min.x + 22.0, card.min.y + 27.0);
+            let c = egui::pos2(card.min.x + 22.0, card.min.y + 22.0);
             match &state {
                 State::Ready(_) => {
                     p.circle_filled(c, 11.0, DM_OK.gamma_multiply(0.18));
@@ -403,14 +407,14 @@ impl SetupApp {
                 }
                 State::Failed(_) => {
                     p.circle_filled(c, 11.0, t.warning.gamma_multiply(0.18));
-                    p.text(c, egui::Align2::CENTER_CENTER, "!", semi(13.0), t.warning);
+                    p.stext(c, egui::Align2::CENTER_CENTER, "!", semi(13.0), t.warning);
                 }
                 State::Missing(_) => {
                     p.circle_stroke(c, 9.0, egui::Stroke::new(1.6, DM_YEL));
                 }
             }
             let tx = card.min.x + 44.0;
-            p.text(egui::pos2(tx, card.min.y + 18.0), egui::Align2::LEFT_CENTER, part.title(), semi(13.5), t.txt);
+            p.stext(egui::pos2(tx, card.min.y + 14.0), egui::Align2::LEFT_CENTER, part.title(), semi(13.0), t.txt);
             let detail = match &state {
                 State::Checking => "Checking…".to_string(),
                 State::Ready(s) | State::Missing(s) | State::Working(s) => s.clone(),
@@ -421,18 +425,18 @@ impl SetupApp {
             // free to the edge; other rows keep room for their button.
             let room = card.width() - 44.0 - if tall { 16.0 } else { 130.0 };
             let l2 = crate::app::truncate_to_width(&p, &line2, reg(11.5), t.dim, room);
-            let resp_detail = ui.interact(egui::Rect::from_min_size(egui::pos2(tx, card.min.y + 29.0), egui::vec2(room, 16.0)), egui::Id::new(("setup-detail", part as u8)), egui::Sense::hover());
+            let resp_detail = ui.interact(egui::Rect::from_min_size(egui::pos2(tx, card.min.y + 23.0), egui::vec2(room, 16.0)), egui::Id::new(("setup-detail", part as u8)), egui::Sense::hover());
             if l2 != line2 {
                 resp_detail.on_hover_text(&line2);
             }
-            p.text(egui::pos2(tx, card.min.y + 37.0), egui::Align2::LEFT_CENTER, l2, reg(11.5), if matches!(state, State::Failed(_)) { t.warning } else { t.dim });
+            p.stext(egui::pos2(tx, card.min.y + 31.0), egui::Align2::LEFT_CENTER, l2, reg(11.5), if matches!(state, State::Failed(_)) { t.warning } else { t.dim });
             // The row's button.
             if part.automatic() && !state.ready() && !matches!(state, State::Working(_) | State::Checking) {
                 let label = if matches!(state, State::Failed(_)) { "Try again" } else if part == Part::Connection { "Set up" } else { "Install" };
-                let br = egui::Rect::from_min_size(egui::pos2(card.max.x - 106.0, card.min.y + 11.0), egui::vec2(92.0, 32.0));
+                let br = egui::Rect::from_min_size(egui::pos2(card.max.x - 106.0, card.min.y + 7.0), egui::vec2(92.0, 30.0));
                 let r = ui.interact(br, egui::Id::new(("setup-fix", part as u8)), egui::Sense::click());
                 p.rect_filled(br, 7.0, if r.hovered() && !self.busy { t.primary.gamma_multiply(0.85) } else { t.primary });
-                p.text(br.center(), egui::Align2::CENTER_CENTER, label, semi(12.0), egui::Color32::WHITE);
+                p.stext(br.center(), egui::Align2::CENTER_CENTER, label, semi(12.0), egui::Color32::WHITE);
                 if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !self.busy {
                     to_fix = Some(part);
                 }
@@ -446,12 +450,12 @@ impl SetupApp {
                 ];
                 for (k, s) in steps.iter().enumerate() {
                     let line = crate::app::truncate_to_width(&p, s, reg(11.5), t.txt, card.width() - 60.0);
-                    p.text(egui::pos2(tx, card.min.y + 60.0 + k as f32 * 18.0), egui::Align2::LEFT_CENTER, line, reg(11.5), t.txt);
+                    p.stext(egui::pos2(tx, card.min.y + 50.0 + k as f32 * 17.0), egui::Align2::LEFT_CENTER, line, reg(11.5), t.txt);
                 }
                 let folder = crate::platform::extension_directory(false).ok();
-                let by = card.max.y - 44.0;
-                let b1 = egui::Rect::from_min_size(egui::pos2(tx, by), egui::vec2(140.0, 32.0));
-                let b2 = egui::Rect::from_min_size(egui::pos2(tx + 148.0, by), egui::vec2(110.0, 32.0));
+                let by = card.max.y - 40.0;
+                let b1 = egui::Rect::from_min_size(egui::pos2(tx, by), egui::vec2(140.0, 30.0));
+                let b2 = egui::Rect::from_min_size(egui::pos2(tx + 148.0, by), egui::vec2(110.0, 30.0));
                 for (r, label, k) in [(b1, "Open folder", 0u8), (b2, "Copy path", 1u8)] {
                     let resp = ui.interact(r, egui::Id::new(("setup-ext", k)), egui::Sense::click());
                     btn_flat(&p, r, resp.hovered(), label);
@@ -467,7 +471,7 @@ impl SetupApp {
                     }
                 }
             }
-            y += h + 8.0;
+            y += h + 6.0;
         }
         if let Some(part) = to_fix {
             self.fix_parts(vec![part]);
@@ -475,7 +479,7 @@ impl SetupApp {
 
         // ---- footer ----
         // Fit the window to its rows (no empty space under them).
-        let want = (y - o.y) + 58.0;
+        let want = (y - o.y) + 52.0;
         if (want - self.win_h).abs() > 1.0 {
             self.win_h = want;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(SW, want)));
@@ -489,13 +493,13 @@ impl SetupApp {
         if self.show_at_start {
             dm_icon(&p, cb.shrink(4.0), DmIcon::Check, egui::Color32::WHITE, 2.6);
         }
-        p.text(egui::pos2(cb.max.x + 8.0, fy), egui::Align2::LEFT_CENTER, lab, reg(11.5), if cbr.hovered() { t.txt } else { t.dim });
+        p.stext(egui::pos2(cb.max.x + 8.0, fy), egui::Align2::LEFT_CENTER, lab, reg(11.5), if cbr.hovered() { t.txt } else { t.dim });
         if cbr.clicked() {
             self.show_at_start = !self.show_at_start;
             crate::model::ui_pref_set_bool("setup_at_start", self.show_at_start);
         }
         if !self.note.is_empty() && self.note != "auto" {
-            p.text(egui::pos2(x0, fy - 28.0), egui::Align2::LEFT_CENTER, &self.note, reg(11.5), DM_OK);
+            p.stext(egui::pos2(x0, fy - 28.0), egui::Align2::LEFT_CENTER, &self.note, reg(11.5), DM_OK);
         }
         let missing = self.missing_automatic();
         let (label, primary) = if self.busy {
@@ -510,7 +514,7 @@ impl SetupApp {
         let r = ui.interact(br, egui::Id::new("setup-main"), egui::Sense::click());
         let _ = primary;
         p.rect_filled(br, 8.0, if r.hovered() && !self.busy { t.primary.gamma_multiply(0.85) } else { t.primary.gamma_multiply(if self.busy { 0.6 } else { 1.0 }) });
-        p.text(br.center(), egui::Align2::CENTER_CENTER, label, semi(13.0), egui::Color32::WHITE);
+        p.stext(br.center(), egui::Align2::CENTER_CENTER, label, semi(13.0), egui::Color32::WHITE);
         if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !self.busy {
             if missing.is_empty() {
                 close_soon(&ctx);

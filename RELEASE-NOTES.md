@@ -1,4 +1,106 @@
-# Download Craft 0.9.18
+# Download Craft 0.10.0
+
+## What's new
+
+- **Bangla interface**: Settings → Appearance → Language. Every window, menu
+  and message is in natural Bangla and switches straight away, no restart
+  needed. Bangla text is drawn properly, and the interface is as quick as in
+  English.
+- **YouTube live streams, HDR and 8K**: a live stream records until you press
+  Stop, and Stop keeps a playable file. HDR videos get their own rows in the
+  quality menu and stay HDR. Saved videos keep their cover picture, chapters
+  and title inside the file (Settings → Plugins → YouTube).
+- **Options window for the Classic layout**: Classic's Settings now look and
+  work like a classic download manager's Options dialog. It has General, File
+  types, Save to, Downloads, Connection, Proxy / Socks, Sites Logins,
+  Dial Up / VPN and Sounds tabs, with OK and Help.
+  - **Per-server connections:** a set number of connections for each server.
+  - **Duplicate links:** what to do when the same link is added again (ask,
+    add a numbered copy, overwrite, or show/resume the existing one).
+  - **Start without the dialog:** downloads can start, or just join the
+    queue, without showing the download window.
+  - **Pick a queue:** choose a queue when you press "Download Later" or add a
+    batch.
+  - **Server file dates:** saved files can keep the server's date.
+  - **Download limit warning:** a notice before the limit pauses downloads.
+  - **FTP:** downloads through your proxy, and in active mode when PASV is off.
+  - **Dial Up / VPN:** connects a Windows VPN, with redial attempts.
+  - **Skip addresses:** a list of addresses that are never captured.
+- **Find a setting**: type in the box at the top of Settings and pick a
+  result. It opens the right page and points at the setting.
+- **Streams show their size and time left**: HLS and DASH streams now show an
+  estimated size, a moving progress bar and the time remaining.
+- **Drag to reorder the queue**: in the Queues panel, drag a row to where it
+  should start.
+- **Failed downloads say what to do next**: the progress window explains each
+  failure in plain words (link expired, sign-in needed, disk full, the server
+  is limiting…). The failure notification has **Retry** and **Open page**
+  buttons.
+- **AMOLED black theme**, available for every layout.
+- **New tray menu** with icons, following dark, light or system mode.
+- **Classic layout refresh**:
+  - The Categories panel is white with rounded corners, and its rows fill the
+    panel.
+  - Click a branch to open or close it.
+  - Outline icons for Stop, Delete and similar tools.
+  - Toolbar labels stay on one line.
+- **Browser extension**:
+  - A "Small download button" option shows only a round download icon on
+    video players.
+  - The button keeps a gap from the player's edge.
+  - After you drag it, the next video puts it back in its corner.
+
+## Fixes
+
+- Deleting a download's unfinished file and then resuming it showed the old
+  amount as already downloaded. It now says "Resume file not found" and starts
+  again from the beginning.
+- The tray menu stayed in the old language after switching language.
+- The Craft toolbar no longer flickers in Bangla, and it spaces its buttons
+  evenly.
+- Settings: interface size applies straight away and has a Reset button.
+  Descriptions are never hidden behind buttons or drop-down lists.
+- Removing a finished torrent also removes its folder.
+- Sites like `*.example.com` in the skipped-sites list are now matched.
+- The app is quieter when idle and handles long download lists faster.
+- **Security fixes:**
+  - Opening a downloaded file can no longer run a command hidden in its name.
+  - File names from websites can no longer leave the download folder.
+  - The browser extension can no longer read files outside your download
+    folders.
+  - Web pages can no longer use the extension to list or control your
+    downloads.
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.10.0-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.10.0-windows-x64-portable.zip` and run `download_craft.exe`.
+
+**macOS 12+.** Unzip `DownloadCraft-0.10.0-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.10.0_amd64.deb`; Fedora: install
+`downloadcraft-0.10.0-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.10.0-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.10.0.xpi` from
+`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
+Chrome ZIP and load the extracted folder in `chrome://extensions`.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.10.0`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+
+# Earlier: Download Craft 0.9.18
 
 ## What's new
 
@@ -37,83 +139,3 @@
   longer keeps showing its last speed.
 - **macOS:** the app has its icon in Finder, the Dock and Launchpad (#25).
 - Settings → Appearance fits all four layouts on one row at any width.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.9.18-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.9.18-windows-x64-portable.zip` and run `download_craft.exe`.
-
-**macOS 12+.** Unzip `DownloadCraft-0.9.18-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.9.18_amd64.deb`; Fedora: install
-`downloadcraft-0.9.18-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.9.18-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.9.18.xpi` from
-`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
-Chrome ZIP and load the extracted folder in `chrome://extensions`.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.9.18`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
-
-
-# Earlier: Download Craft 0.9.17
-
-## What's new
-
-- **Faster to the finish line.** A connection that goes silent while the
-  others are still downloading is replaced within about 6 seconds, instead of
-  holding the end of the file for up to a minute. In a test where one
-  connection freezes, an 8 MB file finishes in 7 s instead of 31 s.
-- **Connections are kept.** A single connection error (a reset, a failed
-  handshake) no longer costs a download one of its connections for good: it
-  takes three in a row. A connection that was given up is tried again after 8
-  seconds instead of 30.
-- **No pauses for disk writes.** Each connection keeps receiving while its
-  last piece is written to disk, and saving the resume record no longer holds
-  up the download.
-- **The Download window's early start continues where it is.** The download
-  that starts in the background while the Download window is open begins as
-  soon as the file's size is known (it waited up to 3 seconds). Pressing
-  Download continues it from the same byte, with no "Connecting…" and no
-  jump back to 0%.
-- **A failed download continues.** Retrying a failed download, or giving it a
-  fresh link to the same file, continues from what is already on disk.
-- **Petal, reworked.**
-  - Downloads are a grid of cards, two to four per row by window width, each
-    with a file-type badge (ZIP, EXE, MKV…), its state, progress and buttons.
-  - Add URL and the new Add torrent sit at the start of the toolbar. Add URL
-    takes the link on the clipboard.
-  - The sidebar is one card that fits every item, and the cards line up with
-    it and with the summary tiles.
-  - List view is a real table again, one download per row (it showed the
-    cards).
-- **Add torrent in every layout,** with a magnet icon: a magnet link on the
-  clipboard, or pick one or more `.torrent` files.
-- **Toolbars keep their labels** at the default window size in Craft and
-  Ledger (smaller icons), and the view switch says what it does.
-- **Ledger's dark side is near-black,** like the other dark looks.
-- **Menus close like Windows menus (#21):** a click on empty space, in another
-  app, or Esc closes them.
-- **TikTok thumbnails:** the extension's download panel shows the video's
-  cover on TikTok (and on other sites whose player has no poster image).
-- In the list, a paused download's percentage and bar sit centred in the
-  Status column, like the other states.
-
-## Fixes
-
-- **Crash with Bangla and other non-English text (#19):** an address or name
-  in another script no longer crashes the app.
-- **Crash when the graphics device is lost (#20):** after a driver update or
-  reset, waking from sleep or a GPU switch, the app saves the list and opens
-  its window again instead of crashing. Downloads continue.

@@ -360,6 +360,17 @@ fn record_browser_download(msg: &Incoming) -> Result<(), String> {
     if !path.is_absolute() || !path.is_file() {
         return Err("the saved file was not found".into());
     }
+    // Only a file in a download folder (the browser's or the app's): this
+    // message must not turn an arbitrary file into a readable "download".
+    let inside = |root: Option<std::path::PathBuf>| {
+        root.and_then(|r| r.canonicalize().ok())
+            .zip(path.canonicalize().ok())
+            .is_some_and(|(r, p)| p.starts_with(r))
+    };
+    let save = crate::model::ui_pref_str("save_dir", "");
+    if !inside(dirs::download_dir()) && !inside((!save.trim().is_empty()).then(|| std::path::PathBuf::from(save.trim()))) {
+        return Err("only files in a download folder can be listed".into());
+    }
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("no file name")?;
     let dir = path.parent().map(|d| d.to_string_lossy().to_string()).ok_or("no folder")?;
     let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -605,6 +616,7 @@ pub fn capture_settings() -> serde_json::Value {
         ("capture_auto", "autoCapture"),
         ("capture_types", "captureTypes"),
         ("capture_skip_sites", "blockHosts"),
+        ("capture_skip_urls", "blockUrls"),
         ("capture_min_kb", "minSizeKB"),
         ("notify_done", "notify"),
         ("browser_fallback", "browserFallback"),

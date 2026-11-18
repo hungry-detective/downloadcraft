@@ -11,6 +11,7 @@
 //! once from `queue.json` and never polled, because nothing about a completed
 //! transfer changes any more.
 
+use crate::shaped::ShapeText;
 use crate::app::pl;
 use crate::dm::*;
 use crate::fonts::{reg, semi};
@@ -127,14 +128,14 @@ impl CompleteApp {
         // Thin standard-weight outline: the 40px icon scales the 24-unit
         // viewBox, so 2.2 units used to become a chunky 3.7px stroke.
         dm_icon(&p, at(o, PAD_X, DOC_Y, DOC_S, DOC_S), DmIcon::Doc, DM_ACC(), 1.35);
-        p.text(
+        p.stext(
             egui::pos2(o.x + SUM_X, o.y + DOC_Y),
             egui::Align2::LEFT_TOP,
             crate::i18n::t("Download complete").to_string(),
             semi(13.0),
             pl().cg_txt,
         );
-        p.text(
+        p.stext(
             egui::pos2(o.x + SUM_X, o.y + SUM_SUB_Y),
             egui::Align2::LEFT_TOP,
             if item.resolution.is_empty() {
@@ -226,7 +227,7 @@ impl CompleteApp {
                 egui::StrokeKind::Inside,
             );
         }
-        p.text(
+        p.stext(
             egui::pos2(o.x + CHK_LBL_X, cbr.center().y),
             egui::Align2::LEFT_CENTER,
             crate::i18n::t(CHK_TXT).to_string(),
@@ -258,7 +259,7 @@ impl CompleteApp {
             DM_ACC(),
             1.6,
         );
-        p.text(
+        p.stext(
             egui::pos2(o.x + TITLE_X, o.y + HDR_CY),
             egui::Align2::LEFT_CENTER,
             crate::i18n::t("Download complete").to_string(),
@@ -314,7 +315,7 @@ impl CompleteApp {
 /// and paths are middle-elided to keep both ends readable.
 fn field(p: &egui::Painter, o: egui::Pos2, y: f32, label: &str, value: &str) {
     let label = crate::i18n::t(label);
-    p.text(
+    p.stext(
         egui::pos2(o.x + PAD_X, o.y + y),
         egui::Align2::LEFT_TOP,
         label.to_string(),
@@ -351,7 +352,7 @@ fn dlg_btn(p: &egui::Painter, r: egui::Rect, hov: bool, label: &str) {
         egui::Stroke::new(1.0, if hov { pl().cg_ctl } else { pl().cg_btn_bd }),
         egui::StrokeKind::Inside,
     );
-    p.text(
+    p.stext(
         r.center(),
         egui::Align2::CENTER_CENTER,
         label.to_string(),

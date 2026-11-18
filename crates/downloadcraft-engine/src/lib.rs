@@ -112,6 +112,10 @@ pub struct Config {
     /// (YouTube's carry its length and version) and are served by many edge
     /// servers, each with its own date. Default false.
     pub size_identity: bool,
+    /// A changed Last-Modified alone does not mean a different file (some
+    /// servers stamp every reply with the current time): only the size and
+    /// a strong ETag are compared on resume. Default false.
+    pub ignore_modified: bool,
 }
 
 impl Default for Config {
@@ -129,6 +133,7 @@ impl Default for Config {
             reject_html: true,
             write_buffer: 512 * 1024,
             size_identity: false,
+            ignore_modified: false,
         }
     }
 }
@@ -290,6 +295,8 @@ pub struct Outcome {
     pub url_refreshed: bool,
     /// Format recognised from the first bytes (see [`sniff::sniff`]).
     pub detected: Option<&'static str>,
+    /// The server's Last-Modified for the file, as sent.
+    pub last_modified: Option<String>,
 }
 
 /// Something the engine reports while it works (for logs and debugging).

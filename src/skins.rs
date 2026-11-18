@@ -51,9 +51,40 @@ pub fn join(look: &str, mode: &str) -> String {
     if look == "craft" || look.is_empty() {
         mode.to_string()
     } else {
-        // Pure black belongs to Download Craft's look only.
-        let mode = if mode == "black" { "dark" } else { mode };
+        // Every look has an AMOLED ("black") side.
         format!("{look}:{mode}")
+    }
+}
+
+/// AMOLED: a dark palette with true black where the screen is largest
+/// (window, list, panels) and near-black cards, so an OLED panel switches
+/// those pixels off. Accents, text and state colours are the look's own.
+pub fn amoled(p: Palette) -> Palette {
+    let black = rgb(0x000000);
+    let card = rgb(0x0A0A0A);
+    let lift = rgb(0x161616);
+    let line = rgb(0x1E1E1E);
+    Palette {
+        bg: black,
+        surface: card,
+        surface_lt: lift,
+        header_bg: black,
+        central_bg: black,
+        card_bd: line,
+        modal_bg: card,
+        modal_bd: line,
+        track: lift,
+        dm_card: black,
+        dm_line: line,
+        dm_box_bd: rgb(0x2A2A2A),
+        dm_hover2: lift,
+        dm_trough: black,
+        cg_bg: black,
+        cg_bd: line,
+        cg_box_bg: card,
+        cg_box_bd: line,
+        cg_hover: lift,
+        ..p
     }
 }
 
@@ -313,7 +344,7 @@ mod tests {
         assert_eq!(split("nope:light"), ("craft", "light"));
         assert_eq!(join("craft", "light"), "light");
         assert_eq!(join("ledger", "system"), "ledger:system");
-        assert_eq!(join("petal", "black"), "petal:dark");
+        assert_eq!(join("petal", "black"), "petal:black");
     }
 
     #[test]

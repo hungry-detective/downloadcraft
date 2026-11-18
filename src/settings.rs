@@ -10,6 +10,7 @@
 //! own keys are overlaid, so concurrent main-app saves elsewhere survive).
 //! The main app watches `ui.json` mtime and reloads — no restart needed.
 
+use crate::shaped::ShapeText;
 use crate::app::pl;
 use crate::fonts::{reg, semi};
 use crate::model::{default_folder_rules, FolderRule, SpeedWindow};
@@ -29,6 +30,83 @@ const PANES: &[(&str, &str)] = &[
     ("Rules", "Categories & Rules"),
     ("Sounds", "Sounds"),
     ("Updates", "Updates"),
+];
+
+/// Classic (the IDM-style layout): Settings is a tabbed Options dialog with
+/// group boxes, check boxes and plain buttons. Set each frame from the look.
+static CLASSIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The saved theme is the Classic look (the window is sized for it).
+fn classic_look() -> bool {
+    crate::model::ui_pref_str("theme", "").starts_with("classic")
+}
+
+fn classic() -> bool {
+    CLASSIC.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+thread_local! {
+    /// While an Options page borrows cards from another page: the titles to
+    /// draw (the rest, and that page's loose text, are skipped).
+    static CARD_ONLY: std::cell::RefCell<Option<&'static [&'static str]>> = const { std::cell::RefCell::new(None) };
+    /// How many cards are open around the code running now.
+    static IN_CARD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+thread_local! {
+    /// While the search index is built: the page being read, the card the
+    /// code is in, and every (page, card, words) seen.
+    static INDEXING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static INDEX_CARD: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    static INDEX: std::cell::RefCell<Vec<(usize, String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// A card a search result points at: scrolled to once, then outlined
+    /// for a moment.
+    static JUMP: std::cell::RefCell<Option<(String, Option<std::time::Instant>)>> = const { std::cell::RefCell::new(None) };
+}
+
+fn indexing() -> bool {
+    INDEXING.with(|c| c.get().is_some())
+}
+
+/// Note a setting's words for "Find a setting" (only while indexing).
+fn index_note(text: &str) {
+    if let Some(p) = INDEXING.with(|c| c.get()) {
+        let card = INDEX_CARD.with(|c| c.borrow().clone());
+        if !text.trim().is_empty() {
+            INDEX.with(|i| i.borrow_mut().push((p, card, text.to_string())));
+        }
+    }
+}
+
+/// Draw only `titles` of a page's cards while `f` runs.
+fn only_cards<R>(titles: &'static [&'static str], f: impl FnOnce() -> R) -> R {
+    let was = CARD_ONLY.with(|c| c.replace(Some(titles)));
+    let r = f();
+    CARD_ONLY.with(|c| *c.borrow_mut() = was);
+    r
+}
+
+fn card_hidden(title: &str) -> bool {
+    CARD_ONLY.with(|c| c.borrow().is_some_and(|t| !t.contains(&title)))
+}
+
+/// Text outside any card while a page lends only some of its cards.
+fn loose_hidden() -> bool {
+    CARD_ONLY.with(|c| c.borrow().is_some()) && IN_CARD.with(|c| c.get()) == 0
+}
+
+/// Classic's tabs, in a classic download manager's order: (label, pane).
+/// Its "File types" is where capture is set (which types the browser hands
+/// over); "Save to" is the categories and their folders.
+const CLASSIC_TABS: &[(&str, usize)] = &[
+    ("General", 0),
+    ("File types", 3),
+    ("Save to", 5),
+    ("Downloads", 1),
+    ("Proxy / Socks", 4),
+    ("Helpers", PANE_YTDLP),
+    ("Sounds", 6),
+    ("Updates", 7),
 ];
 
 /// Rail index of the Plugins pane (the helper's status is probed when it is
@@ -640,6 +718,15 @@ fn save(s: &Settings) -> bool {
 }
 
 struct SettingsApp {
+    /// Classic's Options dialog: the open page (see `IDM_PAGES`) and, from
+    /// General, a page opened over it (look, helpers, updates, remote).
+    idm_page: usize,
+    idm_sub: Option<usize>,
+    idm: IdmState,
+    /// "Find a setting": what is typed, and whether the index of every
+    /// page's settings has to be built (on the next frame).
+    find: String,
+    find_build: bool,
     pane: usize,
     s: Settings,
     centered: bool,
@@ -822,6 +909,11 @@ pub fn run() -> eframe::Result<()> {
         .unwrap_or(0);
     let app = SettingsApp {
         pane,
+        idm_page: std::env::var("DOWNLOAD_CRAFT_OPTIONS_PAGE").ok().and_then(|v| v.parse().ok()).filter(|p: &usize| *p < 9).unwrap_or(0),
+        idm_sub: None,
+        idm: IdmState::default(),
+        find: std::env::var("DOWNLOAD_CRAFT_FIND").unwrap_or_default(),
+        find_build: std::env::var("DOWNLOAD_CRAFT_FIND").is_ok(),
         s: load(),
         centered: false,
         notice: String::new(),
@@ -866,8 +958,10 @@ pub fn run() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Download Craft Settings")
         .with_app_id(crate::platform::app_id())
-        .with_inner_size([640.0 * settings_scale(), 520.0 * settings_scale()])
-        .with_min_inner_size([600.0, 430.0])
+        // A little shorter than the main window's 500 px, so it never
+        // stands taller than the window it belongs to.
+        .with_inner_size(if classic_look() { [452.0 * settings_scale(), 560.0 * settings_scale()] } else { [640.0 * settings_scale(), 460.0 * settings_scale()] })
+        .with_min_inner_size(if classic_look() { [420.0, 480.0] } else { [560.0, 400.0] })
         .with_resizable(true);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
@@ -891,6 +985,23 @@ const UI_SCALE_MAX: u32 = 200;
 /// The saved interface size as a zoom factor: Settings follows it too
 /// (issue #10), not only the main window.
 fn settings_scale() -> f32 {
+    // Read at most twice a second: it was read from disk on every frame.
+    static LAST: std::sync::Mutex<Option<(std::time::Instant, f32)>> = std::sync::Mutex::new(None);
+    if let Ok(g) = LAST.lock() {
+        if let Some((at, v)) = *g {
+            if at.elapsed() < std::time::Duration::from_millis(500) {
+                return v;
+            }
+        }
+    }
+    let v = read_settings_scale();
+    if let Ok(mut g) = LAST.lock() {
+        *g = Some((std::time::Instant::now(), v));
+    }
+    v
+}
+
+fn read_settings_scale() -> f32 {
     crate::model::config_dir()
         .and_then(|p| std::fs::read_to_string(p.join("ui.json")).ok())
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -987,6 +1098,42 @@ impl eframe::App for SettingsApp {
         }
 
         let t = tok();
+        CLASSIC.store(crate::skins::active() == "classic", std::sync::atomic::Ordering::Relaxed);
+        if classic() {
+            self.classic_frame(ctx);
+            if self.ytdlp_busy || self.ffmpeg_busy {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            return;
+        }
+        // "Find a setting": read every page once, out of sight, to learn the
+        // words of its settings. That frame draws no page (the same widgets
+        // twice in one frame would clash).
+        let building = self.find_build;
+        if building {
+            self.find_build = false;
+            INDEX.with(|i| i.borrow_mut().clear());
+            egui::Area::new(egui::Id::new("settings_find_index"))
+                .fixed_pos(egui::pos2(-30000.0, -30000.0))
+                .show(ctx, |ui| {
+                    ui.set_width(520.0);
+                    for i in 0..PANES.len() {
+                        INDEXING.with(|c| c.set(Some(i)));
+                        match i {
+                            0 => self.pane_appearance(ui),
+                            1 => self.pane_engine(ui),
+                            PANE_YTDLP => self.pane_plugins(ui),
+                            3 => self.pane_browser(ui),
+                            4 => self.pane_proxy(ui),
+                            5 => self.pane_rules(ui),
+                            6 => self.pane_sounds(ui),
+                            _ => self.pane_updates(ui),
+                        }
+                    }
+                    INDEXING.with(|c| c.set(None));
+                });
+            ctx.request_repaint();
+        }
         // One manual composition instead of three nested panels: the concept
         // has a fixed rail border, a full-width footer rule and a 20 px content
         // inset, all of which are easier to hit exactly with rects.
@@ -1019,10 +1166,25 @@ impl eframe::App for SettingsApp {
                         .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
                 rail_ui.spacing_mut().item_spacing = Vec2::new(8.0, 2.0);
-                for (i, (glyph, name)) in PANES.iter().enumerate() {
-                    if rail_item(&mut rail_ui, glyph, name, self.pane == i) {
-                        self.pane = i;
+                {
+                    let w = rail_ui.available_width();
+                    let before = self.find.is_empty();
+                    input_box(&mut rail_ui, "find_setting", &mut self.find, w, false, false, crate::i18n::t("Find a setting"));
+                    if before && !self.find.is_empty() && INDEX.with(|i| i.borrow().is_empty()) {
+                        self.find_build = true;
                     }
+                    rail_ui.add_space(8.0);
+                }
+                if self.find.trim().is_empty() {
+                    for (i, (glyph, name)) in PANES.iter().enumerate() {
+                        if rail_item(&mut rail_ui, glyph, name, self.pane == i) {
+                            self.pane = i;
+                        }
+                    }
+                } else if let Some((pane, card)) = self.find_results(&mut rail_ui) {
+                    self.pane = pane;
+                    JUMP.with(|j| *j.borrow_mut() = Some((card, None)));
+                    self.find.clear();
                 }
 
                 // ---- footer ----
@@ -1059,6 +1221,9 @@ impl eframe::App for SettingsApp {
                 );
                 body_ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
                 let pane = self.pane;
+                if building {
+                    return;
+                }
                 egui::ScrollArea::vertical()
                     .id_salt(("settings_scroll", pane))
                     .auto_shrink([false, false])
@@ -1084,6 +1249,1437 @@ impl eframe::App for SettingsApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
     }
+}
+
+impl SettingsApp {
+    /// "Find a setting" results in the rail: each the setting's words and,
+    /// under them, its page and card. Returns the (page, card) clicked.
+    fn find_results(&mut self, ui: &mut Ui) -> Option<(usize, String)> {
+        let t = tok();
+        let q = self.find.trim().to_lowercase();
+        let all = INDEX.with(|i| i.borrow().clone());
+        if all.is_empty() {
+            hint(ui, "Searching…");
+            return None;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let hits: Vec<&(usize, String, String)> = all
+            .iter()
+            .filter(|(_, card, text)| text.to_lowercase().contains(&q) || card.to_lowercase().contains(&q))
+            .filter(|(p, card, text)| seen.insert((*p, card.clone(), text.clone())))
+            .take(14)
+            .collect();
+        if hits.is_empty() {
+            hint(ui, "No setting by that name");
+            return None;
+        }
+        let mut picked = None;
+        let w = ui.available_width();
+        for (pane, card, text) in hits {
+            let where_ = format!("{} \u{203a} {}", crate::i18n::t(PANES[*pane].1), crate::i18n::t(card));
+            let (tf, tc) = legible(text, reg(11.0), t.text);
+            let (wf, wc) = legible(&where_, reg(9.5), t.muted);
+            let tsz = crate::shaped::measure(ui.painter(), text, &tf, Some(w - 12.0));
+            let wsz = crate::shaped::measure(ui.painter(), &where_, &wf, Some(w - 12.0));
+            let (r, resp) = ui.allocate_exact_size(Vec2::new(w, tsz.y + wsz.y + 10.0), Sense::click());
+            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.hovered() {
+                ui.painter().rect_filled(r, 6.0, t.hover);
+            }
+            crate::shaped::paint(ui.painter(), egui::pos2(r.left() + 6.0, r.top() + 4.0), text, &tf, tc, Some(w - 12.0));
+            crate::shaped::paint(ui.painter(), egui::pos2(r.left() + 6.0, r.top() + 5.0 + tsz.y), &where_, &wf, wc, Some(w - 12.0));
+            if resp.clicked() {
+                picked = Some((*pane, card.clone()));
+            }
+        }
+        picked
+    }
+
+    /// Classic: the Options dialog of a classic download manager, laid out
+    /// control for control like one: two rows of tabs (the row holding the
+    /// open tab sits by the page), a picture and the page's subject at the
+    /// top, small group boxes, check boxes, radio buttons, list views and
+    /// push buttons, OK and Help at the bottom. Every control is a real
+    /// setting; settings this app has beyond those pages open from buttons
+    /// on the page they belong to.
+    fn classic_frame(&mut self, ctx: &egui::Context) {
+        let t = tok();
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin::ZERO))
+            .show(ctx, |ui| {
+                ui.spacing_mut().interact_size.y = C_H;
+                let full = ui.max_rect();
+                let foot_h = 40.0;
+                let row_h = 19.0;
+                let pad = 8.0;
+                let top = full.top() + 6.0;
+                let panel = Rect::from_min_max(egui::pos2(full.left() + pad, top + row_h * 2.0), egui::pos2(full.right() - pad, full.bottom() - foot_h));
+                let foot = Rect::from_min_max(egui::pos2(full.left(), full.bottom() - foot_h), full.max);
+                let p = ui.painter().clone();
+                p.rect_filled(full, 0.0, t.bg);
+                p.rect(panel, 0.0, t.bg, Stroke::new(1.0, t.border), StrokeKind::Inside);
+
+                // ---- two rows of tabs ----
+                let open_back = IDM_BACK.contains(&self.idm_page);
+                let rows: [(&[usize], f32); 2] = if open_back { [(IDM_FRONT, top), (IDM_BACK, top + row_h)] } else { [(IDM_BACK, top), (IDM_FRONT, top + row_h)] };
+                let mut open_tab: Option<Rect> = None;
+                for (pages, y) in rows {
+                    let w = panel.width() / pages.len() as f32;
+                    for (k, &page) in pages.iter().enumerate() {
+                        let on = self.idm_page == page;
+                        let label = crate::i18n::t(IDM_PAGES[page].0);
+                        let mut r = Rect::from_min_size(egui::pos2(panel.left() + k as f32 * w, y), egui::vec2(w + 1.0, row_h + 1.0));
+                        if on {
+                            r = Rect::from_min_max(r.min - Vec2::new(1.0, 2.0), r.max + Vec2::new(1.0, 0.0));
+                        }
+                        let resp = ui.interact(r, ui.id().with(("idm_tab", page)), Sense::click());
+                        let fill = if on { t.bg } else if resp.hovered() { blend(t.btn, t.accent, 0.10) } else { t.btn };
+                        p.rect(r, 0.0, fill, Stroke::new(1.0, t.border), StrokeKind::Inside);
+                        let (font, _) = legible(label, reg(C_FONT), t.text);
+                        let tsz = crate::shaped::measure(&p, label, &font, None);
+                        crate::shaped::paint(&p, r.center() - tsz / 2.0, label, &font, t.text, None);
+                        if on {
+                            open_tab = Some(r);
+                        }
+                        if resp.clicked() {
+                            self.idm_page = page;
+                            self.idm_sub = None;
+                            self.idm.sel = None;
+                        }
+                    }
+                }
+                if let Some(r) = open_tab {
+                    p.hline((r.left() + 1.0)..=(r.right() - 1.0), panel.top() + 0.5, Stroke::new(2.0, t.bg));
+                }
+
+                // ---- the page: picture and subject, then its controls ----
+                let inner = panel.shrink2(Vec2::new(10.0, 6.0));
+                let (icon, title) = match self.idm_sub {
+                    Some(sub) => (IDM_SUBS[sub].1, IDM_SUBS[sub].0),
+                    None => (IDM_PAGES[self.idm_page].1, IDM_PAGES[self.idm_page].2),
+                };
+                let head = Rect::from_min_size(inner.min, egui::vec2(inner.width(), 38.0));
+                p.stext(egui::pos2(head.left() + 16.0, head.center().y), Align2::CENTER_CENTER, icon, crate::fonts::icon(30.0), t.accent);
+                let mut right = head.right() - 2.0;
+                if self.idm_sub.is_none() && self.idm_page == 5 {
+                    // Proxy: "Get System" sits right of the subject.
+                    let mut b = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(egui::pos2(head.right() - 100.0, head.top() + 4.0), egui::pos2(head.right(), head.top() + 28.0))).layout(egui::Layout::right_to_left(egui::Align::Center)));
+                    if c_btn(&mut b, "Get System", true, 92.0) {
+                        self.get_system_proxy();
+                    }
+                    right -= 108.0;
+                }
+                let title_t = crate::i18n::t(title);
+                let (tfont, _) = legible(title_t, crate::fonts::semi(12.5), t.text);
+                let tsz = crate::shaped::measure(&p, title_t, &tfont, None);
+                crate::shaped::paint(&p, egui::pos2(right - tsz.x, head.top() + 8.0), title_t, &tfont, t.text, None);
+                p.hline((head.left() + 38.0)..=head.right(), head.top() + 10.0 + tsz.y + 2.0, Stroke::new(1.0, t.border));
+                let mut body_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_max(egui::pos2(inner.left(), head.bottom() + 2.0), inner.max))
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                let key = (self.idm_page, self.idm_sub);
+                egui::ScrollArea::vertical()
+                    .id_salt(("idm_scroll", key.0, key.1))
+                    .auto_shrink([false, false])
+                    .show(&mut body_ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+                        ui.spacing_mut().interact_size.y = C_H;
+                        classic_widgets(ui);
+                        if let Some(sub) = self.idm_sub {
+                            if c_btn(ui, "‹ Back", true, 70.0) {
+                                self.idm_sub = None;
+                            }
+                            ui.add_space(4.0);
+                            ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
+                            match sub {
+                                0 => self.pane_appearance(ui),
+                                1 => self.pane_plugins(ui),
+                                2 => self.pane_updates(ui),
+                                3 => only_cards(&["Remote control", "AI assistants"], || self.pane_appearance(ui)),
+                                4 => self.idm_keys(ui),
+                                5 => only_cards(&["Progress windows"], || self.pane_appearance(ui)),
+                                6 => only_cards(&["On completion"], || self.pane_engine(ui)),
+                                8 => self.pane_browser(ui),
+                                9 => self.rules_section(ui),
+                                _ => {
+                                    only_cards(&["Performance", "Network", "Speed windows"], || self.pane_engine(ui));
+                                    only_cards(&["Torrents", "Debrid account"], || self.pane_proxy(ui));
+                                }
+                            }
+                        } else {
+                            match self.idm_page {
+                                0 => self.idm_general(ui),
+                                1 => self.idm_file_types(ui),
+                                2 => self.idm_save_to(ui),
+                                3 => self.idm_downloads(ui),
+                                4 => self.idm_connection(ui),
+                                5 => self.idm_proxy(ui),
+                                6 => self.idm_logins(ui),
+                                7 => self.idm_dialup(ui),
+                                _ => self.idm_sounds(ui),
+                            }
+                        }
+                        ui.add_space(8.0);
+                    });
+
+                // ---- OK / Help (closing the window is Cancel) ----
+                let mut foot_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(foot.shrink2(Vec2::new(pad + 2.0, 8.0)))
+                        .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                );
+                foot_ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
+                if c_btn(&mut foot_ui, "Help", true, 86.0) {
+                    crate::platform::open_url("https://github.com/hungry-detective/downloadcraft#readme");
+                }
+                if c_btn(&mut foot_ui, "OK", true, 86.0) {
+                    if save(&self.s) {
+                        if self.ytdlp_rx.is_none() {
+                            self.ytdlp_rx = Some(ytdlp_probe(false));
+                            self.ytdlp_busy = true;
+                        }
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    } else {
+                        self.notice = "Could not write settings.".to_string();
+                    }
+                }
+                if !self.notice.is_empty() {
+                    foot_ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        c_text_col(ui, &self.notice.clone(), t.muted);
+                    });
+                }
+            });
+    }
+
+    /// General: "Browser/System Integration".
+    fn idm_general(&mut self, ui: &mut Ui) {
+        if self.host_status.is_none() {
+            self.host_status = Some(["chrome", "edge", "brave", "opera", "firefox"].iter().map(|b| (*b, crate::app::native_host_status(b))).collect());
+        }
+        let status = self.host_status.clone().unwrap_or_default();
+        let linked = status.iter().any(|(_, ok)| *ok);
+        let line = if linked { "Advanced browser integration is enabled" } else { "Advanced browser integration is not enabled" };
+        if c_row_btn(ui, line, if linked { "Restart" } else { "Enable" }, true) {
+            for (b, ok) in &status {
+                if *ok || !linked {
+                    let _ = install_one(b);
+                }
+            }
+            self.host_status = None;
+        }
+        ui.add_space(2.0);
+        #[cfg(windows)]
+        c_check(ui, &mut self.s.start_with_windows, "Launch Download Craft on startup", true);
+        c_check(ui, &mut self.s.watch_clipboard, "Automatically start downloading of URLs placed to clipboard", true);
+        c_check(ui, &mut self.s.close_to_tray, "Minimize to system tray instead of quitting", true);
+        ui.add_space(4.0);
+        let mut link: Option<&'static str> = None;
+        let mut add_browser = false;
+        c_group(ui, "Capture downloads from the following browsers:", None, |ui| {
+            let names = [("chrome", "Google Chrome"), ("edge", "Microsoft Edge"), ("brave", "Brave"), ("opera", "Opera"), ("firefox", "Mozilla Firefox")];
+            let rows: Vec<Vec<String>> = names.iter().map(|(_, n)| vec![n.to_string()]).collect();
+            let mut checks: Vec<bool> = names.iter().map(|(k, _)| status.iter().any(|(b, ok)| b == k && *ok)).collect();
+            let was = checks.clone();
+            let mut sel = self.idm.sel;
+            c_list(ui, "idm_browsers", &[], &rows, &mut sel, 104.0, Some(&mut checks));
+            self.idm.sel = sel;
+            for (i, (k, _)) in names.iter().enumerate() {
+                if checks[i] && !was[i] {
+                    link = Some(k);
+                }
+            }
+            ui.add_space(4.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                add_browser = c_btn(ui, "Add browser…", true, 104.0);
+            });
+        });
+        if let Some(b) = link {
+            self.browser_msg = install_one(b);
+            self.host_status = None;
+        }
+        if add_browser {
+            self.pane = 3;
+            self.idm_sub = Some(8);
+        }
+        if !self.browser_msg.is_empty() {
+            c_text_col(ui, &self.browser_msg.clone(), tok().muted);
+        }
+        c_sep(ui);
+        if c_row_btn(ui, "Customize keys to prevent or force downloading", "Keys…", true) {
+            self.idm_sub = Some(4);
+        }
+        if c_row_btn(ui, "Customize Download Craft look, language and interface size", "Edit…", true) {
+            self.idm_sub = Some(0);
+        }
+        if c_row_btn(ui, "Customize helper programs (yt-dlp, FFmpeg)", "Edit…", true) {
+            self.idm_sub = Some(1);
+        }
+        if c_row_btn(ui, "Customize updates, remote control and AI assistants", "Edit…", true) {
+            self.idm_sub = Some(2);
+        }
+    }
+
+    /// The Keys dialog: what keeps a click in the browser, what takes it.
+    fn idm_keys(&mut self, ui: &mut Ui) {
+        let s = &mut self.s;
+        c_check(ui, &mut s.capture_auto, "Take over downloads from the browser", true);
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            c_text(ui, "Key to prevent downloading with Download Craft:");
+            let shown = match s.capture_skip_key.as_str() {
+                "shift" => "Shift",
+                "off" => "None",
+                _ => "Alt",
+            };
+            egui::ComboBox::from_id_salt("idm_skip_key").selected_text(shown).width(90.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut s.capture_skip_key, "alt".to_string(), "Alt");
+                ui.selectable_value(&mut s.capture_skip_key, "shift".to_string(), "Shift");
+                ui.selectable_value(&mut s.capture_skip_key, "off".to_string(), "None");
+            });
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            c_text(ui, "Leave files smaller than");
+            c_edit(ui, "idm_min_kb", &mut s.capture_min_kb, 70.0, true, false);
+            c_text(ui, "KB in the browser");
+        });
+        ui.add_space(4.0);
+        c_check(ui, &mut s.browser_fallback, "Download in the browser when Download Craft cannot", true);
+        c_check(ui, &mut s.notify_done, "Browser notification when a download finishes", true);
+        ui.add_space(6.0);
+        if c_row_btn(ui, "Browser extensions and their folders", "Edit…", true) {
+            self.idm_sub = Some(8);
+        }
+    }
+
+    /// File types: "Downloaded file types".
+    fn idm_file_types(&mut self, ui: &mut Ui) {
+        let s = &mut self.s;
+        c_text(ui, "Automatically start downloading the following file types:");
+        c_multi(ui, "idm_types", &mut s.capture_types, 3);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            if c_btn(ui, "Default", true, 72.0) {
+                s.capture_types = DEFAULT_CAPTURE_TYPES.to_string();
+            }
+        });
+        ui.add_space(6.0);
+        c_text(ui, "Don't start downloading automatically from the following sites:");
+        c_multi(ui, "idm_sites", &mut s.capture_skip_sites, 3);
+        ui.horizontal(|ui| {
+            c_text(ui, "(separate names by spaces)");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if c_btn(ui, "Default", true, 72.0) {
+                    s.capture_skip_sites = DEFAULT_SKIP_SITES.to_string();
+                }
+            });
+        });
+        ui.add_space(8.0);
+        c_text(ui, "Don't start downloading automatically from the following addresses:");
+        ui.add_space(2.0);
+        if c_btn(ui, "Edit list …", true, 130.0) {
+            self.idm.addr_open = !self.idm.addr_open;
+            if self.idm.addr_open {
+                self.idm.addr = crate::model::ui_pref_str("capture_skip_urls", "");
+            }
+        }
+        if self.idm.addr_open {
+            ui.add_space(4.0);
+            c_text_col(ui, "One address per line; * matches anything (https://example.com/files/*).", tok().muted);
+            let before = self.idm.addr.clone();
+            c_multi(ui, "idm_addr", &mut self.idm.addr, 4);
+            if self.idm.addr != before {
+                crate::model::ui_pref_set_str("capture_skip_urls", self.idm.addr.trim());
+            }
+        }
+    }
+
+    /// Save to: "Categories, file types, folders".
+    fn idm_save_to(&mut self, ui: &mut Ui) {
+        if self.s.folder_rules.is_empty() {
+            self.s.folder_rules = crate::model::default_folder_rules();
+        }
+        let n = self.s.folder_rules.len();
+        if self.idm.cat > n {
+            self.idm.cat = 0;
+        }
+        let cat = self.idm.cat;
+        let name = if cat == 0 { "General".to_string() } else { cat_name(&self.s.folder_rules[cat - 1].folder) };
+        c_group(ui, "Save To…", None, |ui| {
+            c_text(ui, "Category");
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - 100.0).max(120.0);
+                let mut pick = cat;
+                egui::ComboBox::from_id_salt("idm_cat").selected_text(crate::i18n::t(&name).to_string()).width(w).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut pick, 0, crate::i18n::t("General"));
+                    for (i, r) in self.s.folder_rules.iter().enumerate() {
+                        ui.selectable_value(&mut pick, i + 1, crate::i18n::t(&cat_name(&r.folder)).to_string());
+                    }
+                });
+                if pick != cat {
+                    self.idm.cat = pick;
+                    self.idm.cat_edit = false;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if c_btn(ui, "New", true, 84.0) {
+                        self.s.folder_rules.push(FolderRule { exts: String::new(), folder: crate::i18n::t("New category").to_string() });
+                        self.idm.cat = self.s.folder_rules.len();
+                        self.idm.cat_edit = true;
+                    }
+                });
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if c_btn(ui, "Edit…", cat > 0, 84.0) {
+                    self.idm.cat_edit = !self.idm.cat_edit;
+                }
+            });
+            let cat = self.idm.cat;
+            if cat > 0 && self.idm.cat_edit {
+                ui.horizontal(|ui| {
+                    c_text(ui, "Name");
+                    let r = &mut self.s.folder_rules[cat - 1];
+                    let mut nm = cat_name(&r.folder);
+                    let w = (ui.available_width() - 90.0).max(100.0);
+                    c_edit(ui, "idm_cat_name", &mut nm, w, true, false);
+                    if nm != cat_name(&r.folder) && !nm.trim().is_empty() {
+                        r.folder = rename_last(&r.folder, nm.trim());
+                    }
+                    if c_btn(ui, "Delete", true, 70.0) {
+                        self.s.folder_rules.remove(cat - 1);
+                        self.idm.cat = 0;
+                        self.idm.cat_edit = false;
+                    }
+                });
+            }
+            let cat = self.idm.cat;
+            let name = if cat == 0 { "General".to_string() } else { cat_name(&self.s.folder_rules[cat - 1].folder) };
+            let name_t = crate::i18n::t(&name).to_string();
+            ui.add_space(2.0);
+            c_text(ui, &format!("{} \"{name_t}\" {}", crate::i18n::t("Automatically put in"), crate::i18n::t("category the following file types:")));
+            if cat == 0 {
+                let mut fixed = crate::i18n::t("The file types that are not listed in any other category").to_string();
+                c_edit(ui, "idm_cat_types0", &mut fixed, ui.available_width(), false, false);
+            } else {
+                let w = ui.available_width();
+                c_edit(ui, "idm_cat_types", &mut self.s.folder_rules[cat - 1].exts, w, true, false);
+            }
+            ui.add_space(2.0);
+            c_text(ui, &format!("{} \"{name_t}\" {}", crate::i18n::t("Default download directory for"), crate::i18n::t("category")));
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - 84.0).max(100.0);
+                if cat == 0 {
+                    c_edit(ui, "idm_cat_dir0", &mut self.s.save_dir, w, true, false);
+                } else {
+                    let mut dir = cat_dir(&self.s.save_dir, &self.s.folder_rules[cat - 1].folder);
+                    let was = dir.clone();
+                    c_edit(ui, "idm_cat_dir", &mut dir, w, true, false);
+                    if dir != was {
+                        self.s.folder_rules[cat - 1].folder = dir;
+                    }
+                }
+                if c_btn(ui, "Browse", true, 76.0) {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        let p = p.to_string_lossy().to_string();
+                        if cat == 0 {
+                            self.s.save_dir = p;
+                        } else {
+                            self.s.folder_rules[cat - 1].folder = p;
+                        }
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            c_check(ui, &mut self.s.remember_folders, &format!("{} \"{name_t}\" {}", crate::i18n::t("Change folder for"), crate::i18n::t("category on last selected")), true);
+            c_check(ui, &mut self.s.category_folders, "Save each category in its own folder", true);
+        });
+        ui.add_space(2.0);
+        let mut ft = crate::model::ui_pref_bool("server_file_time", false);
+        if c_check(ui, &mut ft, "Set file creation date as provided by the server", true) {
+            crate::model::ui_pref_set_bool("server_file_time", ft);
+        }
+        c_group(ui, "Temporary directory", None, |ui| {
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - 84.0).max(100.0);
+                c_edit(ui, "idm_temp", &mut self.s.temp_dir, w, true, false);
+                if c_btn(ui, "Browse", true, 76.0) {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        self.s.temp_dir = p.to_string_lossy().to_string();
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            c_text(ui, "Temporary directory is required for storing file parts during download. Empty = next to the file. If you have several physical drives on your computer, you should select different physical drives for temporary directory and \"Save To\" folders for faster assembling of downloaded files.");
+        });
+        ui.add_space(4.0);
+        if c_row_btn(ui, "File name template and rules", "Edit…", true) {
+            self.idm_sub = Some(9);
+        }
+    }
+
+    /// Downloads: "Default download settings".
+    fn idm_downloads(&mut self, ui: &mut Ui) {
+        if c_row_btn(ui, "Customize \"Download progress\" dialog", "Edit…", true) {
+            self.idm_sub = Some(5);
+        }
+        let mut start = crate::model::ui_pref_bool("show_start_dialog", true);
+        if c_check(ui, &mut start, "Show start download dialog", true) {
+            crate::model::ui_pref_set_bool("show_start_dialog", start);
+        }
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            let mut q = crate::model::ui_pref_bool("start_dialog_queue_only", false);
+            if c_check(ui, &mut q, "Do not start downloading, only add files to the queue", !start) {
+                crate::model::ui_pref_set_bool("start_dialog_queue_only", q);
+            }
+        });
+        c_check(ui, &mut self.s.show_complete, "Show download complete dialog", true);
+        c_text(ui, "Note: These settings don't relate to queue processing");
+        c_sep(ui);
+        let mut pre = crate::model::ui_pref_bool("prefetch_on", true);
+        if c_check(ui, &mut pre, "Start downloading immediately while displaying \"Download File Info\" dialog", true) {
+            crate::model::ui_pref_set_bool("prefetch_on", pre);
+        }
+        let mut ql = crate::model::ui_pref_bool("queue_panel_later", true);
+        if c_check(ui, &mut ql, "Show queue selection panel on pressing \"Download Later\" button", true) {
+            crate::model::ui_pref_set_bool("queue_panel_later", ql);
+        }
+        let mut qb = crate::model::ui_pref_bool("queue_panel_batch", true);
+        if c_check(ui, &mut qb, "Show queue selection panel on closing batch download dialogs", true) {
+            crate::model::ui_pref_set_bool("queue_panel_batch", qb);
+        }
+        let mut im = crate::model::ui_pref_bool("ignore_mtime_change", false);
+        if c_check(ui, &mut im, "Ignore file modification time changes when resuming a download", true) {
+            crate::model::ui_pref_set_bool("ignore_mtime_change", im);
+        }
+        c_check(ui, &mut self.s.double_click_opens, "Double-click a finished download to open it", true);
+        c_sep(ui);
+        c_text(ui, "If a duplicate download link is added:");
+        let mut dup = crate::model::ui_pref_str("duplicate_action", "ask");
+        let was = dup.clone();
+        let shown = DUP_CHOICES.iter().find(|(k, _)| *k == dup).map(|(_, n)| *n).unwrap_or(DUP_CHOICES[0].1);
+        let w = ui.available_width() - 4.0;
+        egui::ComboBox::from_id_salt("idm_dup").selected_text(crate::i18n::t(shown).to_string()).width(w).show_ui(ui, |ui| {
+            for (k, n) in DUP_CHOICES {
+                ui.selectable_value(&mut dup, k.to_string(), crate::i18n::t(n).to_string());
+            }
+        });
+        if dup != was {
+            crate::model::ui_pref_set_str("duplicate_action", &dup);
+        }
+        ui.add_space(4.0);
+        c_text(ui, "User-Agent for manually added downloads:");
+        let w = ui.available_width();
+        c_edit(ui, "idm_ua", &mut self.s.user_agent, w, true, false);
+        c_sep(ui);
+        if c_row_btn(ui, "Virus checking and what happens when a download finishes", "Edit…", true) {
+            self.idm_sub = Some(6);
+        }
+    }
+
+    /// Connection: "Connections and Limits".
+    fn idm_connection(&mut self, ui: &mut Ui) {
+        c_group(ui, "Max. connections number", None, |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("idm_conns").selected_text(self.s.connections_default.to_string()).width(96.0).show_ui(ui, |ui| {
+                        for n in [1usize, 2, 4, 8, 12, 16, 24, 32] {
+                            ui.selectable_value(&mut self.s.connections_default, n, n.to_string());
+                        }
+                    });
+                    c_text(ui, "Default max. conn. number");
+                });
+            });
+            c_sep(ui);
+            c_text(ui, "Exceptions:");
+            let mut ex = conn_exceptions();
+            let rows: Vec<Vec<String>> = ex.iter().map(|(h, n)| vec![h.clone(), n.to_string()]).collect();
+            let mut new = false;
+            let mut del = false;
+            let mut edit = false;
+            ui.horizontal(|ui| {
+                let lw = (ui.available_width() - 84.0).max(140.0);
+                ui.allocate_ui_with_layout(Vec2::new(lw, 120.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    let mut sel = self.idm.sel;
+                    c_list(ui, "idm_exc", &[("Server", 0.72), ("Number", 0.28)], &rows, &mut sel, 120.0, None);
+                    self.idm.sel = sel;
+                });
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    new = c_btn(ui, "New", true, 76.0);
+                    del = c_btn(ui, "Delete", self.idm.sel.is_some(), 76.0);
+                    edit = c_btn(ui, "Edit", self.idm.sel.is_some(), 76.0);
+                });
+            });
+            if new {
+                self.idm.exc = Some((None, String::new(), "2".to_string()));
+            }
+            if del {
+                if let Some(i) = self.idm.sel.take() {
+                    if i < ex.len() {
+                        ex.remove(i);
+                        set_conn_exceptions(&ex);
+                    }
+                }
+            }
+            if edit {
+                if let Some(i) = self.idm.sel.filter(|i| *i < ex.len()) {
+                    self.idm.exc = Some((Some(i), ex[i].0.clone(), ex[i].1.to_string()));
+                }
+            }
+            let mut close = false;
+            if let Some((at, host, num)) = &mut self.idm.exc {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    c_text(ui, "Server");
+                    c_edit(ui, "idm_exc_host", host, 150.0, true, false);
+                    c_text(ui, "Number");
+                    c_edit(ui, "idm_exc_num", num, 36.0, true, false);
+                    if c_btn(ui, "OK", !host.trim().is_empty(), 44.0) {
+                        let n = num.trim().parse::<usize>().unwrap_or(1).clamp(1, 32);
+                        let h = host.trim().trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_ascii_lowercase();
+                        match at {
+                            Some(i) if *i < ex.len() => ex[*i] = (h, n),
+                            _ => ex.push((h, n)),
+                        }
+                        set_conn_exceptions(&ex);
+                        close = true;
+                    }
+                });
+            }
+            if close {
+                self.idm.exc = None;
+            }
+        });
+        let mut on = self.s.quota_mb.trim().parse::<u64>().unwrap_or(0) > 0;
+        let was = on;
+        c_group(ui, "Download limits", Some(&mut on), |ui| {
+            let en = was;
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                c_text_en(ui, "Download no more than", en);
+                c_edit(ui, "idm_quota_mb", &mut self.s.quota_mb, 46.0, en, false);
+                c_text_en(ui, "MBytes", en);
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                c_text_en(ui, "every", en);
+                c_edit(ui, "idm_quota_h", &mut self.s.quota_hours, 46.0, en, false);
+                c_text_en(ui, "hours", en);
+            });
+            let mut warn = crate::model::ui_pref_bool("quota_warn", true);
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                if c_check(ui, &mut warn, "Show warning before stopping downloads", en) {
+                    crate::model::ui_pref_set_bool("quota_warn", warn);
+                }
+            });
+        });
+        if on != was {
+            if on {
+                let last = crate::model::ui_pref_str("quota_mb_last", "200");
+                self.s.quota_mb = if last.trim().parse::<u64>().unwrap_or(0) > 0 { last } else { "200".into() };
+                if self.s.quota_hours.trim().parse::<u64>().unwrap_or(0) == 0 {
+                    self.s.quota_hours = "5".into();
+                }
+            } else {
+                crate::model::ui_pref_set_str("quota_mb_last", self.s.quota_mb.trim());
+                self.s.quota_mb = "0".into();
+            }
+        }
+        ui.add_space(4.0);
+        if c_row_btn(ui, "Speed limiter, timeouts, retries, torrents and debrid", "Edit…", true) {
+            self.idm_sub = Some(7);
+        }
+    }
+
+    /// Proxy / Socks: "Proxy / socks configuration".
+    fn idm_proxy(&mut self, ui: &mut Ui) {
+        let s = &mut self.s;
+        c_check(ui, &mut s.proxy_from_browser, "Use proxy/socks from a browser's request if there are download errors for the downloads intercepted from the browser", true);
+        c_sep(ui);
+        for (mode, label) in [("none", "No proxy/socks"), ("system", "Use system settings"), ("pac", "Use automatic configuration script")] {
+            if c_radio(ui, s.proxy_mode == mode, label) {
+                s.proxy_mode = mode.to_string();
+            }
+            if mode == "pac" {
+                let en = s.proxy_mode == "pac";
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    c_text_en(ui, "Address", en);
+                    let w = ui.available_width();
+                    c_edit(ui, "idm_pac", &mut s.proxy_pac, w, en, false);
+                });
+            }
+            c_sep(ui);
+        }
+        if c_radio(ui, s.proxy_mode == "manual", "Manual proxy/socks configuration") {
+            s.proxy_mode = "manual".to_string();
+        }
+        let en = s.proxy_mode == "manual";
+        let full = ui.available_width() - 20.0;
+        let (aw, pw, uw) = (full * 0.36, full * 0.14, full * 0.24);
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            for (label, w) in [("Proxy server address", aw), ("Port", pw), ("UserName", uw), ("Password", uw)] {
+                ui.allocate_ui_with_layout(Vec2::new(w, 16.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_min_width(w);
+                    c_text_en(ui, label, en);
+                });
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            c_edit(ui, "idm_ph", &mut s.proxy_host, aw - 6.0, en, false);
+            c_edit(ui, "idm_pp", &mut s.proxy_port, pw - 6.0, en, false);
+            c_edit(ui, "idm_pu", &mut s.proxy_user, uw - 6.0, en, false);
+            c_edit(ui, "idm_pw", &mut s.proxy_pass, uw - 6.0, en, true);
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            c_text_en(ui, "Use this proxy for the following protocols:", en);
+        });
+        let mut adv = false;
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            c_check_w(ui, &mut s.proxy_http, "http", en, 60.0);
+            c_check_w(ui, &mut s.proxy_https, "https", en, 70.0);
+            let mut ftp = crate::model::ui_pref_bool("proxy_ftp", false);
+            if c_check_w(ui, &mut ftp, "ftp", en, 56.0) {
+                crate::model::ui_pref_set_bool("proxy_ftp", ftp);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                adv = c_btn(ui, "Advanced / Socks…", en, 150.0);
+            });
+        });
+        if adv {
+            self.idm.socks_open = !self.idm.socks_open;
+        }
+        if self.idm.socks_open && en {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                c_text(ui, "Type");
+                let shown = match s.proxy_kind.as_str() {
+                    "socks5" => "SOCKS 5",
+                    "socks5h" => "SOCKS 5 (names resolved by the proxy)",
+                    "socks4" => "SOCKS 4",
+                    "https" => "HTTPS",
+                    _ => "HTTP",
+                };
+                egui::ComboBox::from_id_salt("idm_pkind").selected_text(shown).width(230.0).show_ui(ui, |ui| {
+                    for (k, n) in [("http", "HTTP"), ("https", "HTTPS"), ("socks4", "SOCKS 4"), ("socks5", "SOCKS 5"), ("socks5h", "SOCKS 5 (names resolved by the proxy)")] {
+                        ui.selectable_value(&mut s.proxy_kind, k.to_string(), n);
+                    }
+                });
+            });
+        }
+        ui.add_space(14.0);
+        let mut pasv = crate::model::ui_pref_bool("ftp_pasv", true);
+        if c_check(ui, &mut pasv, "Use FTP in PASV mode", true) {
+            crate::model::ui_pref_set_bool("ftp_pasv", pasv);
+        }
+    }
+
+    /// Fill the manual proxy from Windows' own proxy settings.
+    fn get_system_proxy(&mut self) {
+        let found = system_proxy();
+        match found {
+            Some((host, port)) => {
+                self.s.proxy_mode = "manual".into();
+                self.s.proxy_host = host;
+                self.s.proxy_port = port;
+                self.notice = String::new();
+            }
+            None => self.notice = crate::i18n::t("Windows has no proxy set").to_string(),
+        }
+    }
+
+    /// Sites Logins: "User names and passwords for servers/sites".
+    fn idm_logins(&mut self, ui: &mut Ui) {
+        let rows: Vec<Vec<String>> = self.s.logins.iter().map(|l| vec![l.host.clone(), l.user.clone(), "•".repeat(l.pass.chars().count().min(8))]).collect();
+        let mut sel = self.idm.sel;
+        let h = (ui.available_height() - 110.0).clamp(150.0, 300.0);
+        let dbl = c_list(ui, "idm_logins", &[("Site/path", 0.56), ("User", 0.24), ("Password", 0.20)], &rows, &mut sel, h, None);
+        self.idm.sel = sel.filter(|i| *i < self.s.logins.len());
+        ui.add_space(8.0);
+        let (mut new, mut edit, mut remove) = (false, false, false);
+        ui.horizontal(|ui| {
+            ui.add_space(10.0);
+            new = c_btn(ui, "New", true, 74.0);
+            ui.add_space(14.0);
+            edit = c_btn(ui, "Edit", self.idm.sel.is_some(), 74.0);
+            ui.add_space(14.0);
+            remove = c_btn(ui, "Remove", self.idm.sel.is_some(), 74.0);
+        });
+        if new {
+            self.idm.login = Some((None, crate::model::SiteLogin::default()));
+        }
+        if edit || dbl.is_some() {
+            if let Some(i) = self.idm.sel {
+                self.idm.login = Some((Some(i), self.s.logins[i].clone()));
+            }
+        }
+        if remove {
+            if let Some(i) = self.idm.sel.take() {
+                self.s.logins.remove(i);
+            }
+        }
+        let mut done: Option<bool> = None;
+        if let Some((_, l)) = &mut self.idm.login {
+            c_group(ui, "Site login", None, |ui| {
+                for (label, id, buf, pw) in [("Site/path", "idm_lh", &mut l.host, false), ("User", "idm_lu", &mut l.user, false), ("Password", "idm_lp", &mut l.pass, true)] {
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(Vec2::new(80.0, C_H), egui::Layout::left_to_right(egui::Align::Center), |ui| c_text(ui, label));
+                        let w = ui.available_width();
+                        c_edit(ui, id, buf, w, true, pw);
+                    });
+                }
+                ui.add_space(2.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if c_btn(ui, "Cancel", true, 74.0) {
+                        done = Some(false);
+                    }
+                    if c_btn(ui, "OK", !l.host.trim().is_empty(), 74.0) {
+                        done = Some(true);
+                    }
+                });
+            });
+        }
+        if let Some(ok) = done {
+            if let Some((at, mut l)) = self.idm.login.take() {
+                if ok {
+                    l.host = l.host.trim().trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string();
+                    match at {
+                        Some(i) if i < self.s.logins.len() => self.s.logins[i] = l,
+                        _ => self.s.logins.push(l),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dial Up / VPN: "Dial up / VPN settings". The connection is the
+    /// adapter every download is held to (kill switch); Apply dials it.
+    fn idm_dialup(&mut self, ui: &mut Ui) {
+        let mut adapter = crate::netlock::chosen();
+        let was = adapter.clone();
+        let mut on = !adapter.is_empty() || self.idm.dial_on;
+        if c_check(ui, &mut on, "Use Windows Dial Up / VPN Networking", true) {
+            self.idm.dial_on = on;
+            if !on {
+                adapter.clear();
+            }
+        }
+        let en = on;
+        c_group(ui, "Connection options", None, |ui| {
+            let lw = 120.0;
+            let list = crate::netlock::adapters();
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(Vec2::new(lw, C_H), egui::Layout::right_to_left(egui::Align::Center), |ui| c_text_en(ui, "Connection:", en));
+                let shown = if adapter.is_empty() { crate::i18n::t("Any (the system's choice)").to_string() } else { adapter.clone() };
+                ui.add_enabled_ui(en, |ui| {
+                    egui::ComboBox::from_id_salt("idm_dial_conn").selected_text(shown).width(200.0).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut adapter, String::new(), crate::i18n::t("Any (the system's choice)"));
+                        for (name, ip) in &list {
+                            ui.selectable_value(&mut adapter, name.clone(), format!("{name}  ({ip})"));
+                        }
+                        for name in ras_entries() {
+                            if !list.iter().any(|(n, _)| *n == name) {
+                                ui.selectable_value(&mut adapter, name.clone(), format!("{name}  ({})", crate::i18n::t("not connected")));
+                            }
+                        }
+                    });
+                });
+            });
+            let mut user = crate::model::ui_pref_str("dial_user", "");
+            let mut pass = crate::model::ui_pref_str("dial_pass", "");
+            let mut save_pw = crate::model::ui_pref_bool("dial_save", false);
+            let (uw, pw0) = (user.clone(), pass.clone());
+            for (label, id, buf, secret) in [("User name:", "idm_du", &mut user, false), ("Password:", "idm_dp", &mut pass, true)] {
+                ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(Vec2::new(lw, C_H), egui::Layout::right_to_left(egui::Align::Center), |ui| c_text_en(ui, label, en));
+                    c_edit(ui, id, buf, 176.0, en, secret);
+                });
+            }
+            ui.horizontal(|ui| {
+                ui.add_space(lw + 6.0);
+                if c_check(ui, &mut save_pw, "Save password", en) {
+                    crate::model::ui_pref_set_bool("dial_save", save_pw);
+                }
+            });
+            if user != uw {
+                crate::model::ui_pref_set_str("dial_user", &user);
+            }
+            if pass != pw0 {
+                self.idm.dial_pass = pass.clone();
+                crate::model::ui_pref_set_str("dial_pass", if save_pw { pass.as_str() } else { "" });
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if c_btn(ui, "Apply", en && !adapter.is_empty(), 86.0) {
+                    let pw = if pass.is_empty() { self.idm.dial_pass.clone() } else { pass.clone() };
+                    self.notice = crate::i18n::t("Dialing…").to_string();
+                    dial(adapter.clone(), user.clone(), pw);
+                }
+            });
+        });
+        c_group(ui, "Redial options", None, |ui| {
+            let lw = 220.0;
+            let mut n = crate::model::ui_pref_str("dial_redial", "0");
+            let mut w = crate::model::ui_pref_str("dial_redial_wait", "30");
+            let (n0, w0) = (n.clone(), w.clone());
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(Vec2::new(lw, C_H), egui::Layout::right_to_left(egui::Align::Center), |ui| c_text_en(ui, "Redial attempts (zero if endlessly):", en));
+                c_edit(ui, "idm_rd", &mut n, 40.0, en, false);
+                c_text_en(ui, "times", en);
+            });
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(Vec2::new(lw, C_H), egui::Layout::right_to_left(egui::Align::Center), |ui| c_text_en(ui, "Time between redial attempts:", en));
+                c_edit(ui, "idm_rw", &mut w, 40.0, en, false);
+                c_text_en(ui, "seconds", en);
+            });
+            if n != n0 && n.trim().parse::<u32>().is_ok() {
+                crate::model::ui_pref_set_str("dial_redial", n.trim());
+            }
+            if w != w0 && w.trim().parse::<u32>().is_ok() {
+                crate::model::ui_pref_set_str("dial_redial_wait", w.trim());
+            }
+        });
+        c_group(ui, "DNS", None, |ui| {
+            let mut dns = crate::model::ui_pref_str("dns_mode", "system");
+            let dw = dns.clone();
+            let shown = crate::netlock::DNS_CHOICES.iter().find(|(k, _)| *k == dns).map(|(_, n)| *n).unwrap_or("System's DNS");
+            let w = ui.available_width() - 4.0;
+            egui::ComboBox::from_id_salt("idm_dns").selected_text(crate::i18n::t(shown).to_string()).width(w).show_ui(ui, |ui| {
+                for (k, n) in crate::netlock::DNS_CHOICES {
+                    ui.selectable_value(&mut dns, k.to_string(), crate::i18n::t(n).to_string());
+                }
+            });
+            if dns != dw {
+                crate::model::ui_pref_set_str("dns_mode", &dns);
+            }
+        });
+        if en {
+            c_text_col(ui, "While the connection is chosen and down, nothing downloads; downloads stopped by it start again when it is back.", tok().muted);
+        }
+        if adapter != was {
+            crate::model::ui_pref_set_str("net_adapter", &adapter);
+        }
+    }
+
+    /// Sounds: "Sound settings".
+    fn idm_sounds(&mut self, ui: &mut Ui) {
+        c_group(ui, "Select sounds for Download Craft events", None, |ui| {
+            let rows: Vec<Vec<String>> = self
+                .s
+                .sounds_ev
+                .iter()
+                .map(|(k, _, f)| {
+                    let label = SOUND_EVENTS.iter().find(|e| e.0 == *k).map(|e| e.1).unwrap_or(k);
+                    vec![crate::i18n::t(label).to_string(), std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()]
+                })
+                .collect();
+            let mut checks: Vec<bool> = self.s.sounds_ev.iter().map(|e| e.1).collect();
+            let mut sel = self.idm.sel;
+            let h = (ui.available_height() - 60.0).clamp(150.0, 280.0);
+            c_list(ui, "idm_sounds", &[("Event", 0.55), ("Sound file", 0.45)], &rows, &mut sel, h, Some(&mut checks));
+            self.idm.sel = sel.filter(|i| *i < self.s.sounds_ev.len());
+            for (e, c) in self.s.sounds_ev.iter_mut().zip(checks) {
+                e.1 = c;
+            }
+            ui.add_space(6.0);
+            let has = self.idm.sel.is_some();
+            ui.horizontal(|ui| {
+                ui.add_space((ui.available_width() - 260.0).max(0.0) / 2.0);
+                if c_btn(ui, "Browse…", has, 110.0) {
+                    if let Some(i) = self.idm.sel {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("Sound", &["wav"]).pick_file() {
+                            self.s.sounds_ev[i].2 = p.to_string_lossy().to_string();
+                        }
+                    }
+                }
+                ui.add_space(30.0);
+                if c_btn(ui, "Play", has, 110.0) {
+                    if let Some(i) = self.idm.sel {
+                        let (k, _, f) = &self.s.sounds_ev[i];
+                        crate::platform::play_sound_file(k, f);
+                    }
+                }
+            });
+            if let Some(i) = self.idm.sel {
+                if !self.s.sounds_ev[i].2.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if c_btn(ui, "System sound", true, 110.0) {
+                            self.s.sounds_ev[i].2.clear();
+                        }
+                    });
+                }
+            }
+        });
+    }
+}
+
+/// What the Options dialog keeps between frames.
+#[derive(Default)]
+struct IdmState {
+    /// The selected row of the page's list.
+    sel: Option<usize>,
+    /// Save to: the category shown (0 = General) and its name being edited.
+    cat: usize,
+    cat_edit: bool,
+    /// File types: the address list editor.
+    addr_open: bool,
+    addr: String,
+    /// Connection: an exception being added or edited (row, server, number).
+    exc: Option<(Option<usize>, String, String)>,
+    /// Proxy: the type picker under "Advanced / Socks…".
+    socks_open: bool,
+    /// Site logins: a login being added or edited.
+    login: Option<(Option<usize>, crate::model::SiteLogin)>,
+    /// Dial Up: ticked with no connection chosen yet; a password typed but
+    /// not saved.
+    dial_on: bool,
+    dial_pass: String,
+}
+
+const DEFAULT_CAPTURE_TYPES: &str = "3gp 7z aac ace aif apk arj asf avi bin bz2 exe gz gzip img iso lzh m4a m4v mkv mov mp3 mp4 mpa mpe mpeg mpg msi msu ogg ogv pdf plj pps ppt qt r0* r1* ra rar rm rmvb sea sit sitx tar tif tiff wav wma wmv z zip";
+const DEFAULT_SKIP_SITES: &str = "*.update.microsoft.com download.windowsupdate.com *.download.windowsupdate.com siteseal.thawte.com ecom.cimetz.com *.voice2page.com";
+
+/// "If a duplicate download link is added:" — key, words.
+const DUP_CHOICES: &[(&str, &str)] = &[
+    ("ask", "Show a dialog and ask what to do."),
+    ("number", "Add the duplicate with a numbered file name"),
+    ("overwrite", "Add the duplicate and overwrite the existing file"),
+    ("complete", "If the file is complete, show its download complete dialog; otherwise resume it"),
+];
+
+/// Classic's Options pages: (tab, picture, subject).
+const IDM_PAGES: &[(&str, &str, &str)] = &[
+    ("General", "\u{e80b}", "Browser/System Integration"),
+    ("File types", "\u{e873}", "Downloaded file types"),
+    ("Save to", "\u{e2c7}", "Categories, file types, folders"),
+    ("Downloads", "\u{f090}", "Default download settings"),
+    ("Connection", "\u{e9e4}", "Connections and Limits"),
+    ("Proxy / Socks", "\u{e8be}", "Proxy / socks configuration"),
+    ("Sites Logins", "\u{e73c}", "User names and passwords for servers/sites"),
+    ("Dial Up / VPN", "\u{e62f}", "Dial up / VPN settings"),
+    ("Sounds", "\u{e050}", "Sound settings"),
+];
+/// The front and back rows of tabs (indexes into `IDM_PAGES`).
+const IDM_FRONT: &[usize] = &[0, 1, 2, 3, 4];
+const IDM_BACK: &[usize] = &[5, 6, 7, 8];
+/// Pages opened from buttons on the others: (subject, picture).
+const IDM_SUBS: &[(&str, &str)] = &[
+    ("Look, language and interface size", "\u{e3b7}"),
+    ("Helper programs", "\u{e869}"),
+    ("Updates", "\u{f090}"),
+    ("Remote control and AI assistants", "\u{e328}"),
+    ("Keys", "\u{e312}"),
+    ("Download progress dialog", "\u{e8b8}"),
+    ("Virus checking and completion", "\u{e32a}"),
+    ("Speed, retries, torrents", "\u{e9e4}"),
+    ("Browser extensions", "\u{e80b}"),
+    ("File name template and rules", "\u{e2c7}"),
+];
+
+/// A category's name: the last part of its folder.
+fn cat_name(folder: &str) -> String {
+    let f = folder.trim().trim_end_matches(['\\', '/']);
+    f.rsplit(['\\', '/']).next().unwrap_or(f).to_string()
+}
+
+/// `folder` with its last part renamed (a relative folder is just its name).
+fn rename_last(folder: &str, name: &str) -> String {
+    let f = folder.trim().trim_end_matches(['\\', '/']);
+    match f.rfind(['\\', '/']) {
+        Some(i) => format!("{}{}", &f[..=i], name),
+        None => name.to_string(),
+    }
+}
+
+/// A category's folder as shown: relative ones under the save folder.
+fn cat_dir(save_dir: &str, folder: &str) -> String {
+    let p = std::path::Path::new(folder.trim());
+    if p.is_absolute() {
+        folder.trim().to_string()
+    } else {
+        std::path::Path::new(save_dir).join(p).to_string_lossy().to_string()
+    }
+}
+
+/// Connection exceptions: (server, connections), kept as "host=n;host=n".
+fn conn_exceptions() -> Vec<(String, usize)> {
+    crate::model::ui_pref_str("conn_exceptions", "")
+        .split(';')
+        .filter_map(|e| {
+            let (h, n) = e.split_once('=')?;
+            Some((h.trim().to_string(), n.trim().parse().ok()?))
+        })
+        .filter(|(h, _)| !h.is_empty())
+        .collect()
+}
+
+fn set_conn_exceptions(v: &[(String, usize)]) {
+    let s: Vec<String> = v.iter().map(|(h, n)| format!("{h}={n}")).collect();
+    crate::model::ui_pref_set_str("conn_exceptions", &s.join(";"));
+}
+
+/// Windows' own proxy ("host:port", or the http= part of a per-protocol list).
+fn system_proxy() -> Option<(String, String)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let out = std::process::Command::new("reg")
+            .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings", "/v", "ProxyServer"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let val = text.lines().find(|l| l.contains("ProxyServer"))?.split_whitespace().last()?.to_string();
+        let one = val.split(';').find(|p| p.starts_with("http=")).map(|p| p.trim_start_matches("http=").to_string()).unwrap_or_else(|| val.split(';').next().unwrap_or("").to_string());
+        let one = one.trim_start_matches("http://").to_string();
+        let (h, p) = one.rsplit_once(':').unwrap_or((one.as_str(), "8080"));
+        if h.is_empty() {
+            return None;
+        }
+        Some((h.to_string(), p.to_string()))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// The Dial Up / VPN connections Windows knows (its phone book).
+fn ras_entries() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let Some(app) = std::env::var_os("APPDATA") else { return Vec::new() };
+        let pbk = std::path::Path::new(&app).join(r"Microsoft\Network\Connections\Pbk\rasphone.pbk");
+        std::fs::read_to_string(pbk)
+            .map(|t| t.lines().filter_map(|l| l.trim().strip_prefix('[')?.strip_suffix(']').map(str::to_string)).collect())
+            .unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+/// Dial `name` with Windows' rasdial, retrying as the Redial options say.
+fn dial(name: String, user: String, pass: String) {
+    #[cfg(windows)]
+    std::thread::spawn(move || {
+        use std::os::windows::process::CommandExt;
+        let tries = crate::model::ui_pref_str("dial_redial", "0").trim().parse::<u32>().unwrap_or(0);
+        let wait = crate::model::ui_pref_str("dial_redial_wait", "30").trim().parse::<u64>().unwrap_or(30).clamp(1, 3600);
+        let mut n = 0;
+        loop {
+            let mut c = std::process::Command::new("rasdial");
+            c.arg(&name);
+            if !user.is_empty() {
+                c.arg(&user).arg(&pass);
+            }
+            if c.creation_flags(0x0800_0000).status().is_ok_and(|s| s.success()) {
+                return;
+            }
+            n += 1;
+            if tries > 0 && n > tries {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(wait));
+        }
+    });
+    #[cfg(not(windows))]
+    let _ = (name, user, pass);
+}
+
+// ---- the dialog's own controls: small, square, Windows-like ----
+
+/// The face of edit boxes, lists and drop-downs: white on a light dialog,
+/// as Windows draws them.
+fn c_field() -> Color32 {
+    let t = tok();
+    if t.bg.r() as u32 + t.bg.g() as u32 + t.bg.b() as u32 > 384 {
+        Color32::WHITE
+    } else {
+        t.input
+    }
+}
+
+/// Control height (edit boxes, combo boxes) and text size.
+const C_H: f32 = 22.0;
+const C_FONT: f32 = 11.5;
+
+fn c_text(ui: &mut Ui, s: &str) -> Response {
+    c_text_col(ui, s, tok().text)
+}
+
+fn c_text_en(ui: &mut Ui, s: &str, enabled: bool) -> Response {
+    c_text_col(ui, s, if enabled { tok().text } else { tok().muted })
+}
+
+fn c_text_col(ui: &mut Ui, s: &str, col: Color32) -> Response {
+    let s = crate::i18n::t(s);
+    let (font, _) = legible(s, reg(C_FONT), col);
+    crate::shaped::label(ui, s, font, col, true)
+}
+
+/// Drop-down lists and other stock widgets as a classic dialog draws
+/// them: white, square, a thin frame, the dialog's small text.
+fn classic_widgets(ui: &mut Ui) {
+    let t = tok();
+    let style = ui.style_mut();
+    style.spacing.button_padding = Vec2::new(6.0, 2.0);
+    for ts in [egui::TextStyle::Body, egui::TextStyle::Button] {
+        style.text_styles.insert(ts, reg(C_FONT));
+    }
+    let v = &mut style.visuals;
+    for (w, bd) in [(&mut v.widgets.inactive, t.btn_bd), (&mut v.widgets.hovered, t.accent), (&mut v.widgets.active, t.accent), (&mut v.widgets.open, t.accent)] {
+        w.weak_bg_fill = c_field();
+        w.bg_fill = c_field();
+        w.corner_radius = egui::CornerRadius::same(2);
+        w.bg_stroke = Stroke::new(1.0, bd);
+        w.fg_stroke = Stroke::new(1.0, t.text);
+        w.expansion = 0.0;
+    }
+}
+
+/// A push button; returns whether it was clicked.
+fn c_btn(ui: &mut Ui, label: &str, enabled: bool, min_w: f32) -> bool {
+    let t = tok();
+    let label = crate::i18n::t(label);
+    let (font, _) = legible(label, reg(C_FONT), t.text);
+    let tsz = crate::shaped::measure(ui.painter(), label, &font, None);
+    let w = (tsz.x + 20.0).max(min_w);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 23.0), if enabled { Sense::click() } else { Sense::hover() });
+    let hov = enabled && resp.hovered();
+    let p = ui.painter();
+    p.rect(rect, 3.0, if hov { blend(t.btn, t.accent, 0.12) } else { t.btn }, Stroke::new(1.0, if hov { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+    crate::shaped::paint(p, rect.center() - tsz / 2.0, label, &font, if enabled { t.text } else { t.muted }, None);
+    enabled && resp.clicked()
+}
+
+/// A line of text right-aligned before a button at the right end.
+fn c_row_btn(ui: &mut Ui, label: &str, button: &str, enabled: bool) -> bool {
+    let mut clicked = false;
+    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 27.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        clicked = c_btn(ui, button, enabled, 72.0);
+        let label = crate::i18n::t(label);
+        let t = tok();
+        let (font, col) = legible(label, reg(C_FONT), t.text);
+        // Too long for the room left: it wraps instead of running off.
+        let room = ui.available_width();
+        if crate::shaped::measure(ui.painter(), label, &font, None).x > room {
+            ui.allocate_ui_with_layout(Vec2::new(room, 27.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                crate::shaped::label(ui, label, font, col, true);
+            });
+        } else {
+            crate::shaped::label(ui, label, font, col, false);
+        }
+    });
+    clicked
+}
+
+/// A check box and its label (wrapping); returns whether it changed.
+fn c_check(ui: &mut Ui, on: &mut bool, label: &str, enabled: bool) -> bool {
+    let w = ui.available_width();
+    c_check_w(ui, on, label, enabled, w)
+}
+
+fn c_check_w(ui: &mut Ui, on: &mut bool, label: &str, enabled: bool, w: f32) -> bool {
+    let t = tok();
+    let label = crate::i18n::t(label);
+    let (font, _) = legible(label, reg(C_FONT), t.text);
+    let tw = (w - 22.0).max(20.0);
+    let tsz = crate::shaped::measure(ui.painter(), label, &font, Some(tw));
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, tsz.y.max(16.0) + 4.0), if enabled { Sense::click() } else { Sense::hover() });
+    let p = ui.painter();
+    let bx = Rect::from_min_size(egui::pos2(rect.min.x + 1.0, rect.min.y + 2.0 + (tsz.y.min(17.0) - 13.0).max(0.0) / 2.0), Vec2::splat(13.0));
+    let fill = if !enabled { t.bg } else if *on { t.accent } else { c_field() };
+    p.rect(bx, 2.0, fill, Stroke::new(1.0, if *on && enabled { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+    if *on {
+        crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, if enabled { Color32::WHITE } else { t.muted }, 1.8);
+    }
+    crate::shaped::paint(p, egui::pos2(bx.max.x + 6.0, rect.min.y + 2.0), label, &font, if enabled { t.text } else { t.muted }, Some(tw));
+    if enabled && resp.clicked() {
+        *on = !*on;
+        return true;
+    }
+    false
+}
+
+/// A radio button; returns whether it was clicked.
+fn c_radio(ui: &mut Ui, on: bool, label: &str) -> bool {
+    let t = tok();
+    let label = crate::i18n::t(label);
+    let (font, _) = legible(label, reg(C_FONT), t.text);
+    let tsz = crate::shaped::measure(ui.painter(), label, &font, None);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), tsz.y.max(16.0) + 4.0), Sense::click());
+    let p = ui.painter();
+    let c = egui::pos2(rect.min.x + 7.5, rect.center().y);
+    p.circle(c, 6.5, c_field(), Stroke::new(1.0, if on { t.accent } else { t.btn_bd }));
+    if on {
+        p.circle_filled(c, 3.5, t.accent);
+    }
+    crate::shaped::paint(p, egui::pos2(rect.min.x + 20.0, rect.center().y - tsz.y / 2.0), label, &font, t.text, None);
+    resp.clicked()
+}
+
+/// A single-line edit box.
+fn c_edit(ui: &mut Ui, id: &str, buf: &mut String, w: f32, enabled: bool, password: bool) -> Response {
+    let t = tok();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w.max(20.0), C_H), Sense::hover());
+    ui.painter().rect(rect, 2.0, if enabled { c_field() } else { t.bg }, Stroke::new(1.0, t.border), StrokeKind::Inside);
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("c_edit", id)).max_rect(rect.shrink2(Vec2::new(5.0, 3.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.add_enabled(
+        enabled,
+        egui::TextEdit::singleline(buf).id_salt(("c_edit_in", id)).frame(false).password(password).desired_width(rect.width() - 10.0).font(reg(C_FONT)).margin(egui::Margin::ZERO),
+    )
+}
+
+/// A multi-line edit box, `rows` lines tall.
+fn c_multi(ui: &mut Ui, id: &str, buf: &mut String, rows: usize) -> Response {
+    let t = tok();
+    let w = ui.available_width();
+    let h = rows as f32 * 15.0 + 8.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+    ui.painter().rect(rect, 2.0, c_field(), Stroke::new(1.0, t.border), StrokeKind::Inside);
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("c_multi", id)).max_rect(rect.shrink2(Vec2::new(5.0, 4.0))));
+    let mut out = None;
+    egui::ScrollArea::vertical().id_salt(("c_multi_s", id)).max_height(h - 8.0).show(&mut child, |ui| {
+        out = Some(ui.add(egui::TextEdit::multiline(buf).id_salt(("c_multi_in", id)).frame(false).desired_width(w - 22.0).desired_rows(rows).font(reg(C_FONT)).margin(egui::Margin::ZERO)));
+    });
+    out.unwrap_or_else(|| ui.allocate_response(Vec2::ZERO, Sense::hover()))
+}
+
+/// A thin etched line across the page.
+fn c_sep(ui: &mut Ui) {
+    ui.add_space(3.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(rect.x_range(), rect.center().y, Stroke::new(1.0, tok().border));
+    ui.add_space(3.0);
+}
+
+/// A group box: a thin frame with its title (or a check box) in the top edge.
+fn c_group(ui: &mut Ui, title: &str, check: Option<&mut bool>, body: impl FnOnce(&mut Ui)) {
+    let t = tok();
+    let title = crate::i18n::t(title);
+    ui.add_space(9.0);
+    let (font, _) = legible(title, reg(C_FONT), t.text);
+    let tsz = crate::shaped::measure(ui.painter(), title, &font, None);
+    let resp = egui::Frame::new()
+        .stroke(Stroke::new(1.0, t.border))
+        .corner_radius(2.0)
+        .inner_margin(egui::Margin { left: 10, right: 10, top: 12, bottom: 8 })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+            body(ui);
+        });
+    let r = resp.response.rect;
+    if !title.is_empty() {
+        let extra = if check.is_some() { 19.0 } else { 0.0 };
+        let lab = Rect::from_min_size(egui::pos2(r.min.x + 7.0, r.min.y - tsz.y / 2.0), Vec2::new(tsz.x + 6.0 + extra, tsz.y));
+        let p = ui.painter();
+        p.rect_filled(lab, 0.0, t.bg);
+        if let Some(on) = check {
+            let bx = Rect::from_min_size(egui::pos2(lab.min.x + 3.0, lab.center().y - 6.5), Vec2::splat(13.0));
+            p.rect(bx, 2.0, if *on { t.accent } else { c_field() }, Stroke::new(1.0, if *on { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+            if *on {
+                crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 1.8);
+            }
+            if ui.interact(lab, ui.id().with(("c_group_cb", title)), Sense::click()).clicked() {
+                *on = !*on;
+            }
+        }
+        crate::shaped::paint(ui.painter(), egui::pos2(lab.min.x + 3.0 + extra, lab.min.y), title, &font, t.text, None);
+    }
+    ui.add_space(2.0);
+}
+
+/// A list view: column titles (name, share of the width; none = no title
+/// row), rows of text, an optional check box per row. Returns the row
+/// double-clicked.
+fn c_list(ui: &mut Ui, id: &str, cols: &[(&str, f32)], rows: &[Vec<String>], sel: &mut Option<usize>, h: f32, mut checks: Option<&mut Vec<bool>>) -> Option<usize> {
+    let t = tok();
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+    let p = ui.painter().clone();
+    p.rect(rect, 0.0, c_field(), Stroke::new(1.0, t.border), StrokeKind::Inside);
+    let head_h = if cols.is_empty() { 0.0 } else { 20.0 };
+    let inner = rect.shrink(1.0);
+    let xs: Vec<f32> = {
+        let mut x = inner.left();
+        let mut v = vec![x];
+        for (_, f) in cols {
+            x += inner.width() * f;
+            v.push(x);
+        }
+        v
+    };
+    if head_h > 0.0 {
+        let hr = Rect::from_min_size(inner.min, Vec2::new(inner.width(), head_h));
+        p.rect_filled(hr, 0.0, t.bg);
+        p.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0, t.border));
+        for (i, (name, _)) in cols.iter().enumerate() {
+            let name = crate::i18n::t(name);
+            let (font, _) = legible(name, reg(C_FONT), t.text);
+            let tsz = crate::shaped::measure(&p, name, &font, None);
+            let cp = p.with_clip_rect(Rect::from_min_max(egui::pos2(xs[i], hr.top()), egui::pos2(xs[i + 1] - 4.0, hr.bottom())));
+            crate::shaped::paint(&cp, egui::pos2(xs[i] + 6.0, hr.center().y - tsz.y / 2.0), name, &font, t.text, None);
+            if i + 1 < cols.len() {
+                p.vline(xs[i + 1], hr.y_range(), Stroke::new(1.0, t.border));
+            }
+        }
+    }
+    let body = Rect::from_min_max(egui::pos2(inner.left(), inner.top() + head_h), inner.max);
+    let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("c_list", id)).max_rect(body));
+    let mut dbl = None;
+    egui::ScrollArea::vertical().id_salt(("c_list_s", id)).auto_shrink([false, false]).max_height(body.height()).show(&mut child, |ui| {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        for (i, row) in rows.iter().enumerate() {
+            let (r, resp) = ui.allocate_exact_size(Vec2::new(body.width(), 18.0), Sense::click());
+            let pp = ui.painter();
+            let on = *sel == Some(i);
+            if on {
+                pp.rect_filled(r, 0.0, t.accent.gamma_multiply(0.22));
+            } else if resp.hovered() {
+                pp.rect_filled(r, 0.0, t.accent.gamma_multiply(0.08));
+            }
+            let mut x0 = r.left() + 5.0;
+            if let Some(c) = checks.as_deref_mut() {
+                let bx = Rect::from_min_size(egui::pos2(x0, r.center().y - 6.5), Vec2::splat(13.0));
+                let v = c.get(i).copied().unwrap_or(false);
+                pp.rect(bx, 2.0, if v { t.accent } else { c_field() }, Stroke::new(1.0, if v { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+                if v {
+                    crate::dm::dm_icon(pp, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 1.8);
+                }
+                let hit = ui.interact(bx.expand(3.0), ui.id().with(("c_list_cb", id, i)), Sense::click());
+                if hit.clicked() {
+                    if let Some(b) = c.get_mut(i) {
+                        *b = !*b;
+                    }
+                }
+                x0 = bx.max.x + 6.0;
+            }
+            let ncol = row.len().max(1);
+            for (k, cell) in row.iter().enumerate() {
+                let (left, right) = if cols.is_empty() { (x0, r.right() - 4.0) } else { (if k == 0 { x0 } else { xs[k] + 6.0 }, xs[(k + 1).min(ncol)] - 4.0) };
+                let (font, col) = legible(cell, reg(C_FONT), t.text);
+                let tsz = crate::shaped::measure(pp, cell, &font, None);
+                let cp = pp.with_clip_rect(Rect::from_min_max(egui::pos2(left, r.top()), egui::pos2(right, r.bottom())));
+                crate::shaped::paint(&cp, egui::pos2(left, r.center().y - tsz.y / 2.0), cell, &font, col, None);
+            }
+            if resp.clicked() {
+                *sel = Some(i);
+            }
+            if resp.double_clicked() {
+                dbl = Some(i);
+            }
+        }
+    });
+    dbl
 }
 
 // ===================== concept tokens + primitives =====================
@@ -1155,9 +2751,30 @@ fn wash(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+/// Bangla (and the other shaped scripts) reads smaller and lighter than
+/// Latin at the same size, and the muted ink made the hints hard to read: a
+/// size up, and the secondary ink instead of the muted one. Latin unchanged.
+fn legible(text: &str, font: FontId, color: Color32) -> (FontId, Color32) {
+    if !crate::shaped::needs_shaping(text) {
+        return (font, color);
+    }
+    let t = tok();
+    let color = if color == t.muted { t.text2 } else { color };
+    (FontId::new(font.size + 1.5, font.family), color)
+}
+
 fn txt(ui: &mut Ui, s: impl Into<String>, font: FontId, color: Color32) -> Response {
+    let s: String = s.into();
+    if loose_hidden() {
+        return ui.allocate_response(Vec2::ZERO, Sense::hover());
+    }
+    // Bangla and the other scripts egui cannot shape: through the shaper.
+    if crate::shaped::needs_shaping(&s) {
+        let (font, color) = legible(&s, font, color);
+        return crate::shaped::label(ui, &s, font, color, false);
+    }
     ui.add(
-        egui::Label::new(egui::RichText::new(s.into()).font(font).color(color))
+        egui::Label::new(egui::RichText::new(s).font(font).color(color))
             .selectable(false)
             .wrap_mode(egui::TextWrapMode::Extend)
             .sense(Sense::hover()),
@@ -1165,8 +2782,16 @@ fn txt(ui: &mut Ui, s: impl Into<String>, font: FontId, color: Color32) -> Respo
 }
 
 fn wrapped(ui: &mut Ui, s: impl Into<String>, font: FontId, color: Color32) -> Response {
+    let s: String = s.into();
+    if loose_hidden() {
+        return ui.allocate_response(Vec2::ZERO, Sense::hover());
+    }
+    if crate::shaped::needs_shaping(&s) {
+        let (font, color) = legible(&s, font, color);
+        return crate::shaped::label(ui, &s, font, color, true);
+    }
     ui.add(
-        egui::Label::new(egui::RichText::new(s.into()).font(font).color(color))
+        egui::Label::new(egui::RichText::new(s).font(font).color(color))
             .selectable(false)
             .wrap_mode(egui::TextWrapMode::Wrap),
     )
@@ -1174,6 +2799,9 @@ fn wrapped(ui: &mut Ui, s: impl Into<String>, font: FontId, color: Color32) -> R
 
 /// `h2` of the concept: 16 px semibold with a 16 px gap below.
 fn h2(ui: &mut Ui, s: &str) {
+    if classic() {
+        return;
+    }
     let s = crate::i18n::t(s);
     txt(ui, s, semi(16.0), tok().text);
     ui.add_space(16.0);
@@ -1182,6 +2810,7 @@ fn h2(ui: &mut Ui, s: &str) {
 /// Setting label: 12 px, secondary colour.
 fn lbl(ui: &mut Ui, s: &str) {
     let s = crate::i18n::t(s);
+    index_note(s);
     txt(ui, s, reg(12.0), tok().text2);
 }
 
@@ -1203,12 +2832,10 @@ fn button(ui: &mut Ui, label: &str, primary: bool) -> Response {
     } else {
         t.muted
     };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), reg(11.0), fg);
+    let label_size = crate::shaped::measure(ui.painter(), label, &reg(11.0), None);
     let size = Vec2::new(
-        galley.size().x + 32.0,
-        (galley.size().y + 12.0).max(28.0),
+        label_size.x + 32.0,
+        (label_size.y + 12.0).max(28.0),
     );
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -1223,12 +2850,17 @@ fn button(ui: &mut Ui, label: &str, primary: bool) -> Response {
     };
     // A hovered secondary button also brightens its label, so the highlight is
     // unmistakable even where the fill step is small.
-    let galley = if !primary && hov {
-        ui.painter().layout_no_wrap(label.to_owned(), reg(11.0), t.text)
-    } else {
-        galley
-    };
+    let fg = if !primary && hov { t.text } else { fg };
     let p = ui.painter();
+    if classic() {
+        // A Windows push button: square, light face, a 1 px frame; the
+        // default one (primary) framed in the accent.
+        let face = if hov { blend(t.btn, t.accent, 0.10) } else { t.btn };
+        p.rect(rect, 2.0, face, Stroke::new(1.0, if primary { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+        let fg = if enabled { t.text } else { t.muted };
+        crate::shaped::paint(p, rect.center() - label_size / 2.0, label, &reg(11.0), fg, None);
+        return resp;
+    }
     p.rect(
         rect,
         5.0,
@@ -1236,7 +2868,7 @@ fn button(ui: &mut Ui, label: &str, primary: bool) -> Response {
         Stroke::new(1.0, bd),
         StrokeKind::Inside,
     );
-    p.galley(rect.center() - galley.size() / 2.0, galley, fg);
+    crate::shaped::paint(p, rect.center() - label_size / 2.0, label, &reg(11.0), fg, None);
     resp
 }
 
@@ -1253,7 +2885,7 @@ fn icon_sq(ui: &mut Ui, glyph: &str, size: f32, radius: f32) -> Response {
         Stroke::new(1.0, t.btn_bd),
         StrokeKind::Inside,
     );
-    p.text(
+    p.stext(
         rect.center(),
         Align2::CENTER_CENTER,
         glyph,
@@ -1274,7 +2906,7 @@ fn rule_btn(ui: &mut Ui, glyph: &str, danger: bool) -> Response {
         if resp.hovered() {
             p.rect_filled(rect, 4.0, wash(red, 24));
         }
-        p.text(
+        p.stext(
             rect.center(),
             Align2::CENTER_CENTER,
             glyph,
@@ -1289,7 +2921,7 @@ fn rule_btn(ui: &mut Ui, glyph: &str, danger: bool) -> Response {
             Stroke::new(1.0, t.btn_bd),
             StrokeKind::Inside,
         );
-        p.text(
+        p.stext(
             rect.center(),
             Align2::CENTER_CENTER,
             glyph,
@@ -1346,6 +2978,7 @@ fn checkbox(
     full: bool,
 ) -> bool {
     let label = crate::i18n::t(label);
+    index_note(label);
     let t = tok();
     let galley = ui
         .painter()
@@ -1414,6 +3047,8 @@ fn checkbox(
 enum TileKind {
     System,
     Dark,
+    /// True black (OLED screens).
+    Amoled,
     Light,
 }
 
@@ -1609,7 +3244,7 @@ fn look_tile(ui: &mut Ui, salt: &str, w: f32, h: f32, pal: &crate::app::Palette,
         p.line_segment([bc + Vec2::new(-3.2, -0.2), bc + Vec2::new(-1.0, 2.2)], s);
         p.line_segment([bc + Vec2::new(-1.0, 2.2), bc + Vec2::new(3.4, -2.6)], s);
     }
-    p.text(
+    p.stext(
         egui::pos2(rect.min.x + pad + 3.0, rect.max.y - pad - 2.0),
         Align2::LEFT_BOTTOM,
         name,
@@ -1672,6 +3307,11 @@ fn theme_tile(
             draw_face(p, inner, false, Some((a, b, false)));
         }
         TileKind::Dark => draw_face(p, inner, false, None),
+        TileKind::Amoled => {
+            draw_face(p, inner, false, None);
+            // The same face, its background switched off.
+            p.rect_filled(inner.shrink(0.0), 4.0, Color32::from_black_alpha(150));
+        }
         TileKind::Light => draw_face(p, inner, true, None),
     }
     p.rect_stroke(prev, 5.0, Stroke::new(1.0, t.border), StrokeKind::Inside);
@@ -1682,7 +3322,7 @@ fn theme_tile(
         p.line_segment([bc + Vec2::new(-3.2, -0.2), bc + Vec2::new(-1.0, 2.2)], s);
         p.line_segment([bc + Vec2::new(-1.0, 2.2), bc + Vec2::new(3.4, -2.6)], s);
     }
-    p.text(
+    p.stext(
         egui::pos2(rect.min.x + pad + 3.0, rect.max.y - pad - 2.0),
         Align2::LEFT_BOTTOM,
         name,
@@ -1696,17 +3336,16 @@ fn theme_tile(
 /// (the mock's `.opt-row`). Only the switch is clickable.
 fn switch_row(ui: &mut Ui, salt: &str, on: &mut bool, label: &str, hint: &str) -> bool {
     let (label, hint) = (crate::i18n::t(label), crate::i18n::t(hint));
+    index_note(label);
     let t = tok();
     let w = ui.available_width().max(120.0);
     let sw = 34.0;
     let text_w = (w - sw - 14.0).max(80.0);
-    let lg = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), reg(11.5), t.text);
-    let hg = ui
-        .painter()
-        .layout(hint.to_owned(), reg(9.5), t.muted, text_w);
-    let h = (lg.size().y + 3.0 + hg.size().y).max(26.0);
+    let (lfont, lcol) = legible(label, reg(11.5), t.text);
+    let (hfont, hcol) = legible(hint, reg(9.5), t.muted);
+    let lsz = crate::shaped::measure(ui.painter(), label, &lfont, None);
+    let hsz = crate::shaped::measure(ui.painter(), hint, &hfont, Some(text_w));
+    let h = (lsz.y + 3.0 + hsz.y).max(26.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
     let track = Rect::from_min_size(
         egui::pos2(rect.max.x - sw, rect.center().y - 9.5),
@@ -1726,12 +3365,25 @@ fn switch_row(ui: &mut Ui, salt: &str, on: &mut bool, label: &str, hint: &str) -
     let anim = ui.ctx().animate_bool_with_time(id, *on, 0.15);
     let p = ui.painter();
     let top = rect.center().y - h / 2.0;
-    p.galley(egui::pos2(rect.min.x, top), lg.clone(), t.text);
-    p.galley(
-        egui::pos2(rect.min.x, top + lg.size().y + 3.0),
-        hg,
-        t.muted,
-    );
+    if classic() {
+        // A check box: the square before its label, the hint under it.
+        let bx = Rect::from_min_size(egui::pos2(rect.min.x, top + (lsz.y - 14.0) / 2.0), Vec2::splat(14.0));
+        let click = ui.interact(rect, id.with("cb"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        p.rect(bx, 2.0, if *on { t.accent } else { t.input }, Stroke::new(1.0, if *on { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+        if *on {
+            crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 2.0);
+        }
+        let lx = bx.max.x + 8.0;
+        crate::shaped::paint(p, egui::pos2(lx, top), label, &lfont, lcol, None);
+        crate::shaped::paint(p, egui::pos2(lx, top + lsz.y + 3.0), hint, &hfont, hcol, Some(text_w));
+        if click.clicked() || resp.clicked() {
+            *on = !*on;
+            return true;
+        }
+        return false;
+    }
+    crate::shaped::paint(p, egui::pos2(rect.min.x, top), label, &lfont, lcol, None);
+    crate::shaped::paint(p, egui::pos2(rect.min.x, top + lsz.y + 3.0), hint, &hfont, hcol, Some(text_w));
     p.rect_filled(track, 9.5, blend(t.track, t.accent, anim));
     p.circle_filled(
         egui::pos2(track.left() + 9.5 + 15.0 * anim, track.center().y),
@@ -1766,10 +3418,54 @@ fn card(
     open: &mut bool,
     body: impl FnOnce(&mut Ui),
 ) {
+    if card_hidden(title) {
+        return;
+    }
+    let jump = JUMP.with(|j| j.borrow().as_ref().map(|(c, at)| (c == title, *at))).filter(|(hit, _)| *hit).map(|(_, at)| at);
+    if jump.is_some() {
+        *open = true;
+    }
+    let indexing_now = indexing();
+    if indexing_now {
+        INDEX_CARD.with(|c| *c.borrow_mut() = title.to_string());
+        index_note(crate::i18n::t(title));
+        if crate::i18n::t(title) != title {
+            index_note(title);
+        }
+    }
+    let body = |ui: &mut Ui| {
+        IN_CARD.with(|c| c.set(c.get() + 1));
+        body(ui);
+        IN_CARD.with(|c| c.set(c.get() - 1));
+    };
     let t = tok();
     let mut scope = ui.new_child(egui::UiBuilder::new().id_salt(("engine_card", title)));
+    let title_en = title;
     let title = crate::i18n::t(title);
-    egui::Frame::new()
+    if classic() {
+        // A group box: a thin frame, its title set into the top edge. Always
+        // open, as a classic dialog's groups are.
+        let (tfont, tcol) = legible(title, reg(11.5), t.text);
+        let tsz = crate::shaped::measure(scope.painter(), title, &tfont, None);
+        let resp = egui::Frame::new()
+            .stroke(Stroke::new(1.0, t.border))
+            .corner_radius(2.0)
+            .inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 10 })
+            .outer_margin(egui::Margin { top: 8, bottom: 8, ..Default::default() })
+            .show(&mut scope, |ui| {
+                ui.set_width(ui.available_width());
+                body(ui);
+            });
+        let r = resp.response.rect;
+        let label = Rect::from_min_size(egui::pos2(r.min.x + 9.0, r.min.y - tsz.y / 2.0), Vec2::new(tsz.x + 6.0, tsz.y));
+        let p = scope.painter();
+        p.rect_filled(label, 0.0, t.bg);
+        crate::shaped::paint(p, egui::pos2(label.min.x + 3.0, label.min.y), title, &tfont, tcol, None);
+        let _ = (badge, open);
+        ui.advance_cursor_after_rect(scope.min_rect());
+        return;
+    }
+    let framed = egui::Frame::new()
         .fill(t.card)
         .stroke(Stroke::new(1.0, t.border))
         .corner_radius(9.0)
@@ -1795,17 +3491,14 @@ fn card(
                     t.hover,
                 );
             }
-            let tg = p.layout_no_wrap(title.to_owned(), semi(11.5), t.text);
-            p.galley(
-                egui::pos2(head.left() + 11.0, head.center().y - tg.size().y / 2.0),
-                tg.clone(),
-                t.text,
-            );
+            let (tfont, tcol) = legible(title, semi(11.5), t.text);
+            let tsz = crate::shaped::measure(p, title, &tfont, None);
+            crate::shaped::paint(p, egui::pos2(head.left() + 11.0, head.center().y - tsz.y / 2.0), title, &tfont, tcol, None);
             if let Some(b) = badge {
                 let bg = p.layout_no_wrap(b.to_owned(), reg(9.0), t.muted);
                 let chip = Rect::from_min_size(
                     egui::pos2(
-                        head.left() + 11.0 + tg.size().x + 6.0,
+                        head.left() + 11.0 + tsz.x + 6.0,
                         head.center().y - 6.5,
                     ),
                     Vec2::new(bg.size().x + 12.0, 13.0),
@@ -1819,7 +3512,7 @@ fn card(
                 );
                 p.galley(chip.center() - bg.size() / 2.0, bg, t.muted);
             }
-            p.text(
+            p.stext(
                 egui::pos2(head.right() - 12.0, head.center().y),
                 Align2::CENTER_CENTER,
                 if *open { "\u{e5ce}" } else { "\u{e5cf}" }, // expand_less / expand_more
@@ -1829,7 +3522,7 @@ fn card(
             if resp.clicked() {
                 *open = !*open;
             }
-            if *open {
+            if *open || indexing_now {
                 let top = ui.cursor().min.y;
                 ui.painter().hline(
                     ui.max_rect().x_range(),
@@ -1849,6 +3542,22 @@ fn card(
                     });
             }
         });
+    // A search result's card: scrolled into view once, outlined a moment.
+    if let Some(at) = jump {
+        let r = framed.response.rect;
+        match at {
+            None => {
+                scope.scroll_to_rect(r, Some(egui::Align::TOP));
+                JUMP.with(|j| *j.borrow_mut() = Some((title_en.to_string(), Some(std::time::Instant::now()))));
+                scope.ctx().request_repaint();
+            }
+            Some(t0) if t0.elapsed().as_secs_f32() < 1.8 => {
+                scope.painter().rect_stroke(r, 9.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+                scope.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+            }
+            Some(_) => JUMP.with(|j| *j.borrow_mut() = None),
+        }
+    }
     ui.advance_cursor_after_rect(scope.min_rect());
 }
 
@@ -1862,30 +3571,32 @@ fn field_row(
     hint_text: Option<&str>,
 ) -> Ui {
     let (label, hint_text) = (crate::i18n::t(label), hint_text.map(crate::i18n::t));
+    index_note(label);
     let t = tok();
     let full = ui.available_width();
     let label_w = 138.0_f32.min((full * 0.42).max(92.0));
     let gap = 11.0;
     let ctrl_w = (full - label_w - gap).max(60.0);
-    let ctrl_h = 28.0;
-    let hint = hint_text.map(|h| ui.painter().layout(h.to_owned(), reg(9.5), t.muted, ctrl_w));
-    let hint_h = hint.as_ref().map_or(0.0, |g| g.size().y);
+    // Tall enough for a dropdown (taller than a text box): the hint under it
+    // was drawn where the dropdown still was, and read as clipped.
+    let ctrl_h: f32 = 34.0;
+    let hint_h = hint_text.map_or(0.0, |h| crate::shaped::measure(ui.painter(), h, &legible(h, reg(9.5), t.muted).0, Some(ctrl_w)).y);
+    // A label longer than its column wraps inside it (the control never
+    // covers it); the row grows to fit it.
+    let (lfont, lcol) = legible(label, reg(11.0), t.text2);
+    let lsz = crate::shaped::measure(ui.painter(), label, &lfont, Some(label_w));
+    let top_h = ctrl_h.max(lsz.y + 8.0);
     let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(full, ctrl_h + if hint_h > 0.0 { 4.0 + hint_h } else { 0.0 }),
+        Vec2::new(full, top_h + if hint_h > 0.0 { 5.0 + hint_h } else { 0.0 }),
         Sense::hover(),
     );
     let p = ui.painter();
-    let lg = p.layout_no_wrap(label.to_owned(), reg(11.0), t.text2);
-    let ly = if hint_h > 0.0 {
-        rect.top() + 7.0
-    } else {
-        rect.top() + (ctrl_h - lg.size().y) / 2.0
-    };
-    p.galley(egui::pos2(rect.left(), ly), lg.clone(), t.text2);
+    let ly = rect.top() + (top_h - lsz.y) / 2.0;
+    crate::shaped::paint(p, egui::pos2(rect.left(), ly), label, &lfont, lcol, Some(label_w));
     if let Some(b) = badge {
         let bg = p.layout_no_wrap(b.to_owned(), reg(9.0), t.muted);
         let chip = Rect::from_min_size(
-            egui::pos2(rect.left() + lg.size().x + 6.0, ly + lg.size().y / 2.0 - 6.5),
+            egui::pos2(rect.left() + lsz.x + 6.0, ly + lsz.y / 2.0 - 6.5),
             Vec2::new(bg.size().x + 12.0, 13.0),
         );
         p.rect(
@@ -1897,19 +3608,16 @@ fn field_row(
         );
         p.galley(chip.center() - bg.size() / 2.0, bg, t.muted);
     }
-    if let Some(g) = &hint {
-        p.galley(
-            egui::pos2(rect.left() + label_w + gap, rect.top() + ctrl_h + 4.0),
-            g.clone(),
-            t.muted,
-        );
+    if let Some(h) = hint_text {
+        let (hfont, hcol) = legible(h, reg(9.5), t.muted);
+        crate::shaped::paint(p, egui::pos2(rect.left() + label_w + gap, rect.top() + top_h + 5.0), h, &hfont, hcol, Some(ctrl_w));
     }
     ui.add_space(7.0);
     ui.new_child(
         egui::UiBuilder::new()
             .id_salt(("field", id_salt))
             .max_rect(Rect::from_min_size(
-                egui::pos2(rect.left() + label_w + gap, rect.top()),
+                egui::pos2(rect.left() + label_w + gap, rect.top() + (top_h - ctrl_h) / 2.0),
                 Vec2::new(ctrl_w, ctrl_h),
             ))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
@@ -2179,11 +3887,11 @@ fn rail_item(ui: &mut Ui, icon: &str, label: &str, active: bool) -> bool {
     }
     let col = if active { t.accent } else { t.text2 };
     if icon.chars().count() == 1 {
-        p.text(egui::pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, icon, crate::fonts::icon(14.0), col);
+        p.stext(egui::pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, icon, crate::fonts::icon(14.0), col);
     } else {
         crate::app::line_icon(p, egui::pos2(rect.left() + 17.0, rect.center().y), 15.0, icon, col);
     }
-    p.text(
+    p.stext(
         egui::pos2(rect.left() + 32.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
@@ -2272,21 +3980,21 @@ fn platform_grid(ui: &mut Ui) {
             if i == PLATFORMS.len() {
                 // Dashed outline + plus: the extractor list does not stop here.
                 dashed_rect(p, tile, 8.0, Stroke::new(1.0, t.btn_bd));
-                p.text(
+                p.stext(
                     tile.center(),
                     Align2::CENTER_CENTER,
                     "\u{e145}", // add
                     crate::fonts::icon(16.0),
                     t.muted,
                 );
-                p.text(
+                p.stext(
                     egui::pos2(cx, tile.bottom() + 3.0),
                     Align2::CENTER_TOP,
                     MORE_SITES,
                     reg(8.0),
                     t.muted,
                 );
-                p.text(
+                p.stext(
                     egui::pos2(cx, tile.bottom() + 11.5),
                     Align2::CENTER_TOP,
                     "more",
@@ -2301,7 +4009,7 @@ fn platform_grid(ui: &mut Ui) {
             // Brand initials are ASCII ("X", "V", "d", "in"); everything else is
             // a Material Icons codepoint. Asking the icon font for a letter
             // would paint a .notdef box, so the two are never mixed up.
-            p.text(
+            p.stext(
                 tile.center(),
                 Align2::CENTER_CENTER,
                 glyph,
@@ -2312,7 +4020,7 @@ fn platform_grid(ui: &mut Ui) {
                 },
                 col,
             );
-            p.text(
+            p.stext(
                 egui::pos2(cx, tile.bottom() + 3.0),
                 Align2::CENTER_TOP,
                 name,
@@ -2554,7 +4262,7 @@ fn plugin_head(
     );
     p.galley(chip.center() - ver_g.size() / 2.0, ver_g, t.accent);
     // chevron at the far right, meta to its left
-    p.text(
+    p.stext(
         egui::pos2(rect.right() - 18.0, rect.center().y),
         Align2::CENTER_CENTER,
         if open { "\u{e5ce}" } else { "\u{e5cf}" }, // expand_less / expand_more
@@ -2753,16 +4461,17 @@ impl SettingsApp {
         });
         card(ui, "Mode", None, &mut open_theme, |ui| {
             let gap = 8.0;
-            let tile_w = ((ui.available_width() - gap * 2.0) / 3.0).max(72.0);
+            let tile_w = ((ui.available_width() - gap * 3.0) / 4.0).floor().max(48.0);
             let tile_h = 92.0;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 for (key, name, kind) in [
                     ("system", "System", TileKind::System),
                     ("dark", "Dark", TileKind::Dark),
+                    ("black", "AMOLED", TileKind::Amoled),
                     ("light", "Light", TileKind::Light),
                 ] {
-                    let on = cur_mode == key || (key == "dark" && cur_mode == "black");
+                    let on = cur_mode == key;
                     if theme_tile(ui, key, tile_w, tile_h, kind, name, on).clicked() {
                         picked = Some(crate::skins::join(&cur_look, key));
                     }
@@ -2796,20 +4505,31 @@ impl SettingsApp {
         let mut open_size = true;
         let scale = &mut self.s.ui_scale;
         card(ui, "Interface size", None, &mut open_size, |ui| {
+            let mut apply = false;
             ui.horizontal(|ui| {
-                ui.spacing_mut().slider_width = (ui.available_width() - 150.0).clamp(160.0, 420.0);
-                ui.add(
+                ui.spacing_mut().slider_width = (ui.available_width() - 170.0).clamp(120.0, 420.0);
+                let r = ui.add(
                     egui::Slider::new(scale, UI_SCALE_MIN..=UI_SCALE_MAX)
                         .step_by(5.0)
                         .suffix("%")
                         .show_value(true),
                 );
-                if *scale != 100 && button(ui, "100%", false).clicked() {
+                // Live, once the slider is let go (or typed / stepped): both
+                // windows resize at once, no Save needed. Not while dragging,
+                // or the window would jump under the pointer.
+                if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                    apply = true;
+                }
+                if button(ui, "Reset", false).on_hover_text("Back to 100%").clicked() && *scale != 100 {
                     *scale = 100;
+                    apply = true;
                 }
             });
+            if apply {
+                crate::model::ui_pref_set_u64("ui_scale", *scale as u64);
+            }
             ui.add_space(4.0);
-            hint(ui, "Text, icons and spacing of the main window and this Settings window, from 75% to 200%. Applies when you press Save.");
+            hint(ui, "Text, icons and spacing of the main window and this Settings window, from 75% to 200%. Applies as soon as you let go of the slider.");
         });
 
         // ---- Font: the interface typeface ----
@@ -2866,10 +4586,11 @@ impl SettingsApp {
         let link = &mut self.font_link;
         let note = self.font_note.clone();
         card(ui, "Font", None, &mut open_font, |ui| {
-            ui.horizontal(|ui| {
+            let list_w = (ui.available_width() - 230.0).clamp(140.0, 220.0);
+            ui.horizontal_wrapped(|ui| {
                 egui::ComboBox::from_id_salt("ui_font")
                     .selected_text(&shown)
-                    .width(220.0)
+                    .width(list_w)
                     .height(360.0)
                     .show_ui(ui, |ui| {
                         ui.add(egui::TextEdit::singleline(filter).hint_text("Search fonts").desired_width(200.0));
@@ -2963,16 +4684,56 @@ impl SettingsApp {
         let langs = crate::i18n::available();
         let lang = &mut self.s.language;
         card(ui, "Language", None, &mut open_lang, |ui| {
-            let shown = langs.iter().find(|(c, _)| c == lang).map(|(_, n)| n.clone()).unwrap_or_else(|| lang.clone());
-            egui::ComboBox::from_id_salt("language")
-                .selected_text(shown)
-                .show_ui(ui, |ui| {
-                    for (code, name) in &langs {
-                        ui.selectable_value(lang, code.clone(), name);
+            // One chip per language, each name in its own script (drawn
+            // through the shaper: egui's list widgets break Bangla).
+            let t = tok();
+            let mut picked: Option<String> = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                for (code, name) in &langs {
+                    let on = lang == code;
+                    let font = reg(11.5);
+                    // A name in a script with no font loaded here (Chinese)
+                    // would be boxes: its English name instead. Loading that
+                    // font only for this chip would slow Settings down.
+                    let english = match code.as_str() {
+                        "zh" => "Chinese",
+                        "ja" => "Japanese",
+                        "ko" => "Korean",
+                        "ar" => "Arabic",
+                        "fa" => "Persian",
+                        _ => name.as_str(),
+                    };
+                    let drawable = crate::shaped::needs_shaping(name)
+                        || ui.fonts(|f| f.has_glyphs(&font, name));
+                    let name = if drawable { name } else { &english.to_string() };
+                    let tsz = crate::shaped::measure(ui.painter(), name, &font, None);
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(tsz.x + 22.0, 28.0), Sense::click());
+                    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let p = ui.painter();
+                    p.rect(
+                        rect,
+                        14.0,
+                        if on { wash(t.accent, 46) } else if resp.hovered() { t.btn_hover } else { t.btn },
+                        Stroke::new(1.0, if on { t.accent } else { t.btn_bd }),
+                        StrokeKind::Inside,
+                    );
+                    crate::shaped::paint(p, rect.center() - tsz / 2.0, name, &font, if on { t.text } else { t.text2 }, None);
+                    if resp.clicked() && !on {
+                        picked = Some(code.clone());
                     }
-                });
+                }
+            });
+            // Live: this window and the main one switch at once (the main
+            // window follows ui.json); Save is not needed for it.
+            if let Some(code) = picked {
+                *lang = code.clone();
+                crate::model::ui_pref_set_str("language", &code);
+                crate::i18n::set_language(&code);
+                ui.ctx().request_repaint();
+            }
             ui.add_space(4.0);
-            hint(ui, "Takes effect the next time Download Craft starts. To add a language, put <code>.json in the lang folder next to the program; missing texts are listed in lang/<code>.missing.json in the settings folder.");
+            hint(ui, "Changes at once in every window. To add a language, put <code>.json in the lang folder next to the program; missing texts are listed in lang/<code>.missing.json in the settings folder.");
         });
 
         // ---- Window behaviour ----
@@ -3484,6 +5245,11 @@ impl SettingsApp {
             }
             .to_string();
             ui.add_space(8.0);
+            let mut embed = crate::model::ui_pref_bool("embed_meta", true);
+            if checkbox(ui, &mut embed, "Keep the cover, chapters and title inside the video", 14.0, 11.5, true) {
+                crate::model::ui_pref_set_bool("embed_meta", embed);
+            }
+            ui.add_space(4.0);
             checkbox(ui, &mut s.subtitles, "Save subtitles next to the video", 14.0, 11.5, true);
             if s.subtitles {
                 let mut c = field_row(ui, "sub_langs", "Languages", None, Some("yt-dlp language codes, comma separated: en.*, bn, all"));
@@ -4591,6 +6357,14 @@ impl SettingsApp {
     }
 
     fn pane_rules(&mut self, ui: &mut Ui) {
+        self.rules_section(ui);
+        // ---- site logins (IDM "Site logins") ----
+        ui.add_space(18.0);
+        self.logins_section(ui);
+    }
+
+    /// Rename template and type → folder rules.
+    fn rules_section(&mut self, ui: &mut Ui) {
         let t = tok();
         h2(ui, "Categories & Rules");
         lbl(ui, "Rename template:");
@@ -4667,8 +6441,10 @@ impl SettingsApp {
             }
         });
 
-        // ---- site logins (IDM "Site logins") ----
-        ui.add_space(18.0);
+    }
+
+    /// Saved site logins (IDM's "Site Logins").
+    fn logins_section(&mut self, ui: &mut Ui) {
         lbl(ui, "Site logins (used automatically for that site and its subdomains):");
         ui.add_space(8.0);
         let avail = ui.available_width();

@@ -269,6 +269,11 @@ pub struct DownloadItem {
     /// discards it with its data). Never shown in the list.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prefetch: bool,
+    /// A stream fetched in fragments (HLS/DASH) has no size until it is
+    /// done: its size guessed from the fragments so far, for the bar, the
+    /// "~" size and the time left. Display only, never decides completion.
+    #[serde(skip)]
+    pub est_total: Option<u64>,
     /// Queue v2 ordering: higher runs first; ties keep creation order.
     #[serde(default)]
     pub priority: i64,
@@ -489,6 +494,7 @@ impl DownloadItem {
             timeout_secs: None,
             checksum_repaired: false,
             prefetch: false,
+            est_total: None,
             priority: 0,
             start_at: String::new(),
             browser: None,
@@ -512,7 +518,7 @@ impl DownloadItem {
     }
 
     pub fn progress(&self) -> f32 {
-        match self.total_bytes {
+        match self.total_bytes.or(self.est_total) {
             Some(t) if t > 0 => (self.downloaded_bytes as f64 / t as f64).clamp(0.0, 1.0) as f32,
             _ => 0.0,
         }
@@ -556,6 +562,69 @@ pub fn category_of(filename: &str) -> &'static str {    let ext = filename
     }
 }
 
+/// The named queues the user made (Queues panel), Main not included.
+pub fn queue_names() -> Vec<String> {
+    let v: serde_json::Value = config_dir()
+        .and_then(|d| std::fs::read_to_string(d.join("ui.json")).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    v.get("queues")
+        .and_then(|q| q.as_array())
+        .map(|a| a.iter().filter_map(|q| q.get("name")?.as_str().map(str::to_string)).filter(|n| !n.trim().is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// Options -> Connection -> Exceptions: the connection count set for this
+/// URL's server (or a parent domain of it), if any.
+pub fn conn_exception(url: &str) -> Option<usize> {
+    let host = reqwest::Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
+    ui_pref_str("conn_exceptions", "")
+        .split(';')
+        .filter_map(|e| {
+            let (h, n) = e.split_once('=')?;
+            Some((h.trim().trim_start_matches("*.").to_ascii_lowercase(), n.trim().parse::<usize>().ok()?))
+        })
+        .filter(|(h, _)| !h.is_empty() && (host == *h || host.ends_with(&format!(".{h}"))))
+        .max_by_key(|(h, _)| h.len())
+        .map(|(_, n)| n.clamp(1, 32))
+}
+
+/// What to do about a failed download, read from its error: one short
+/// sentence naming the next step.
+pub fn failure_next_step(reason: &str) -> &'static str {
+    let r = reason.to_ascii_lowercase();
+    let has = |k: &[&str]| k.iter().any(|w| r.contains(w));
+    if has(&["sign in to confirm", "not a bot", "bot check"]) {
+        "YouTube wants a sign-in check: open the video in your browser, sign in, then Retry."
+    } else if has(&["link expired", "expired", "http 410", "(http 403", "403 forbidden", "refresh"]) {
+        "The link expired: open its page again and send it from the browser, or right-click the row and pick Refresh address."
+    } else if has(&["login", "web page instead", "http 401", "unauthorized", "members-only", "private video"]) {
+        "The site needs you signed in: download it from the browser with the extension's button."
+    } else if has(&["no space", "disk full", "os error 112", "not enough space"]) {
+        "The disk is full: free some space or choose another folder, then Retry."
+    } else if has(&["access is denied", "permission denied", "os error 5"]) {
+        "Download Craft may not write to that folder: pick another folder, then Retry."
+    } else if has(&["http 404", "not found", "does not exist", "video unavailable", "removed"]) {
+        "The file is no longer on the server: find a new link for it."
+    } else if has(&["429", "throttl", "too many requests", "rate limit"]) {
+        "The server is limiting downloads: wait a few minutes, use fewer connections, then Retry."
+    } else if has(&["requested format is not available", "no single-file format"]) {
+        "That quality is not offered for this video: pick a lower one, or install ffmpeg in Settings > Plugins."
+    } else if has(&["ffmpeg"]) {
+        "ffmpeg is missing or failed: get it in Settings > Plugins, then Retry."
+    } else if has(&["yt-dlp"]) {
+        "The video helper failed: update yt-dlp in Settings > Plugins, then Retry."
+    } else if has(&["drm", "encrypted", "widevine"]) {
+        "This video is copy-protected and cannot be saved."
+    } else if has(&["timed out", "timeout", "connection", "dns", "network", "unreachable", "reset", "kill switch", "adapter"]) {
+        "The connection dropped: check the internet (or the VPN), then Retry."
+    } else if has(&["checksum", "sha-256", "mismatch"]) {
+        "The file does not match its checksum: Retry, or get it from another mirror."
+    } else {
+        "Retry; if it fails again, open its page and send the download from the browser."
+    }
+}
+
 pub fn format_bytes(b: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut v = b as f64;
@@ -582,7 +651,7 @@ pub fn format_eta(item: &DownloadItem) -> String {
     if item.speed_bps <= 1.0 {
         return "-".to_string();
     }
-    if let Some(total) = item.total_bytes {
+    if let Some(total) = item.total_bytes.or(item.est_total) {
         let left = total.saturating_sub(item.downloaded_bytes) as f64;
         let secs = (left / item.speed_bps) as u64;
         if secs >= 3600 {
@@ -1054,14 +1123,16 @@ pub fn migrate_config() {
 
 pub fn relative_time(dt: &chrono::DateTime<chrono::Local>) -> String {
     let secs = (chrono::Local::now() - *dt).num_seconds().max(0);
+    // In the interface language ({n} is the number).
+    let say = |s: &str, n: i64| crate::i18n::t(s).replace("{n}", &n.to_string());
     if secs < 60 {
-        "just now".to_string()
+        crate::i18n::t("just now").to_string()
     } else if secs < 3600 {
-        format!("{} minutes ago", secs / 60)
+        say("{n} minutes ago", secs / 60)
     } else if secs < 86400 {
-        format!("{} hours ago", secs / 3600)
+        say("{n} hours ago", secs / 3600)
     } else {
-        format!("{} days ago", secs / 86400)
+        say("{n} days ago", secs / 86400)
     }
 }
 
@@ -1880,6 +1951,23 @@ mod mime_ext_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failure_names_its_next_step() {
+        assert!(failure_next_step("HTTP 403 Forbidden (link expired)").contains("expired"));
+        assert!(failure_next_step("There is not enough space on the disk. (os error 112)").contains("disk is full"));
+        assert!(failure_next_step("Sign in to confirm you're not a bot").contains("sign-in"));
+        assert!(failure_next_step("something odd").starts_with("Retry"));
+    }
+
+    #[test]
+    fn device_names_never_become_files() {
+        assert_eq!(crate::engine::sanitize_filename("CON.txt"), "_CON.txt");
+        assert_eq!(crate::engine::sanitize_filename("nul"), "_nul");
+        assert_eq!(crate::engine::sanitize_filename("com1.mp4"), "_com1.mp4");
+        assert_eq!(crate::engine::sanitize_filename("console.mp4"), "console.mp4");
+        assert_eq!(crate::engine::sanitize_filename("C:evil.dll"), "C_evil.dll");
+    }
+
     use super::*;
 
     #[test]

@@ -127,5 +127,11 @@
   },
   "panelSocialHint": {
     "message": "অ্যাপ এই পোস্টের ভিডিও শব্দসহ নামিয়ে আনে।"
+  },
+  "popSmallButton": {
+    "message": "ছোট ডাউনলোড বোতাম"
+  },
+  "popSmallButtonHint": {
+    "message": "ভিডিও প্লেয়ারে লেখা ছাড়া শুধু ডাউনলোড আইকন দেখান।"
   }
 }

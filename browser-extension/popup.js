@@ -146,6 +146,10 @@ try {
   chrome.storage.local.get({ oneClickQuality: true }, (r) => { if (!chrome.runtime.lastError) $("oneClick").checked = !r || r.oneClickQuality !== false; });
 } catch (e) { /* stays unchecked */ }
 $("oneClick").onchange = () => { try { chrome.storage.local.set({ oneClickQuality: $("oneClick").checked }); } catch (e) {} };
+try {
+  chrome.storage.local.get({ smallButton: false }, (r) => { if (!chrome.runtime.lastError) $("small").checked = !!(r && r.smallButton === true); });
+} catch (e) { /* ignore */ }
+$("small").onchange = () => { try { chrome.storage.local.set({ smallButton: $("small").checked }); } catch (e) {} };
 $("hideUI").onchange = () => {
   chrome.runtime.sendMessage({ type: "setBrowserUI", value: $("hideUI").checked }, (res) => {
     status(res && res.ok ? "Browser download UI preference saved" : "This browser could not change its download UI.", res && res.ok ? "ok" : "bad");

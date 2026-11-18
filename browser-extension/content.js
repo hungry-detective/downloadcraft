@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.9.18";
+  const EXT_VER = "0.10.0";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -1522,6 +1522,7 @@
     // The saved spot is a fraction of the window: just right of the player
     // in a normal window is mid-screen in fullscreen, so fullscreen always
     // anchors to the player's top-right corner instead.
+    dropStaleBarPosition();
     if (!barPosition || document.fullscreenElement) return false;
     const parent=document.documentElement;
     if(host.parentNode!==parent)parent.appendChild(host);
@@ -1533,6 +1534,17 @@
     host.style.left=(8+barPosition.x*Math.max(0,window.innerWidth-width-16))+"px";
     host.style.top=(8+barPosition.y*Math.max(0,window.innerHeight-44))+"px";
     return true;
+  }
+  // A dragged spot is for the video it was dragged on: on the next video
+  // (another reel, another watch page) the button is back in its corner.
+  function barPositionStale() {
+    return !!(barPosition && barPosition.href && barPosition.href !== location.href);
+  }
+  function dropStaleBarPosition() {
+    if (!barPositionStale()) return;
+    barPosition = null;
+    positionRevision++;
+    rememberBarPosition();
   }
   function positionDraggedPanel(host,panel) {
     if(!panel || !barPosition)return;
@@ -1568,6 +1580,7 @@
     try { chrome.runtime.sendMessage({type:"getVideoBarPosition"},res=>{
       if(chrome.runtime.lastError || !alive() || revision!==positionRevision)return;
       barPosition=validBarPosition(res && res.position) ? res.position : null;
+      dropStaleBarPosition();
       syncDismissControls();
     }); } catch(e) { /* default placement remains available */ }
   }
@@ -1586,7 +1599,8 @@
         return;
       }
       barPosition={x:Math.max(0,Math.min(1,(left-8)/Math.max(1,window.innerWidth-width-16))),
-        y:Math.max(0,Math.min(1,(top-8)/Math.max(1,window.innerHeight-44)))};
+        y:Math.max(0,Math.min(1,(top-8)/Math.max(1,window.innerHeight-44))),
+        href:location.href};
       positionRevision++;applySavedBarPosition(host);
     };
     // The bar is only re-parented once a real drag starts. Moving it on
@@ -1987,6 +2001,29 @@
       .close { flex:0 0 22px;width:22px;height:22px;border-radius:11px;color:var(--dim); }
       .more { flex:0 0 20px;width:20px;height:22px;border-radius:11px;color:var(--dim); }
       :host([data-dc-compact]:not(:hover)) .bar:not(:focus-within) .more { display:none; }
+      /* Small download button (popup setting): only an empty circle with the
+         arrow in its middle - no bar, border, text, grip, close or menu - so
+         the video stays visible. A soft shadow keeps it readable on any frame. */
+      :host([data-dc-small]) .label, :host([data-dc-small]) .grip,
+      :host([data-dc-small]) .close, :host([data-dc-small]) .more { display:none !important; }
+      :host([data-dc-small]) .bar, :host([data-dc-small]:hover) .bar { background:transparent !important;border:0 !important;
+        box-shadow:none !important;padding:0 !important;height:auto;gap:0;overflow:visible; }
+      :host([data-dc-small]) .download { padding:0 !important;gap:0 !important;height:auto;width:auto;border-radius:50%; }
+      /* The size of the regular button's round icon; the ring is its own
+         layer so it can turn on hover while the arrow stays put. */
+      :host([data-dc-small]) .dot { position:relative;width:22px;height:22px;border-radius:50%;background:transparent;
+        color:#fff;display:flex;align-items:center;justify-content:center;
+        filter:drop-shadow(0 1px 2px rgba(0,0,0,.7)) drop-shadow(0 0 1px rgba(0,0,0,.55)); }
+      /* The ring is cut into arcs; pointed at, it turns. Only the ring layer
+         turns: the arrow stays centred and still. */
+      :host([data-dc-small]) .dot::before { content:"";position:absolute;inset:0;border-radius:50%;
+        border:2px dashed #fff;box-sizing:border-box; }
+      :host([data-dc-small]:hover) .dot::before { animation:dc-ring 3.2s linear infinite; }
+      @keyframes dc-ring { to { transform:rotate(360deg); } }
+      .dot .small-ico { display:none !important; }
+      :host([data-dc-small]) .dot svg { display:none !important; }
+      :host([data-dc-small]) .dot svg.small-ico { display:block !important;width:12px;height:12px;margin:0; }
+      :host([data-dc-small]:hover) .dot { background:rgba(0,0,0,.22); }
       .close:hover { color:var(--x-fg);background:var(--x-bg); }
       [hidden] { display:none !important; }
       svg { display:block;flex:none;width:14px;height:14px;pointer-events:none; }
@@ -1996,6 +2033,11 @@
     main.title=title;main.setAttribute("aria-label","Download this video");
     const dot=document.createElement("span");dot.className="dot";
     dot.appendChild(svgIcon(11,ICON_DOWN,2.8));
+    // The small button's arrow: the same arrow, drawn about the middle of
+    // its box (6..18 of 24) so it sits centred in the circle.
+    const centred=svgIcon(11,"M12 6V18M6 12L12 18L18 12",2.8);
+    centred.setAttribute("class","small-ico");
+    dot.appendChild(centred);
     main.appendChild(dot);
     const label=document.createElement("span");label.className="label";label.textContent=dcT("barDownload","Download");
     main.appendChild(label);
@@ -2015,6 +2057,7 @@
     installBarDrag(host,main,grip);
     host.__dcMain=main;host.__dcClose=close;host.__dcLabel=label;host.__dcMore=more;
     host.setAttribute("data-dc-bar","1");
+    if (smallBar) host.setAttribute("data-dc-small","1");
     paintBar(host);
     wakeBar(host);
     return host;
@@ -2022,6 +2065,9 @@
 
   // A new button (a new video) and a scroll show the bar fully for a few
   // seconds, so people notice it, before it fades to see-through.
+  // Settings → "Small download button": the player shows the round download
+  // icon alone (no "Download" text, no grip). Off by default.
+  var smallBar = false;
   const BAR_AWAKE_MS = 3000;
   // Shorts: only the first one shows the bar fully; scrolling on to the
   // next ones leaves it see-through until pointed at.
@@ -2680,7 +2726,11 @@
       // the window does it go just inside the corner instead.
       // Anchored by its right edge to the player's: pointing at it grows it
       // to the left, along the player, never out past its edge.
-      const right=Math.max(8,vw-r.right);
+      // The small button sits inside the player's corner with room around
+      // it (it touched the edge, its ring cut off by the player's rounding).
+      const small=!!(host.hasAttribute && host.hasAttribute("data-dc-small"));
+      const inset=small?14:4;
+      const right=Math.max(8,vw-r.right+inset);
       // Where it goes: on the player's top edge, outside the video (IDM's
       // place); when a header pinned to the page (Facebook's top bar, a
       // site's sticky menu) sits there, just inside the player's corner;
@@ -2688,7 +2738,7 @@
       // It moves out of the header's way instead of hiding behind it.
       const free=(y)=>y>=8 && y<=vh-32 && !coveredByPinned(vw-right-12,y+15,video,host);
       let top=-1;
-      const tries=[r.top-34,r.top+8];
+      const tries=small?[r.top+inset]:[r.top-34,r.top+8];
       for(let y=r.top+24;y<=Math.min(r.bottom-40,r.top+240);y+=16)tries.push(y);
       for(const y of tries){if(free(y)){top=y;break;}}
       const shown=top>=0 && r.width>=120 && r.height>=70 && visW>0 && visH>=Math.min(r.height*0.35,200)
@@ -2997,6 +3047,31 @@
         });
       }
     }
+    // HDR: the heights the page's player data lists in HDR get their own
+    // rows ("2160p60 HDR"); the app downloads the HDR video and keeps it HDR.
+    {
+      const hdrDur = Math.max(0, ...Object.values(info.sizes || {}).map((m) => (m && m.dur) || 0));
+      const seenHdr = new Set();
+      for (const [q, m] of Object.entries(info.sizes || {})) {
+        if (!/hdr/i.test(q)) continue;
+        const h = parseInt((q.match(/^(\d+)p/) || [0, 0])[1], 10) || 0;
+        if (h < 144 || seenHdr.has(h)) continue;
+        seenHdr.add(h);
+        const label = `${q.replace(/\s*hdr\s*/i, "").trim()} HDR`;
+        const sz = (m && m.size) || 0;
+        entries.push({
+          h,
+          size: sz,
+          dur: hdrDur,
+          st: null,
+          format: "MKV HDR via app",
+          res: RES_WH[`${h}p`],
+          tip: `${label} · MKV · high dynamic range, as the video was made`,
+          hdr: true,
+          send: () => sendDownload(location.href, `${fname.replace(/\.mp4$/i, "")} [${label}].mkv`, "video/x-matroska", sz || null, null, label, hdrDur || null),
+        });
+      }
+    }
     entries.sort((a, b) => (b.h - a.h) || (b.size - a.size));
     // "Direct" means at least one row the browser already holds a real URL
     // for — ciphered pages (VEVO) only carry qualities the app must resolve,
@@ -3034,7 +3109,7 @@
         res: e.res,
         size: e.size > 0 ? (e.approx ? "~" : "") + fmtSize(e.size) : "",
         tip: e.tip,
-        short: e.h > 0 ? e.h + "p" : "",
+        short: e.h > 0 ? e.h + "p" + (e.hdr ? " HDR" : "") : "",
         send: () => { rememberQuality(e.h + "p"); e.send(); },
         onPick: () => api.setInfo(infoOf(e)),
       });
@@ -3338,21 +3413,31 @@
     try { chrome.storage.local.set({ dcQuality: q }); } catch (e) { /* this page only */ }
     refreshQuickBars();
   }
+  function refreshSmallBars() {
+    try {
+      document.querySelectorAll("[data-dc-bar]").forEach((h) => {
+        if (smallBar) h.setAttribute("data-dc-small", "1"); else h.removeAttribute("data-dc-small");
+      });
+    } catch (e) { /* ignore */ }
+  }
   function refreshQuickBars() {
     try { document.querySelectorAll("[data-dc-bar]").forEach(applyQuick); } catch (e) { /* ignore */ }
   }
   try {
-    chrome.storage.local.get({ dcQuality: "", oneClickQuality: true }, (r) => {
+    chrome.storage.local.get({ dcQuality: "", oneClickQuality: true, smallButton: false }, (r) => {
       if (chrome.runtime.lastError || !r) return;
       prefQuality = String(r.dcQuality || "");
       oneClickOn = r.oneClickQuality !== false;
+      smallBar = r.smallButton === true;
       refreshQuickBars();
+      refreshSmallBars();
     });
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area !== "local" || !alive()) return;
       if (ch.dcQuality) prefQuality = String(ch.dcQuality.newValue || "");
       if (ch.oneClickQuality) oneClickOn = ch.oneClickQuality.newValue !== false;
       if (ch.dcQuality || ch.oneClickQuality) refreshQuickBars();
+      if (ch.smallButton) { smallBar = ch.smallButton.newValue === true; refreshSmallBars(); }
     });
   } catch (e) { /* menu only */ }
   // host.__dcQuickFor() -> {label, run} | null decides what one click does.

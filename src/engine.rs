@@ -1809,6 +1809,16 @@ pub fn sanitize_filename(s: &str) -> String {
     if out.is_empty() {
         out = "download.bin".to_string();
     }
+    // Windows' device names (CON, NUL, COM1…) are not files, with or
+    // without an extension.
+    {
+        let stem = out.split('.').next().unwrap_or("").trim().to_ascii_uppercase();
+        let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
+        if device {
+            out.insert(0, '_');
+        }
+    }
     if out.len() > 120 {
         // Keep the extension, and a closing quality tag (" [1080p]") with it:
         // a long title in a 3-byte script (Bengali) used to cut the tag to
@@ -2930,6 +2940,66 @@ async fn sniff_manifest(client: &reqwest::Client, opts: &EngineOpts, url: &str) 
         }
     }
     manifest_kind_of(&head)
+}
+
+/// A video or audio file's container from its first bytes: "mp4" (an ISO
+/// `ftyp` box), "webm" / "mkv" (EBML), or None.
+fn media_ext_of(path: &std::path::Path) -> Option<&'static str> {
+    use std::io::Read;
+    let mut head = [0u8; 64];
+    let n = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let head = &head[..n];
+    if head.len() >= 8 && &head[4..8] == b"ftyp" {
+        let brand = &head[8..12.min(head.len())];
+        return Some(if brand.starts_with(b"M4A") { "m4a" } else { "mp4" });
+    }
+    if head.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some(if head.windows(4).any(|w| w == b"webm") { "webm" } else { "mkv" });
+    }
+    if head.len() >= 12 && &head[0..4] == b"RIFF" && &head[8..12] == b"AVI " {
+        return Some("avi");
+    }
+    if head.starts_with(b"FLV") {
+        return Some("flv");
+    }
+    None
+}
+
+/// Is `url` a web page? For a probe that came back with no Content-Type
+/// (some servers answer HEAD and a 0-0 range without one): the first bytes
+/// and the type of a short GET say.
+async fn sniff_html(client: &reqwest::Client, opts: &EngineOpts, url: &str) -> bool {
+    const HEAD: usize = 2048;
+    let Ok(resp) = opts
+        .get(client, url)
+        .header(reqwest::header::RANGE, format!("bytes=0-{}", HEAD - 1))
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    if resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.to_ascii_lowercase().contains("text/html"))
+    {
+        return true;
+    }
+    let mut body = resp.bytes_stream();
+    let mut head = Vec::with_capacity(HEAD);
+    while head.len() < HEAD {
+        match body.next().await {
+            Some(Ok(chunk)) => head.extend_from_slice(&chunk[..chunk.len().min(HEAD - head.len())]),
+            _ => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&head).trim_start().to_ascii_lowercase();
+    text.starts_with("<!doctype html") || text.starts_with("<html") || text.contains("<head")
 }
 
 /// An HLS/DASH manifest by URL or type. Its byte length is the playlist
@@ -4910,10 +4980,15 @@ async fn download_inner(
             }
         }
     }
-    let is_html = ctype
+    let mut is_html = ctype
         .as_deref()
         .map(|c| c.contains("text/html"))
         .unwrap_or(false);
+    // No type from the probe and no media file in the address: look at what
+    // the server sends (a page reached this way was saved as the video).
+    if !is_html && ctype.is_none() && !has_direct_ext(&url) && !is_playlist_url(&url) {
+        is_html = sniff_html(&client, &opts, &url).await;
+    }
     // On YouTube hosts always resolve first: the probe alone is
     // meaningless there (walls, page variants), the page/API decides.
     let is_yt = url.contains("youtube.com") || url.contains("youtu.be");
@@ -5003,6 +5078,46 @@ async fn download_inner(
                 if std::env::var("DOWNLOAD_CRAFT_DEBUG").is_ok() {
                     eprintln!("[dbg] social page path: yt-dlp unavailable: {e:#}");
                 }
+            }
+        }
+    }
+    // A web page on any other site (a video's page): yt-dlp knows thousands
+    // of sites' players, while the app's own reader below only takes what the
+    // page shows plainly - on some sites a preview or an ad clip, which then
+    // failed the media check. yt-dlp first; when it cannot read the page, the
+    // app's own reader as before.
+    let wants_page = dest
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+    if is_html && !is_yt && !wants_page && !shared.ytdlp_tried.load(Ordering::SeqCst) {
+        let helper = ensure_ytdlp(&client).await;
+        if let Err(e) = &helper {
+            job_log(&opts.log_key, format!("a web page, but no yt-dlp to read it: {e:#}"));
+        }
+        if let Ok(exe) = helper {
+            shared.ytdlp_tried.store(true, Ordering::SeqCst);
+            // The helper reports the real size; a page's length is not it.
+            shared.total.store(0, Ordering::SeqCst);
+            shared.has_total.store(false, Ordering::SeqCst);
+            job_log(&opts.log_key, "a web page: asking yt-dlp for its video");
+            match download_with_ytdlp(&exe, &url, &dest, connections, &opts, &shared).await {
+                Ok(()) => {
+                    // Named after the page's address, the file often has no
+                    // extension: give it its container's, from its first bytes.
+                    if dest.extension().is_none() {
+                        if let Some(ext) = media_ext_of(&dest) {
+                            let named = dest.with_extension(ext);
+                            if !named.exists() && std::fs::rename(&dest, &named).is_ok() {
+                                if let Some(n) = named.file_name() {
+                                    mutex_guard(&shared.resolved_name).replace(n.to_string_lossy().into_owned());
+                                }
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+                Err(e) => job_log(&opts.log_key, format!("yt-dlp could not read the page ({e:#}); reading it here")),
             }
         }
     }
@@ -6018,12 +6133,17 @@ pub async fn playlist_entries(url: &str, opts: &EngineOpts) -> Result<(String, V
 /// Whether the app's own YouTube reader runs for this download: not when
 /// Settings put yt-dlp first, and not for "audio only" (yt-dlp makes the
 /// MP3).
-pub(crate) fn youtube_own_reader_allowed(_opts: &EngineOpts) -> bool {
-    crate::model::ui_pref_str("youtube_engine", "auto") != "ytdlp"
+pub(crate) fn youtube_own_reader_allowed(opts: &EngineOpts) -> bool {
+    // HDR is yt-dlp's (it picks the HDR stream and keeps it in an MKV).
+    !wants_hdr(&opts.quality_pref)
+        && crate::model::ui_pref_str("youtube_engine", "auto") != "ytdlp"
         && std::env::var("DOWNLOAD_CRAFT_NO_OWN_YOUTUBE").is_err()
 }
 
 fn youtube_ytdlp_first(opts: &EngineOpts) -> bool {
+    if wants_hdr(&opts.quality_pref) {
+        return true;
+    }
     match crate::model::ui_pref_str("youtube_engine", "auto").as_str() {
         "native" => false,
         "ytdlp" => true,
@@ -6733,6 +6853,12 @@ async fn write_cookie_jar(cookie: &str, domain: &str) -> Result<Option<CookieJar
 /// The audio tier prefers m4a: the merge output is mp4, and Opus in mp4 is the
 /// one combination players still object to.
 fn ytdlp_format_with(pref: &str, can_merge: bool) -> String {
+    // HDR asked for ("2160p60 HDR"): the HDR video at or below the height
+    // first, the usual choice when the video has none.
+    if wants_hdr(pref) && can_merge {
+        let h = quality_cap(pref).unwrap_or(4320);
+        return format!("bv*[height<={h}][dynamic_range^=HDR]+ba/{}", ytdlp_format_with(&pref.to_ascii_lowercase().replace("hdr", ""), true));
+    }
     match (quality_cap(pref), can_merge) {
         (Some(h), true) => format!(
             "bv*[height<={h}]+ba[ext=m4a]/bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b"
@@ -6741,6 +6867,11 @@ fn ytdlp_format_with(pref: &str, can_merge: bool) -> String {
         (None, true) => "bv*+ba[ext=m4a]/bv*+ba/b".to_string(),
         (None, false) => "b".to_string(),
     }
+}
+
+/// A menu quality that asks for HDR ("2160p60 HDR").
+pub(crate) fn wants_hdr(pref: &str) -> bool {
+    pref.to_ascii_lowercase().contains("hdr")
 }
 
 /// Vimeo can expose a video-only media playlist as an otherwise valid
@@ -7251,7 +7382,7 @@ async fn download_with_ytdlp(
         .arg("--abort-on-unavailable-fragments")
         .arg("--no-simulate")
         .arg("--print")
-        .arg("before_dl:dcinfo@{\"duration\":%(duration)j,\"acodec\":%(acodec)j}")
+        .arg("before_dl:dcinfo@{\"duration\":%(duration)j,\"acodec\":%(acodec)j,\"live\":%(is_live)j,\"manifest\":%(manifest_url)j}")
         .arg("--print").arg("after_move:dcfile@%(filepath)j")
         .arg("--newline")
         // `--print` implies quiet mode, which hides progress: without this
@@ -7266,7 +7397,7 @@ async fn download_with_ytdlp(
         .arg("--concurrent-fragments")
         .arg(connections.clamp(1, 8).to_string())
         .arg("--merge-output-format")
-        .arg("mp4")
+        .arg(if wants_hdr(&opts.quality_pref) { "mkv" } else { "mp4" })
         .arg("-f")
         .arg(if wants_audio_only(&opts.quality_pref) {
             "ba[ext=m4a]/ba/b".to_string()
@@ -7338,6 +7469,11 @@ async fn download_with_ytdlp(
     if opts.overwrite_existing {
         cmd.arg("--force-overwrites");
     }
+    // Saved videos keep their cover picture, chapters and title (and the
+    // channel, date, description) inside the file. Needs ffmpeg.
+    if merge_ffmpeg.is_some() && crate::model::ui_pref_bool("embed_meta", true) {
+        cmd.arg("--embed-metadata").arg("--embed-chapters").arg("--embed-thumbnail").arg("--convert-thumbnails").arg("jpg");
+    }
     // Settings -> Plugins -> YouTube: subtitles saved next to the video.
     if crate::model::ui_pref_bool("subtitles", false) {
         let langs = crate::model::ui_pref_str("subtitle_langs", "en.*");
@@ -7372,6 +7508,10 @@ async fn download_with_ytdlp(
     // Drain stdout for progress (both pipes must be drained, or a chatty
     // helper fills the pipe buffer and deadlocks).
     let progress = Arc::clone(shared);
+    // A live stream: its manifest, recorded by the app's own live recorder
+    // instead (Stop then finishes a playable file, as with any live capture).
+    let live_manifest: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let live_slot = live_manifest.clone();
     let out_task = tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         // A merged download is several transfers back to back (video, then
@@ -7392,6 +7532,12 @@ async fn download_with_ytdlp(
                     }
                     if info.get("acodec").and_then(|v| v.as_str()).map(|a| !matches!(a, "none" | "NA" | "unknown" | "")).unwrap_or(false) {
                         progress.expects_audio.store(true, Ordering::SeqCst);
+                    }
+                    if info.get("live").and_then(|v| v.as_bool()) == Some(true) {
+                        if let Some(m) = info.get("manifest").and_then(|v| v.as_str()).filter(|m| m.starts_with("http")) {
+                            *mutex_guard(&live_slot) = Some(m.to_string());
+                            break;
+                        }
                     }
                 }
                 continue;
@@ -7457,6 +7603,11 @@ async fn download_with_ytdlp(
             let _ = child.wait().await;
             break Err(anyhow!("cancelled"));
         }
+        if mutex_guard(&live_manifest).is_some() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            break Err(anyhow!("live"));
+        }
         match tokio::time::timeout(std::time::Duration::from_millis(200), child.wait()).await {
             Ok(Ok(status)) => break Ok(status),
             Ok(Err(e)) => break Err(anyhow!("yt-dlp wait: {e}")),
@@ -7467,6 +7618,12 @@ async fn download_with_ytdlp(
     let final_path = out_task.await.unwrap_or(None);
     let err_tail = err_task.await.unwrap_or_default();
     drop(jar);
+    let live = mutex_guard(&live_manifest).take();
+    if let Some(manifest) = live {
+        shared.set_note("live stream — recording until you press Stop (Stop saves what was recorded)");
+        tidy_parts_dir(dest);
+        return Box::pin(download_hls(&manifest, dest, connections, opts, shared)).await;
+    }
     let status = finish?;
     if !status.success() {
         // yt-dlp's own words are far more useful than an exit code.
@@ -9376,6 +9533,9 @@ async fn segmented(
         // its own Last-Modified for the same file (a resume threw 128 MB away
         // on "Last-Modified changed"); the link's own clen/lmt pin the file.
         size_identity: strict,
+        // Options -> Downloads: "Ignore file modification time changes
+        // when resuming a download".
+        ignore_modified: crate::model::ui_pref_bool("ignore_mtime_change", false),
         stall_timeout: std::time::Duration::from_secs(opts.timeout_secs.clamp(15, 120)),
         max_retries: opts.max_retries.max(1),
         ..dce::Config::default()
@@ -9514,10 +9674,34 @@ async fn run_dce(
             if out.url_refreshed {
                 shared.set_note("the download link expired mid-download and was refreshed automatically");
             }
+            // Options -> Save to: "Set file creation date as provided by
+            // the server".
+            if crate::model::ui_pref_bool("server_file_time", false) {
+                if let Some(lm) = out.last_modified.as_deref() {
+                    set_file_date(&out.path, lm);
+                }
+            }
             Ok(out)
         }
         Err(e) => Err(engine_error(url, e)),
     }
+}
+
+/// Give `path` the server's date (an HTTP Last-Modified): its modified
+/// time, and on Windows its created time too. Best effort.
+pub(crate) fn set_file_date(path: &std::path::Path, http_date: &str) {
+    let Ok(t) = chrono::DateTime::parse_from_rfc2822(http_date.trim()) else { return };
+    let Ok(secs) = u64::try_from(t.timestamp()) else { return };
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+    let Ok(f) = std::fs::OpenOptions::new().write(true).open(path) else { return };
+    #[allow(unused_mut)]
+    let mut times = std::fs::FileTimes::new().set_modified(when).set_accessed(when);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTimesExt;
+        times = times.set_created(when);
+    }
+    let _ = f.set_times(times);
 }
 
 /// Copy the engine's progress into the app's shared state and the app's
@@ -9584,6 +9768,17 @@ fn engine_error(url: &str, e: downloadcraft_engine::Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_takes_the_server_date() {
+        let p = std::env::temp_dir().join(format!("dc_date_{}.bin", std::process::id()));
+        std::fs::write(&p, b"x").unwrap();
+        set_file_date(&p, "Wed, 21 Oct 2015 07:28:00 GMT");
+        let m = std::fs::metadata(&p).unwrap().modified().unwrap();
+        let secs = m.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(secs, 1_445_412_480);
+    }
 
     #[test]
     fn sanitize_names() {

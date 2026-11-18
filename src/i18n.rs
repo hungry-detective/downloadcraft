@@ -34,7 +34,8 @@ struct Lang {
 
 fn state() -> &'static Mutex<Lang> {
     static S: OnceLock<Mutex<Lang>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(load(&crate::model::ui_pref_str("language", "en"))))
+    // Tests run in English whatever this computer's app is set to.
+    S.get_or_init(|| Mutex::new(load(if cfg!(test) { "en".to_string() } else { crate::model::ui_pref_str("language", "en") }.as_str())))
 }
 
 /// Folders that can hold language files, the config folder's first.
@@ -96,15 +97,44 @@ pub fn t(english: &str) -> &str {
     english
 }
 
-/// Every translated text once (the first call only), so the fonts for its
-/// script can be loaded before it is drawn.
+/// Set once the current language's text has been handed out for its fonts.
+static FONT_TEXT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The interface language now ("en", "bn", ...).
+pub fn current() -> String {
+    state().lock().map(|l| l.code.clone()).unwrap_or_else(|_| "en".into())
+}
+
+/// Switch the interface language at once: every label is translated as it
+/// is drawn, so the next frame already shows it (no restart, no Save). The
+/// new script's fonts are loaded too (see `take_font_text`).
+pub fn set_language(code: &str) {
+    let code = code.trim().to_ascii_lowercase();
+    let Ok(mut l) = state().lock() else { return };
+    if l.code == code {
+        return;
+    }
+    *l = load(&code);
+    FONT_TEXT_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Every translated text once (after start and after each language change),
+/// so the fonts for its script can be loaded before it is drawn.
 pub fn take_font_text() -> Option<String> {
-    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if FONT_TEXT_DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return None;
     }
     let l = state().lock().ok()?;
-    (!l.map.is_empty()).then(|| l.map.values().copied().collect::<Vec<_>>().join(" "))
+    // Only what egui itself draws: scripts the shaper draws (Bangla and the
+    // other Indic ones) need no egui font, and loading one into egui's atlas
+    // on every window start made Settings open slowly in Bangla.
+    let text: String = l
+        .map
+        .values()
+        .flat_map(|s| s.chars().chain(std::iter::once(' ')))
+        .filter(|c| !crate::shaped::needs_shaping(&c.to_string()))
+        .collect();
+    (!l.map.is_empty() && text.chars().any(|c| !c.is_ascii())).then_some(text)
 }
 
 /// The languages there are files for: (code, name shown in the picker).

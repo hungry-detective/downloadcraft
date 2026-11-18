@@ -18,6 +18,7 @@
 //! leaves the transfer running, and only the explicit Pause/Cancel buttons
 //! change what the download does.
 
+use crate::shaped::ShapeText;
 use crate::app::pl;
 use crate::dm::*;
 use crate::model::{config_dir, format_bytes, DownloadItem, Status};
@@ -393,6 +394,20 @@ fn at(o: egui::Pos2, x: f32, y: f32, w: f32, h: f32) -> egui::Rect {
 }
 
 /// One concept info row: dim 13px label at the gutter, value right on IN_R.
+/// The action of a next-step sentence, short enough for one row: the part
+/// after its colon, up to the first alternative.
+fn short_step(s: &str) -> String {
+    let tail = s.split_once(": ").map(|(_, b)| b).unwrap_or(s);
+    let first = tail.split([';']).next().unwrap_or(tail);
+    let first = first.split(", or ").next().unwrap_or(first).split(", then").next().unwrap_or(first);
+    let t = first.trim().trim_end_matches('.');
+    let mut c = t.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
 fn info_row(
     p: &egui::Painter,
     o: egui::Pos2,
@@ -579,7 +594,7 @@ impl ProgressApp {
     fn frac(&self, item: &DownloadItem) -> f32 {
         match (item.total_bytes, self.snap.fragments) {
             (Some(t), _) if t > 0 => (item.downloaded_bytes as f32 / t as f32).clamp(0.0, 1.0),
-            (_, Some((i, n))) if self.snap.live => (i as f32 / n as f32).clamp(0.0, 1.0),
+            (_, Some((i, n))) if n > 0 => (i as f32 / n as f32).clamp(0.0, 1.0),
             _ => 0.0,
         }
     }
@@ -877,7 +892,7 @@ impl ProgressApp {
                 col,
                 1.8,
             );
-            p.text(
+            p.stext(
                 egui::pos2(x0 + TAB_ICON + 5.0, r.center().y),
                 egui::Align2::LEFT_CENTER,
                 (*name).to_string(),
@@ -925,7 +940,7 @@ impl ProgressApp {
         let p = ui.painter().clone();
         let title = format!("Download #{}", self.id);
         self.chrome(ui, o, &title);
-        p.text(
+        p.stext(
             egui::pos2(o.x + PAD_X, o.y + 66.0),
             egui::Align2::LEFT_TOP,
             "No longer in the queue.",
@@ -1036,6 +1051,10 @@ impl ProgressApp {
         let size = match item.total_bytes {
             Some(t) => format_bytes(t),
             None if item.duration_secs > 0 => format!("Unknown ({})", fmt_duration(item.duration_secs)),
+            None if self.snap.fragments.is_some_and(|(i, _)| i > 0) && item.downloaded_bytes > 0 && !self.snap.live => {
+                let (i, n) = self.snap.fragments.unwrap_or((1, 1));
+                format!("~{} ({})", format_bytes((item.downloaded_bytes as f64 * n as f64 / i.max(1) as f64) as u64), crate::i18n::t("estimate"))
+            }
             None if self.snap.fragments.is_some() => "Unknown (stream)".into(),
             None => "-".into(),
         };
@@ -1056,6 +1075,10 @@ impl ProgressApp {
             pl().dm_txt,
             reg(13.0),
         );
+        if let Status::Failed(e) = &item.status {
+            // A failed download: what to do next instead of a time left.
+            row("Next step:", short_step(crate::i18n::t(crate::model::failure_next_step(e))), pl().dm_warn, reg(13.0));
+        } else {
         row(
             "Remaining Time:",
             match item.total_bytes {
@@ -1067,6 +1090,7 @@ impl ProgressApp {
             pl().dm_txt,
             reg(13.0),
         );
+        }
         let res = item.resumable || self.snap.resumable;
         // The server's place and distance share this line (src/geo.rs).
         let yes_no = if res { "Yes" } else { "No" };
@@ -1085,7 +1109,9 @@ impl ProgressApp {
                 egui::Id::new("pg-status"),
                 egui::Sense::hover(),
             )
-            .on_hover_text(e.clone());
+            .on_hover_text(format!("{e}
+
+{} {}", crate::i18n::t("Next step:"), crate::i18n::t(crate::model::failure_next_step(e))));
         }
     }
 
@@ -1127,7 +1153,7 @@ impl ProgressApp {
 
         // ---- speed limit: one row — label, number, unit, Apply ----
         let row_y = 136.0;
-        p.text(
+        p.stext(
             egui::pos2(o.x + PAD_X, o.y + row_y + 15.0),
             egui::Align2::LEFT_CENTER,
             "This download:",
@@ -1148,7 +1174,7 @@ impl ProgressApp {
             } else if resp.hovered() {
                 p.rect_filled(r, DM_RAD - 1.0, pl().dm_hover2);
             }
-            p.text(r.center(), egui::Align2::CENTER_CENTER, *label, semi(11.0), if on { egui::Color32::WHITE } else { pl().dm_dim });
+            p.stext(r.center(), egui::Align2::CENTER_CENTER, *label, semi(11.0), if on { egui::Color32::WHITE } else { pl().dm_dim });
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 self.limit_mb = k == 1;
             }
@@ -1156,7 +1182,7 @@ impl ProgressApp {
         let apply = at(o, IN_R - 76.0, row_y, 76.0, 30.0);
         let ab = ui.interact(apply, egui::Id::new("pg-apply"), egui::Sense::click());
         dm_gradient(&p, apply, DM_RAD, DM_ACC(), DM_ACC2());
-        p.text(apply.center(), egui::Align2::CENTER_CENTER, "Apply", semi(12.0), egui::Color32::WHITE);
+        p.stext(apply.center(), egui::Align2::CENTER_CENTER, "Apply", semi(12.0), egui::Color32::WHITE);
         if ab.hovered() {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -1184,7 +1210,7 @@ impl ProgressApp {
             Some(k) => format!("Every download is limited to {} in all (applied now).", fmt_cap(k)),
             None => "Limits every download in all · empty or 0 = no limit.".to_string(),
         };
-        p.text(egui::pos2(o.x + PAD_X, o.y + row_y + 40.0), egui::Align2::LEFT_CENTER, note, reg(10.5), pl().dm_dim);
+        p.stext(egui::pos2(o.x + PAD_X, o.y + row_y + 40.0), egui::Align2::LEFT_CENTER, note, reg(10.5), pl().dm_dim);
 
         // ---- speed over the last half minute ----
         let g = at(o, PAD_X, 192.0, PROG_W, 66.0);
@@ -1195,7 +1221,7 @@ impl ProgressApp {
             let y = plot.top() + plot.height() * k as f32 / 3.0;
             p.hline(plot.x_range(), y, egui::Stroke::new(1.0, pl().dm_line.gamma_multiply(0.7)));
         }
-        p.text(egui::pos2(g.left() + 8.0, g.top() + 9.0), egui::Align2::LEFT_CENTER, "Speed · last 30 s", reg(9.5), pl().dm_dim);
+        p.stext(egui::pos2(g.left() + 8.0, g.top() + 9.0), egui::Align2::LEFT_CENTER, "Speed · last 30 s", reg(9.5), pl().dm_dim);
         let peak = self.speed_hist.iter().cloned().fold(0.0_f64, f64::max);
         if peak > 0.0 && self.speed_hist.len() > 1 {
             let n = self.speed_hist.len();
@@ -1231,7 +1257,7 @@ impl ProgressApp {
                 p.circle_stroke(*last, 5.5, egui::Stroke::new(1.0, DM_ACC().gamma_multiply(0.4)));
             }
             let now = self.speed_hist.back().copied().unwrap_or(0.0);
-            p.text(
+            p.stext(
                 egui::pos2(g.right() - 8.0, g.top() + 9.0),
                 egui::Align2::RIGHT_CENTER,
                 format!("now {}/s  ·  peak {}/s", format_bytes(now as u64), format_bytes(peak as u64)),
@@ -1239,7 +1265,7 @@ impl ProgressApp {
                 pl().dm_txt,
             );
         } else {
-            p.text(plot.center(), egui::Align2::CENTER_CENTER, "The graph appears while it downloads", reg(10.0), pl().dm_dim);
+            p.stext(plot.center(), egui::Align2::CENTER_CENTER, "The graph appears while it downloads", reg(10.0), pl().dm_dim);
         }
     }
 
@@ -1247,7 +1273,7 @@ impl ProgressApp {
     fn body_log(&mut self, ui: &mut egui::Ui, o: egui::Pos2) {
         let p = ui.painter().clone();
         if self.log_lines.is_empty() {
-            p.text(
+            p.stext(
                 egui::pos2(o.x + PAD_X, o.y + 86.0),
                 egui::Align2::LEFT_TOP,
                 "Nothing logged yet. Each start, connection, retry and fallback of this download shows up here.",
@@ -1259,7 +1285,7 @@ impl ProgressApp {
         let font = egui::FontId::monospace(10.0);
         for (i, line) in self.log_lines.iter().enumerate() {
             let shown = elide_mid(&p, line, font.clone(), PROG_W);
-            p.text(
+            p.stext(
                 egui::pos2(o.x + PAD_X, o.y + 80.0 + i as f32 * 13.5),
                 egui::Align2::LEFT_TOP,
                 shown,
@@ -1280,14 +1306,14 @@ impl ProgressApp {
         // The block sits in the middle of the pane, like the concept's
         // centred pane: equal air above and below, no dead band.
         let y0 = 104.0;
-        p.text(
+        p.stext(
             egui::pos2(o.x + PAD_X, o.y + y0),
             egui::Align2::LEFT_TOP,
             "When the queue drains:",
             reg(11.0),
             pl().dm_lbl,
         );
-        p.text(
+        p.stext(
             egui::pos2(o.x + PAD_X, o.y + y0 + 19.0),
             egui::Align2::LEFT_TOP,
             "Choose what Download Craft does once the last item in the queue finishes.",
@@ -1351,14 +1377,14 @@ impl ProgressApp {
             }
             // icon + label
             let icol = if sel { DM_ACC() } else { pl().dm_dim };
-            p.text(
+            p.stext(
                 egui::pos2(r.min.x + 28.0, r.center().y),
                 egui::Align2::LEFT_CENTER,
                 (*glyph).to_string(),
                 crate::fonts::icon(13.0),
                 icol,
             );
-            p.text(
+            p.stext(
                 egui::pos2(r.min.x + 48.0, r.center().y),
                 egui::Align2::LEFT_CENTER,
                 (*label).to_string(),
@@ -1370,7 +1396,7 @@ impl ProgressApp {
                 send_cmd_kv("finish", "value", serde_json::Value::from(*val));
             }
         }
-        p.text(
+        p.stext(
             egui::pos2(o.x + PAD_X, o.y + y0 + 123.0),
             egui::Align2::LEFT_TOP,
             "Only applies when the queue runs out of items — active downloads are not interrupted.",
@@ -1602,7 +1628,7 @@ impl ProgressApp {
             Some(t) => format!("Peers  ·  {} seeds  ·  {} peers  ·  {} connecting", t.seeds, t.peers, t.connecting),
             None => "Part Info".to_string(),
         };
-        p.text(
+        p.stext(
             egui::pos2(o.x + 37.0, o.y + HEAD_Y + HEAD_H / 2.0),
             egui::Align2::LEFT_CENTER,
             head,
@@ -1672,7 +1698,7 @@ impl ProgressApp {
                     2.0,
                 );
             }
-            p.text(
+            p.stext(
                 egui::pos2(r.min.x + iw, r.center().y),
                 egui::Align2::LEFT_CENTER,
                 (*label).to_string(),
@@ -1763,28 +1789,28 @@ impl ProgressApp {
 
         // ---- table: header row, then one row per part ----
         let hdr_y = o.y + TBL_HDR_Y + 4.0;
-        p.text(
+        p.stext(
             egui::pos2(o.x + PAD_X, hdr_y),
             egui::Align2::LEFT_TOP,
             "#",
             reg(10.0),
             pl().dm_head,
         );
-        p.text(
+        p.stext(
             egui::pos2(o.x + PAD_X + COL_NUM_W, hdr_y),
             egui::Align2::LEFT_TOP,
             "Status",
             reg(10.0),
             pl().dm_head,
         );
-        p.text(
+        p.stext(
             egui::pos2(o.x + COL_DL_X + 90.0, hdr_y),
             egui::Align2::RIGHT_TOP,
             "Downloaded",
             reg(10.0),
             pl().dm_head,
         );
-        p.text(
+        p.stext(
             egui::pos2(o.x + COL_TOT_X + 80.0, hdr_y),
             egui::Align2::RIGHT_TOP,
             "Total",
@@ -1837,21 +1863,21 @@ impl ProgressApp {
             } else {
                 ("Waiting", pl().dm_lbl)
             };
-            pc.text(
+            pc.stext(
                 egui::pos2(o.x + PAD_X, y + TBL_PAD),
                 egui::Align2::LEFT_TOP,
                 (i + 1).to_string(),
                 reg(10.0),
                 pl().dm_lbl,
             );
-            pc.text(
+            pc.stext(
                 egui::pos2(o.x + PAD_X + COL_NUM_W, y + TBL_PAD),
                 egui::Align2::LEFT_TOP,
                 status,
                 reg(10.0),
                 col,
             );
-            pc.text(
+            pc.stext(
                 egui::pos2(o.x + COL_DL_X + 90.0, y + TBL_PAD),
                 egui::Align2::RIGHT_TOP,
                 // The concept leaves the cell blank while a part has nothing.
@@ -1859,7 +1885,7 @@ impl ProgressApp {
                 reg(10.0),
                 pl().dm_dim,
             );
-            pc.text(
+            pc.stext(
                 egui::pos2(o.x + COL_TOT_X + 80.0, y + TBL_PAD),
                 egui::Align2::RIGHT_TOP,
                 // A stream segment not yet fetched has no size to show (its
@@ -1929,7 +1955,7 @@ impl ProgressApp {
             (o.x + COL_DL_X + 90.0, egui::Align2::RIGHT_TOP, "Received"),
             (o.x + COL_TOT_X + 80.0, egui::Align2::RIGHT_TOP, "Speed"),
         ] {
-            p.text(egui::pos2(x, hdr_y), align, text, reg(10.0), pl().dm_head);
+            p.stext(egui::pos2(x, hdr_y), align, text, reg(10.0), pl().dm_head);
         }
         p.line_segment(
             [
@@ -1947,7 +1973,7 @@ impl ProgressApp {
             } else {
                 ("No peers connected".to_string(), pl().dm_lbl)
             };
-            p.text(egui::pos2(o.x + PAD_X + COL_NUM_W, rows_top + TBL_PAD), egui::Align2::LEFT_TOP, text, reg(10.0), col);
+            p.stext(egui::pos2(o.x + PAD_X + COL_NUM_W, rows_top + TBL_PAD), egui::Align2::LEFT_TOP, text, reg(10.0), col);
             return;
         }
         let n = t.list.len();
@@ -1979,20 +2005,20 @@ impl ProgressApp {
             if y > rows_bottom || y + TBL_STEP < rows_top {
                 continue;
             }
-            pc.text(egui::pos2(o.x + PAD_X, y + TBL_PAD), egui::Align2::LEFT_TOP, (i + 1).to_string(), reg(10.0), pl().dm_lbl);
+            pc.stext(egui::pos2(o.x + PAD_X, y + TBL_PAD), egui::Align2::LEFT_TOP, (i + 1).to_string(), reg(10.0), pl().dm_lbl);
             let col = if *speed > 0.0 { DM_OK } else { pl().dm_dim };
-            pc.text(egui::pos2(o.x + PAD_X + COL_NUM_W, y + TBL_PAD), egui::Align2::LEFT_TOP, fit(&pc, addr, addr_w, col), reg(10.0), col);
+            pc.stext(egui::pos2(o.x + PAD_X + COL_NUM_W, y + TBL_PAD), egui::Align2::LEFT_TOP, fit(&pc, addr, addr_w, col), reg(10.0), col);
             if !client.is_empty() {
-                pc.text(egui::pos2(client_x, y + TBL_PAD), egui::Align2::LEFT_TOP, fit(&pc, client, client_w, pl().dm_dim), reg(10.0), pl().dm_dim);
+                pc.stext(egui::pos2(client_x, y + TBL_PAD), egui::Align2::LEFT_TOP, fit(&pc, client, client_w, pl().dm_dim), reg(10.0), pl().dm_dim);
             }
-            pc.text(
+            pc.stext(
                 egui::pos2(o.x + COL_DL_X + 90.0, y + TBL_PAD),
                 egui::Align2::RIGHT_TOP,
                 if *got > 0 { format_bytes(*got) } else { String::new() },
                 reg(10.0),
                 pl().dm_dim,
             );
-            pc.text(
+            pc.stext(
                 egui::pos2(o.x + COL_TOT_X + 80.0, y + TBL_PAD),
                 egui::Align2::RIGHT_TOP,
                 if *speed >= 1.0 { crate::model::format_speed(*speed) } else { String::new() },
@@ -2038,7 +2064,7 @@ impl ProgressApp {
             (o.x + COL_DL_X + 90.0, egui::Align2::RIGHT_TOP, "Fragments"),
             (o.x + COL_TOT_X + 80.0, egui::Align2::RIGHT_TOP, "Total"),
         ] {
-            p.text(egui::pos2(x, hdr_y), align, text, reg(10.0), pl().dm_head);
+            p.stext(egui::pos2(x, hdr_y), align, text, reg(10.0), pl().dm_head);
         }
         p.line_segment(
             [
@@ -2057,16 +2083,16 @@ impl ProgressApp {
         } else {
             ("Incomplete", pl().dm_dim)
         };
-        p.text(egui::pos2(o.x + PAD_X, y + TBL_PAD), egui::Align2::LEFT_TOP, "1", reg(10.0), pl().dm_lbl);
-        p.text(egui::pos2(o.x + PAD_X + COL_NUM_W, y + TBL_PAD), egui::Align2::LEFT_TOP, status, reg(10.0), col);
-        p.text(
+        p.stext(egui::pos2(o.x + PAD_X, y + TBL_PAD), egui::Align2::LEFT_TOP, "1", reg(10.0), pl().dm_lbl);
+        p.stext(egui::pos2(o.x + PAD_X + COL_NUM_W, y + TBL_PAD), egui::Align2::LEFT_TOP, status, reg(10.0), col);
+        p.stext(
             egui::pos2(o.x + COL_DL_X + 90.0, y + TBL_PAD),
             egui::Align2::RIGHT_TOP,
             i.to_string(),
             reg(10.0),
             pl().dm_dim,
         );
-        p.text(
+        p.stext(
             egui::pos2(o.x + COL_TOT_X + 80.0, y + TBL_PAD),
             egui::Align2::RIGHT_TOP,
             n.to_string(),
