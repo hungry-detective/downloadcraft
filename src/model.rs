@@ -996,22 +996,151 @@ fn primary_work_area_px() -> Option<(f32, f32, f32, f32)> {
     (ok != 0).then(|| (r.left as f32, r.top as f32, r.right as f32, r.bottom as f32))
 }
 
+/// A window that opens where the user last left it (issue #27): the
+/// Download File Info window and the progress window. The spot is kept in
+/// ui.json under `key` as "x,y" (points).
+pub struct WindowSpot {
+    key: &'static str,
+    saved: Option<egui::Pos2>,
+    placed: bool,
+    seen: Option<egui::Pos2>,
+    moved_at: Option<std::time::Instant>,
+}
+
+impl WindowSpot {
+    pub fn new(key: &'static str) -> Self {
+        let saved = ui_pref_str(key, "").split_once(',').and_then(|(x, y)| {
+            Some(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
+        });
+        Self { key, saved, placed: false, seen: None, moved_at: None }
+    }
+
+    /// Whether the window has a spot of its own (saved earlier, or found
+    /// after the user moved it): then it stays there, not re-centred.
+    pub fn has_spot(&self) -> bool {
+        self.saved.is_some()
+    }
+
+    /// Call every frame with the window's size. Places it once (its saved
+    /// spot when that is still on a screen, else the middle of the work
+    /// area) and then remembers where the user moves it. Returns whether
+    /// it has been placed.
+    pub fn tick(&mut self, ctx: &egui::Context, size: egui::Vec2) -> bool {
+        if !self.placed {
+            self.placed = match self.saved.filter(|p| on_a_screen(ctx, *p)) {
+                Some(p) => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+                    self.seen = Some(p);
+                    true
+                }
+                None => {
+                    self.saved = None;
+                    self.center(ctx, size)
+                }
+            };
+            return self.placed;
+        }
+        let Some(now) = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min) else {
+            return true;
+        };
+        match self.seen {
+            // A few points of slack: Windows rounds a placed window to whole
+            // pixels, which is not the user moving it.
+            Some(was) if (now - was).length() > 3.0 => {
+                self.seen = Some(now);
+                self.moved_at = Some(std::time::Instant::now());
+            }
+            None => self.seen = Some(now),
+            _ => {}
+        }
+        // Saved once the window has rested for a moment (not on every
+        // frame of a drag).
+        if self.moved_at.is_some_and(|t| t.elapsed() >= std::time::Duration::from_millis(400)) {
+            self.moved_at = None;
+            self.saved = Some(now);
+            ui_pref_set_str(self.key, &format!("{:.0},{:.0}", now.x, now.y));
+        }
+        if self.moved_at.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(450));
+        }
+        true
+    }
+
+    /// Put the window in the middle of the work area; this move is the
+    /// window's own, not one to remember.
+    pub fn center(&mut self, ctx: &egui::Context, size: egui::Vec2) -> bool {
+        match center_pos(ctx, size) {
+            Some(p) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+                self.seen = Some(p);
+                self.moved_at = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The window grew (more part rows): keep its spot, moved up only as
+    /// far as it takes to stay above the taskbar on the main screen.
+    pub fn keep_on_screen(&mut self, ctx: &egui::Context, size: egui::Vec2) {
+        let (Some(at), Some(area)) = (ctx.input(|i| i.viewport().outer_rect).map(|r| r.min), work_area_rect(ctx)) else {
+            return;
+        };
+        if !area.contains(at) {
+            return; // another screen: left as it is
+        }
+        let y = at.y.min((area.max.y - size.y - 32.0).max(area.min.y));
+        if y < at.y - 0.5 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(at.x, y)));
+            self.seen = Some(egui::pos2(at.x, y));
+            self.moved_at = None;
+        }
+    }
+}
+
+/// Whether a point (in points) is on one of the screens connected now: a
+/// window saved on a screen that is gone opens in the middle instead.
+fn on_a_screen(ctx: &egui::Context, p: egui::Pos2) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONULL};
+        let scale = ctx.input(|i| i.viewport().native_pixels_per_point).filter(|s| *s > 0.05).unwrap_or(1.0);
+        // A little inside the corner: the title bar must be reachable.
+        let pt = POINT { x: ((p.x + 40.0) * scale) as i32, y: ((p.y + 10.0) * scale) as i32 };
+        !unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONULL) }.is_null()
+    }
+    #[cfg(not(windows))]
+    {
+        work_area_rect(ctx).is_none_or(|a| a.expand(40.0).contains(p))
+    }
+}
+
 /// Put a fixed-size window in the middle of the work area. Returns `false`
 /// while the monitor geometry is still unknown so callers retry next frame
 /// instead of latching a bad position (Windows cascades otherwise).
 pub fn center_window(ctx: &egui::Context, size: egui::Vec2) -> bool {
-    let Some(work) = work_area_rect(ctx) else {
-        return false;
-    };
+    match center_pos(ctx, size) {
+        Some(p) => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Where `center_window` puts a window of `size` (None while the monitor
+/// geometry is unknown).
+pub fn center_pos(ctx: &egui::Context, size: egui::Vec2) -> Option<egui::Pos2> {
+    let work = work_area_rect(ctx)?;
     if work.width() < 120.0 || work.height() < 120.0 {
-        return false;
+        return None;
     }
     // Clamp to the top-left corner: a window taller than the work area should
     // hug the top edge rather than run off the bottom.
     let x = (work.center().x - size.x / 2.0).max(work.min.x);
     let y = (work.center().y - size.y / 2.0).max(work.min.y);
-    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
-    true
+    Some(egui::pos2(x, y))
 }
 
 /// Read a boolean preference out of ui.json (the main app's settings file)

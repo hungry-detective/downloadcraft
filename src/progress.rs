@@ -481,9 +481,13 @@ struct ProgressApp {
     /// Tail of this download's log (Log tab), re-read once a second.
     log_lines: Vec<String>,
     log_at: Instant,
-    /// Set whenever the card's height changes; cleared once the window has been
-    /// re-centred, so a growing part list never drifts off the middle.
-    recenter: bool,
+    /// Where the window opens and stays: where the user last left it
+    /// (issue #27), else the middle of the work area.
+    spot: crate::model::WindowSpot,
+    /// The card's height changed since the window was placed.
+    resized: bool,
+    /// This window saw the transfer running (not opened on a finished one).
+    saw_live: bool,
     last_poll: Instant,
     item: Option<DownloadItem>,
     snap: Snap,
@@ -557,13 +561,17 @@ impl ProgressApp {
             }
         }
         self.last_poll = Instant::now();
-        // A finished transfer hands over to the standalone "Download complete"
-        // dialog, so this window has done its job (IDM closes it the same way).
-        // With that dialog switched off it stays put, which keeps its
-        // Open file / Open folder actions reachable.
-        self.handoff = !self.snap.live
-            && matches!(self.item.as_ref().map(|d| &d.status), Some(Status::Completed))
-            && crate::model::ui_pref_bool("show_complete", true);
+        if self.snap.live {
+            self.saw_live = true;
+        }
+        // A finished transfer: this window has done its job and closes (as
+        // IDM's does). With "Download complete" on, that dialog takes over;
+        // with it off nothing more appears (issue #27: the finished progress
+        // window read as the dialog the user had switched off). A window
+        // opened on an already finished download stays, for its Open
+        // file / Open folder actions.
+        let finished = !self.snap.live && matches!(self.item.as_ref().map(|d| &d.status), Some(Status::Completed));
+        self.handoff = finished && (self.saw_live || crate::model::ui_pref_bool("show_complete", true));
     }
 
     /// Close bulletproofing: viewport Close is async and has been observed
@@ -637,7 +645,9 @@ pub fn run() -> eframe::Result<()> {
         log_lines: Vec::new(),
         log_at: Instant::now().checked_sub(Duration::from_secs(5)).unwrap_or_else(Instant::now),
         id,
-        recenter: true,
+        spot: crate::model::WindowSpot::new("pos_progress"),
+        resized: false,
+        saw_live: false,
         last_poll: Instant::now() - Duration::from_secs(10),
         item: None,
         snap: Snap::default(),
@@ -647,7 +657,8 @@ pub fn run() -> eframe::Result<()> {
         limit_mb: false,
         finish_sel,
         win_h: 0.0,
-        parts_open: true,
+        // Part Info stays the way the user left it (issue #27).
+        parts_open: crate::model::ui_pref_bool("progress_parts_open", true),
         engine_seen: None,
         scroll: 0.0,
         handoff: false,
@@ -764,13 +775,21 @@ impl eframe::App for ProgressApp {
         if (self.win_h - want_h).abs() > 0.5 {
             self.win_h = want_h;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PG_W, want_h)));
-            // The card grows as the part rows appear: re-centre on every size
-            // change so the whole window stays in the middle of the screen
-            // (taskbar excluded) instead of sliding behind it.
-            self.recenter = true;
+            self.resized = true;
         }
-        if self.recenter && crate::model::center_window(ctx, egui::vec2(PG_W, want_h)) {
-            self.recenter = false;
+        // Placed once (where the user last left it, else the middle). A size
+        // change afterwards (part rows appearing, Part Info folded) keeps the
+        // window where it is (it used to snap back to the middle, issue #27),
+        // only nudged up to stay above the taskbar.
+        let placed = self.spot.tick(ctx, egui::vec2(PG_W, want_h));
+        if placed && self.resized {
+            self.resized = false;
+            if self.spot.has_spot() {
+                self.spot.keep_on_screen(ctx, egui::vec2(PG_W, want_h));
+            } else if !self.spot.center(ctx, egui::vec2(PG_W, want_h)) {
+                // Never moved by the user: stays in the middle as it grows.
+                self.resized = true;
+            }
         }
 
         let item = self.item.clone();
@@ -1637,6 +1656,7 @@ impl ProgressApp {
         );
         if cb.clicked() && has_parts {
             self.parts_open = !self.parts_open;
+            crate::model::ui_pref_set_bool("progress_parts_open", self.parts_open);
         }
         // Right cluster, right-aligned on the content edge: the concept's
         // [Pause] [Close], swapping in whatever this state can actually do.

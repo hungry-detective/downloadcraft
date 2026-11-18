@@ -3846,7 +3846,6 @@ impl CraftApp {
             21 => crate::skins::join(look, "black"),
             22 => crate::skins::join(look, "light"),
             26 => crate::skins::join("craft", mode),
-            27 => crate::skins::join("ledger", mode),
             28 => crate::skins::join("petal", mode),
             29 => crate::skins::join("classic", mode),
             40..=59 => crate::theme_files::list()
@@ -3890,9 +3889,8 @@ impl CraftApp {
                 (String::new(), 0),
                 ("Layout".into(), 0),
                 ("Craft".into(), 26),
-                ("Ledger".into(), 27),
-                ("Petal".into(), 28),
                 ("Classic".into(), 29),
+                ("Petal".into(), 28),
             ]
             .into_iter()
             .chain({
@@ -4484,8 +4482,23 @@ impl CraftApp {
                 let _ = std::fs::remove_file(p);
             }
         }
+        let dest = self.downloads.iter().find(|d| d.id == id).map(|d| d.dest_path());
         // Stops a running transfer first: a torrent still holds its files.
         self.remove(id);
+        // A video's work folders go too (issue #27): its picture and sound
+        // legs ("<name>.dcwork") and a stream's segments ("<name>.parts").
+        // The stopped transfer lets go of them a moment later.
+        if let Some(dest) = dest {
+            std::thread::spawn(move || {
+                for _ in 0..40 {
+                    crate::engine::remove_partial(&dest);
+                    if !crate::engine::has_work_dirs(&dest) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            });
+        }
         if let Some(dir) = folder {
             // The torrent lets go of its files a moment after it stops.
             std::thread::spawn(move || {
@@ -7808,7 +7821,10 @@ fn select_in_file_manager(path: &std::path::Path) {
 pub(crate) const EXTENSION_ID: &str = "pgdhmfgefjnfijmlheboncdmfhcnoikk";
 /// IDs the Edge / Opera stores give the same extension once it is listed
 /// there (each store assigns its own); the host accepts them too.
-pub(crate) const STORE_EXTENSION_IDS: &[&str] = &[];
+pub(crate) const STORE_EXTENSION_IDS: &[&str] = &[
+    // Microsoft Edge Add-ons (Partner Center Store ID 0RDCK9S0J3J6).
+    "bmjjepniglflidaclilkibodbkdogoio",
+];
 /// Firefox add-on IDs the native host answers: the addons.mozilla.org one
 /// first, then the placeholder that self-installed builds up to 0.9.17 carry.
 pub(crate) const FIREFOX_EXTENSION_IDS: &[&str] =
@@ -11844,7 +11860,6 @@ impl CraftApp {
                     21 => ("black", mode),
                     22 => ("light", mode),
                     26 => ("craft", look),
-                    27 => ("ledger", look),
                     28 => ("petal", look),
                     29 => ("classic", look),
                     40..=59 => {

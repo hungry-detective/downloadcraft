@@ -330,7 +330,8 @@ struct ConfirmApp {
     target_queue: String,
     probe_rx: Option<Receiver<(Option<u64>, Option<String>)>>,
     rt: Option<std::sync::Arc<tokio::runtime::Runtime>>,
-    centered: bool,
+    /// Where the window opens: where the user last left it (issue #27).
+    spot: crate::model::WindowSpot,
     show_adv: bool,
     done: bool,
     /// Download was pressed while the app was closed: it was started at this
@@ -1193,7 +1194,7 @@ pub fn run() -> eframe::Result<()> {
         probe_size: known_size,
         probe_rx: None,
         rt: Some(rt.clone()),
-        centered: false,
+        spot: crate::model::WindowSpot::new("pos_file_info"),
         show_adv: false,
         done: false,
         waiting_app: None,
@@ -1350,11 +1351,9 @@ impl eframe::App for ConfirmApp {
             return;
         }
         self.maybe_prestart();
-        // Middle of the work area (taskbar excluded), once the monitor
-        // geometry is known; Windows would otherwise cascade the window.
-        if !self.centered && crate::model::center_window(ctx, egui::vec2(DM_W, DM_H)) {
-            self.centered = true;
-        }
+        // Where the user last left it, else the middle of the work area
+        // (taskbar excluded); Windows would otherwise cascade the window.
+        self.spot.tick(ctx, egui::vec2(DM_W, DM_H));
         // Collect probe result.
         if let Some(rx) = self.probe_rx.as_ref() {
             while let Ok((sz, nm)) = rx.try_recv() {
@@ -1583,7 +1582,8 @@ impl eframe::App for ConfirmApp {
                     egui::Vec2::splat(16.0),
                 ),
                 DmIcon::Grid,
-                DM_ACC(),
+                // The text's ink: white on dark, black on light.
+                crate::app::pl().dm_txt,
                 0.0,
             );
             let known = !self.probing && self.probe_size.filter(|s| *s > 0).is_some();

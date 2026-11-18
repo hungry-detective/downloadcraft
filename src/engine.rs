@@ -509,6 +509,7 @@ pub fn has_partial(dest: &std::path::Path) -> bool {
 pub fn remove_partial(dest: &std::path::Path) {
     downloadcraft_engine::remove_partial(dest);
     remove_hls_parts(dest);
+    remove_work_dirs(dest);
     if let Some(w) = work_dir() {
         downloadcraft_engine::remove_partial_in(dest, Some(&w));
     }
@@ -905,6 +906,29 @@ fn unique_work_dir(dest: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| "dl".to_string());
     let parent = dest.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     parent.join(format!("{stem}.dcwork-{}-{n}", std::process::id()))
+}
+
+/// Delete a download's work folders: the picture + sound legs kept for a
+/// resume ("<name>.dcwork") and any one-off ones a crash left behind
+/// ("<name>.dcwork-<pid>-<n>"). Only folders named after this file.
+pub fn remove_work_dirs(dest: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(adaptive_work_dir(dest));
+    let (Some(parent), Some(stem)) = (dest.parent(), dest.file_stem().map(|s| s.to_string_lossy().to_string())) else {
+        return;
+    };
+    let prefix = format!("{stem}.dcwork-");
+    if let Ok(rd) = std::fs::read_dir(parent) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().starts_with(&prefix) && e.path().is_dir() {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+}
+
+/// Whether a download still has a work folder on disk (see `remove_work_dirs`).
+pub fn has_work_dirs(dest: &std::path::Path) -> bool {
+    adaptive_work_dir(dest).exists() || hls_dir(dest).exists()
 }
 
 /// The work folder of an adaptive (picture + sound) download: one per
@@ -9854,6 +9878,29 @@ fn engine_error(url: &str, e: downloadcraft_engine::Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_a_video_removes_its_work_folders() {
+        // Issue #27: "Remove & Delete" left "<name>.dcwork" (picture and
+        // sound legs) behind; nothing else in the folder may go with it.
+        let dir = std::env::temp_dir().join(format!("dc_workdirs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("Show.mp4");
+        for d in ["Show.dcwork", "Show.dcwork-123-0", "Show.parts", "Other.dcwork", "Show folder"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+            std::fs::write(dir.join(d).join("v.dcdata"), b"x").unwrap();
+        }
+        assert!(has_work_dirs(&dest));
+        remove_partial(&dest);
+        assert!(!dir.join("Show.dcwork").exists());
+        assert!(!dir.join("Show.dcwork-123-0").exists());
+        assert!(!dir.join("Show.parts").exists());
+        assert!(!has_work_dirs(&dest));
+        assert!(dir.join("Other.dcwork").exists(), "another download's folder stays");
+        assert!(dir.join("Show folder").exists(), "a folder that only starts with the name stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_file_takes_the_server_date() {
