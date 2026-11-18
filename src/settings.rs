@@ -4498,7 +4498,7 @@ impl SettingsApp {
                 }
             });
             ui.add_space(4.0);
-            hint(ui, "Craft: Download Craft's own layout. Ledger: a grey window, a large labelled toolbar and a list with grid lines, square corners. Petal: summary tiles and downloads as cards, round corners. Classic: laid out like Internet Download Manager, with a coloured toolbar, a Categories tree and its list columns. All in blue; the Theme menu in the main window shows each one as you point at it.");
+            hint(ui, "Craft: Download Craft's own layout. Classic: a large labelled toolbar, a Categories and Status sidebar and a list with grid lines, laid out like a classic download manager. Petal: summary tiles and downloads as cards, round corners. The Theme menu in the main window shows each one as you point at it.");
         });
         card(ui, "Mode", None, &mut open_theme, |ui| {
             let gap = 8.0;

@@ -32,12 +32,15 @@ const fn pm(c: u32, a: u8) -> u8 {
     ((c & 0xFF) * a as u32 / 255) as u8
 }
 
-/// Looks in the order the menus list them: (key, name).
-pub const LOOKS: [(&str, &str); 4] = [("craft", "Craft"), ("ledger", "Ledger"), ("petal", "Petal"), ("classic", "Classic")];
+/// Looks in the order the menus list them: (key, name). Ledger was folded
+/// into Classic, which is built on it.
+pub const LOOKS: [(&str, &str); 3] = [("craft", "Craft"), ("classic", "Classic"), ("petal", "Petal")];
 
 /// `"petal:light"` → `("petal", "light")`; a bare mode is Download Craft's look.
+/// A saved Ledger look opens as Classic.
 pub fn split(theme: &str) -> (&str, &str) {
     match theme.split_once(':') {
+        Some(("ledger", mode)) => ("classic", mode),
         Some((look, mode)) if LOOKS.iter().any(|(k, _)| *k == look) || look.starts_with("user.") => (look, mode),
         Some((_, mode)) => ("craft", mode),
         None => ("craft", theme),
@@ -95,8 +98,6 @@ pub fn palette(look: &str, dark: bool) -> Palette {
         return crate::theme_files::load(look).map(|t| t.palette(dark)).unwrap_or(if dark { DARK_PAL } else { LIGHT_PAL });
     }
     match (look, dark) {
-        ("ledger", false) => LEDGER_LIGHT,
-        ("ledger", true) => LEDGER_DARK,
         ("petal", false) => PETAL_LIGHT,
         ("petal", true) => PETAL_DARK,
         ("classic", false) => CLASSIC_LIGHT,
@@ -344,6 +345,9 @@ mod tests {
         assert_eq!(split("nope:light"), ("craft", "light"));
         assert_eq!(join("craft", "light"), "light");
         assert_eq!(join("ledger", "system"), "ledger:system");
+        // A saved Ledger look opens as Classic; the menus list three looks.
+        assert_eq!(split("ledger:dark"), ("classic", "dark"));
+        assert_eq!(LOOKS.map(|(k, _)| k), ["craft", "classic", "petal"]);
         assert_eq!(join("petal", "black"), "petal:black");
     }
 
@@ -376,8 +380,9 @@ pub fn ledger_like() -> bool {
 /// Is the active look `key`? (The palette knows: each look has its radius.)
 pub fn active() -> &'static str {
     let r = crate::app::pl().radius;
+    // Ledger's radius (a palette built on it) is Classic now.
     if r == LEDGER_LIGHT.radius {
-        "ledger"
+        "classic"
     } else if r == PETAL_LIGHT.radius {
         "petal"
     } else if r == CLASSIC_LIGHT.radius {

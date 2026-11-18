@@ -80,7 +80,7 @@ struct Seeds {
 #[derive(Clone, Debug)]
 pub struct ThemeFile {
     pub name: String,
-    /// The layout it is drawn with: craft, ledger or petal.
+    /// The layout it is drawn with: craft, classic or petal.
     pub layout: String,
     light: Option<Seeds>,
     dark: Option<Seeds>,
@@ -128,7 +128,8 @@ pub fn load(key: &str) -> Option<ThemeFile> {
 
 fn parse_json(text: &str, stem: &str) -> Option<ThemeFile> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
-    let layout = v.get("layout").and_then(|x| x.as_str()).filter(|l| ["craft", "ledger", "petal", "classic"].contains(l)).unwrap_or("craft");
+    // A theme file made for Ledger lays out as Classic (Ledger was folded into it).
+    let layout = v.get("layout").and_then(|x| x.as_str()).map(|l| if l == "ledger" { "classic" } else { l }).filter(|l| ["craft", "petal", "classic"].contains(l)).unwrap_or("craft");
     let light = v.get("light").and_then(seeds_json);
     let dark = v.get("dark").and_then(seeds_json);
     // Colours at the top level count for both sides.
