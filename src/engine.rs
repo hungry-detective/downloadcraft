@@ -508,6 +508,7 @@ pub fn has_partial(dest: &std::path::Path) -> bool {
 /// Drop the engine's unfinished data for `dest` wherever it is.
 pub fn remove_partial(dest: &std::path::Path) {
     downloadcraft_engine::remove_partial(dest);
+    remove_hls_parts(dest);
     if let Some(w) = work_dir() {
         downloadcraft_engine::remove_partial_in(dest, Some(&w));
     }
@@ -3630,6 +3631,49 @@ fn aes128_cbc_decrypt(data: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> Result<Vec<
 /// [`record_live_hls`] until the stream ends or the user stops it; oversize and
 /// SAMPLE-AES playlists are rejected with guidance — and DRM
 /// (Widevine/FairPlay) is never bypassed.
+/// The folder a stream's segments wait in until they are joined: one per
+/// download, named after the file ("Movie.parts"), next to it. It goes away
+/// after the merge, and with the download when it is removed.
+pub fn hls_dir(dest: &std::path::Path) -> std::path::PathBuf {
+    let stem = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "download".into());
+    dest.with_file_name(format!("{stem}.parts"))
+}
+
+/// Segment `i` inside [`hls_dir`].
+fn hls_seg(dest: &std::path::Path, i: usize) -> std::path::PathBuf {
+    hls_dir(dest).join(format!("{i:05}.seg"))
+}
+
+/// Segment files older versions left beside the download ("Movie.hls12"),
+/// with their numbers.
+fn hls_loose_parts(dest: &std::path::Path) -> Vec<(usize, std::path::PathBuf)> {
+    let (Some(dir), Some(stem)) = (dest.parent(), dest.file_stem().map(|s| s.to_string_lossy().to_string())) else {
+        return Vec::new();
+    };
+    let prefix = format!("{stem}.hls");
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    rd.flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let rest = name.strip_prefix(&prefix)?;
+            let n = rest.strip_suffix("tmp").unwrap_or(rest);
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some((if rest.ends_with("tmp") { usize::MAX } else { n.parse().ok()? }, e.path()))
+        })
+        .collect()
+}
+
+/// Remove a stream's waiting segments: its folder and any loose ones.
+pub fn remove_hls_parts(dest: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(hls_dir(dest));
+    for (_, f) in hls_loose_parts(dest) {
+        let _ = std::fs::remove_file(f);
+    }
+    let _ = std::fs::remove_file(dest.with_extension("hlsmap"));
+}
+
 async fn download_hls(
     playlist_url: &str,
     dest: &PathBuf,
@@ -3786,7 +3830,22 @@ async fn download_hls(
     // 3. Resume map: {playlist, count, done:[idx]}. Entries only count
     // when their part file is still on disk (cleanups must not brick
     // the merge into "segment missing").
-    let map_path = dest.with_extension("hlsmap");
+    let seg_dir = hls_dir(dest);
+    std::fs::create_dir_all(&seg_dir).map_err(|e| anyhow!(io_message(&e)))?;
+    let map_path = seg_dir.join("map.json");
+    // Segments an older version left beside the file move into the folder.
+    let old_map = dest.with_extension("hlsmap");
+    if old_map.exists() && !map_path.exists() {
+        let _ = std::fs::rename(&old_map, &map_path);
+    }
+    for (i, f) in hls_loose_parts(dest) {
+        if i == usize::MAX {
+            let _ = std::fs::remove_file(&f);
+        } else {
+            let _ = std::fs::rename(&f, hls_seg(dest, i));
+        }
+    }
+    let _ = std::fs::remove_file(&old_map);
     let mut done: std::collections::HashSet<usize> = std::collections::HashSet::new();
     if let Ok(raw) = std::fs::read_to_string(&map_path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
@@ -3798,7 +3857,7 @@ async fn download_hls(
                 // map listed (it is only rewritten at the end, so a stopped
                 // run listed none and resume re-fetched everything).
                 for i in 0..segs.len() {
-                    if dest.with_extension(format!("hls{i}")).exists() {
+                    if hls_seg(dest, i).exists() {
                         done.insert(i);
                     }
                 }
@@ -3817,18 +3876,28 @@ async fn download_hls(
     // The map names this playlist before any segment arrives, so a run that
     // stops midway resumes from the segment files it already finished.
     save_map(&done);
-    // 4. Byte totals via concurrent ranged HEADs (best-effort).
+    // 4. Byte total, estimated quickly: a few segments spread over the stream
+    // are sized at once (all of them took ~10 s on long films before the
+    // first byte came), the rest are assumed alike. The real size replaces
+    // it as segments arrive and when they are joined.
     let parallel = connections.clamp(4, 8);
     let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel));
     {
+        const SAMPLE: usize = 12;
+        let picks: Vec<usize> = if segs.len() <= SAMPLE {
+            (0..segs.len()).collect()
+        } else {
+            (0..SAMPLE).map(|k| k * (segs.len() - 1) / (SAMPLE - 1)).collect()
+        };
+        let probe_sem = std::sync::Arc::new(tokio::sync::Semaphore::new(SAMPLE));
         let mut total_known: u64 = 0;
-        let mut any_known = false;
+        let mut any_known = 0usize;
         let mut probes = Vec::new();
-        for s in &segs {
+        for s in picks.iter().map(|&i| &segs[i]) {
+            let sem = probe_sem.clone();
             let client = client.clone();
             let opts = opts.clone();
             let u = s.clone();
-            let sem = sem.clone();
             probes.push(tokio::spawn(async move {
                 let _p = sem.acquire_owned().await;
                 let r = opts
@@ -3843,13 +3912,19 @@ async fn download_hls(
                 cr.split('/').next_back()?.parse::<u64>().ok()
             }));
         }
-        for h in probes {
-            if let Ok(Some(n)) = h.await {
-                total_known = total_known.saturating_add(n);
-                any_known = true;
+        // At most 4 s for the estimate: a slow server must not hold the start.
+        let gathered = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+            for h in probes {
+                if let Ok(Some(n)) = h.await {
+                    total_known = total_known.saturating_add(n);
+                    any_known += 1;
+                }
             }
-        }
-        if any_known {
+        })
+        .await;
+        let _ = gathered;
+        if any_known > 0 {
+            let total_known = (total_known as f64 / any_known as f64 * segs.len() as f64) as u64;
             shared.total.store(total_known, Ordering::SeqCst);
             shared.has_total.store(true, Ordering::SeqCst);
         }
@@ -3878,7 +3953,7 @@ async fn download_hls(
         let mut seeded = 0u64;
         for i in done.iter() {
             seeded = seeded.saturating_add(
-                std::fs::metadata(dest.with_extension(format!("hls{i}")))
+                std::fs::metadata(hls_seg(dest, *i))
                     .map(|m| m.len())
                     .unwrap_or(0),
             );
@@ -3898,7 +3973,7 @@ async fn download_hls(
         let client = client.clone();
         let opts = opts.clone();
         let url = seg_url.clone();
-        let part = dest.with_extension(format!("hls{idx}"));
+        let part = hls_seg(dest, idx);
         let shared = shared.clone();
         let limiter = limiter.clone();
         let abort = abort.clone();
@@ -4046,7 +4121,7 @@ async fn download_hls(
                 // Temp file + rename: a segment file exists only when whole,
                 // so resume can trust any it finds (an abort mid-write used to
                 // leave a short file behind).
-                let staging = part.with_extension(format!("hls{idx}tmp"));
+                let staging = part.with_extension("tmp");
                 tokio::fs::write(&staging, &plain).await.map_err(|e| anyhow!(io_message(&e)))?;
                 tokio::fs::rename(&staging, &part).await.map_err(|e| anyhow!(io_message(&e)))?;
                 let got = attempt_bytes.max(1);
@@ -4097,7 +4172,7 @@ async fn download_hls(
             limiter.consume(init.len() as u64).await;
         }
         for i in 0..segs.len() {
-            let part = dest.with_extension(format!("hls{i}"));
+            let part = hls_seg(dest, i);
             let mut f = tokio::fs::File::open(&part)
                 .await
                 .map_err(|_| anyhow!("segment {i} missing after download — retry the download"))?;
@@ -4108,6 +4183,7 @@ async fn download_hls(
     }
     drop(out);
     let _ = std::fs::remove_file(&map_path);
+    let _ = std::fs::remove_dir_all(&seg_dir);
     let final_len = tokio::fs::metadata(&tmp).await.map(|m| m.len()).unwrap_or(0);
     shared.total.store(final_len, Ordering::SeqCst);
     shared.has_total.store(true, Ordering::SeqCst);
@@ -4465,10 +4541,17 @@ pub async fn download(
         url
     };
     job_log(&log, format!("start: {url} ({connections} connections)"));
-    // The server's country and distance, for the progress window.
-    if let Ok(client) = opts.build_client() {
-        let proxied = matches!(proxy_choice(&opts.proxy_url), ProxyChoice::Pac(_) | ProxyChoice::Manual(_));
-        tokio::spawn(crate::geo::measure_owned(url.clone(), proxied, client, shared.server.clone()));
+    // The server's country and distance, for the progress window: its own
+    // client is built in the background (building one took ~20 ms that
+    // every download waited for before its first request).
+    {
+        let (o2, u2, server) = (opts.clone(), url.clone(), shared.server.clone());
+        tokio::spawn(async move {
+            if let Ok(client) = o2.build_client() {
+                let proxied = matches!(proxy_choice(&o2.proxy_url), ProxyChoice::Pac(_) | ProxyChoice::Manual(_));
+                crate::geo::measure_owned(u2, proxied, client, server).await;
+            }
+        });
     }
     if let Err(e) = download_inner(url.clone(), dest.clone(), connections, opts.clone(), shared.clone()).await {
         job_log(&log, format!("failed: {e:#}"));
@@ -9667,6 +9750,9 @@ async fn run_dce(
     };
     let result = dl.download(job, progress.clone(), control.clone()).await;
     done.store(true, Ordering::SeqCst);
+    // Stopped at once (the copy just below is the final one): awaiting it
+    // waited out its 100 ms sleep, which every download paid at the end.
+    bridge.abort();
     let _ = bridge.await;
     sync_engine_progress(&progress, &control, shared, total);
     match result {

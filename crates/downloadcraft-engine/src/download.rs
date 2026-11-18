@@ -160,6 +160,10 @@ struct Run {
     best_speed: Mutex<f64>,
     peak: AtomicUsize,
     ranges_ok: AtomicBool,
+    /// Wakes the monitor at once: the first reply named the size and showed
+    /// ranges work, so more connections can open now, not at the next tick
+    /// (a small file was done before the tick and still waited for it).
+    wake: tokio::sync::Notify,
     single: AtomicBool,
     stats: Mutex<Vec<Arc<WorkerStat>>>,
     speeds: Mutex<Vec<f64>>,
@@ -281,6 +285,7 @@ impl Run {
             self.ranges_ok.store(true, Ordering::SeqCst);
             self.progress.resumable.store(true, Ordering::SeqCst);
         }
+        self.wake.notify_one();
         Ok(())
     }
 
@@ -538,6 +543,7 @@ async fn run_once(
         proven: AtomicUsize::new(0),
         best_speed: Mutex::new(0.0),
         ranges_ok: AtomicBool::new(ranges_ok),
+        wake: tokio::sync::Notify::new(),
         single: AtomicBool::new(false),
         stats: Mutex::new(Vec::new()),
         speeds: Mutex::new(Vec::new()),
@@ -636,11 +642,15 @@ async fn monitor(run: Arc<Run>) -> Result<Outcome, Error> {
             last_journal = Instant::now();
         }
         if set.is_empty() {
-            tokio::time::sleep(TICK).await;
+            tokio::select! {
+                _ = tokio::time::sleep(TICK) => {}
+                _ = run.wake.notified() => {}
+            }
         } else {
             tokio::select! {
                 _ = tokio::time::sleep(TICK) => {}
                 _ = set.join_next() => {}
+                _ = run.wake.notified() => {}
             }
         }
     }
@@ -786,6 +796,8 @@ impl Drop for LiveGuard<'_> {
         if !self.1 {
             self.0.live.fetch_sub(1, Ordering::SeqCst);
         }
+        // A connection ending may leave work another can take now.
+        self.0.wake.notify_one();
     }
 }
 
@@ -881,6 +893,10 @@ async fn worker(run: Arc<Run>, w: usize) {
                     continue;
                 }
                 match run.note_failure(progressed, msg, w) {
+                    // Cut after bringing data in: reconnect at once (the
+                    // half-second wait cost every cut on a server that drops
+                    // connections). Only cuts with nothing in back off.
+                    Some(_) if progressed => {}
                     Some(streak) => run.nap(backoff(streak)).await,
                     None => break,
                 }

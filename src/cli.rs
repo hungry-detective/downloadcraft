@@ -510,7 +510,13 @@ fn run_engine(
     let mut last = 0u64;
     let mut last_t = t0;
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // The progress line every 200 ms, but the command ends the moment the
+        // download does: a fixed 200 ms sleep made every download (a 1 MB
+        // file took 5 ms) last at least 200 ms.
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        while std::time::Instant::now() < until && !handle.is_finished() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         let dl = shared.downloaded.load(Ordering::SeqCst);
         let now = std::time::Instant::now();
         let el = now.duration_since(last_t).as_secs_f64();
