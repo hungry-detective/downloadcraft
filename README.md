@@ -58,6 +58,65 @@ Full notes: [Release 0.10.0](https://github.com/hungry-detective/downloadcraft/r
 
 ---
 
+## 💡 Why switch to Download Craft
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/why-dark.svg">
+    <img src="docs/images/why-light.svg" alt="Faster than IDM in all 4 speed tests, free forever, torrents built in, 10 languages" width="100%">
+  </picture>
+</p>
+
+|  | Download Craft | IDM 6.43 |
+|---|---|---|
+| Price | **Free forever** (MIT licence) | Paid licence after a trial |
+| Torrents | **Built in**: magnet links and .torrent files, sharing up to a ratio you set | Not included |
+| YouTube and 1,000+ sites | **Built in**, with its own yt-dlp kept up to date | Needs the browser extension |
+| HLS / DASH streams, live recording | **Yes**, with size and time left | Through its browser extension |
+| Browser extension works without the app | **Yes** | No |
+| Languages | **10**, switched live | Many |
+| Windows, macOS and Linux | **All three** | Windows only |
+| Source code | **Open** | Closed |
+
+### Speed, measured
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-dark.svg">
+    <img src="docs/images/bench-light.svg" alt="Time to finish: Download Craft, IDM 6.43 and a one-connection download in four tests" width="100%">
+  </picture>
+</p>
+
+Download Craft, IDM 6.43 build 18 and a one-connection download (what a browser does), on the
+same PC and the same local test server, with the same files. Both download managers used 8
+connections. Every program is timed the same way: from the first request it sends to the server
+until the whole file is in place and the program has let go of it. Each test ran three times and
+the chart shows the middle run. Every file up to 300 MB was checked byte for byte against the
+original, and the 1 GB file by its size.
+
+| Test | Download Craft | IDM 6.43 | |
+|---|---|---|---|
+| 1 GB file | **2.9 s** | 6.5 s | **2.2× faster** |
+| 300 MB, each connection capped at 4 MB/s | **9.4 s** | 10.8 s | **1.2× faster** |
+| 300 MB, connections cut every 20 MB | **0.89 s** | 2.8 s | **3.2× faster** |
+| 1 MB file | **18 ms** | 266 ms | **15× faster** |
+
+IDM was handed each download from Chrome through its extension, and our script pressed its
+Start Download button the moment its window opened, so IDM's times include that window (a
+person would take longer). Download Craft ran from its command line (`download_craft get`).
+
+A local server shows what each program does, not your internet speed. On a real connection the
+gain depends on the server. The test scripts and these results are in [`tools/bench`](tools/bench),
+so you can run it yourself.
+
+### Built our own way
+
+Download Craft is not a copy of Internet Download Manager and was not reverse-engineered from it.
+We used IDM, liked how it works, and built the same ideas again from scratch, our own
+way, in Rust. It contains no IDM code.
+
+---
+
 ## 📸 Screenshots
 
 <table>

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="190" viewBox="0 0 760 190" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+<rect x="24.0" y="4" width="169.0" height="182" rx="12" fill="#161b22" stroke="#30363d"/>
+<path d="M112.5 18 L96.5 43 L107.5 43 L103.5 62 L120.5 36 L109.5 36 Z" fill="#22c55e"/>
+<text x="108.5" y="104" font-size="30" font-weight="700" text-anchor="middle" fill="#e6edf3">4 of 4</text>
+<text x="108.5" y="134" font-size="14" font-weight="600" text-anchor="middle" fill="#e6edf3">Faster than IDM</text>
+<text x="108.5" y="156" font-size="11.5" text-anchor="middle" fill="#9198a1">in every speed test</text>
+<rect x="205.0" y="4" width="169.0" height="182" rx="12" fill="#161b22" stroke="#30363d"/>
+<rect x="272.5" y="34" width="34" height="24" rx="3" fill="none" stroke="#4493f8" stroke-width="3"/><rect x="269.5" y="26" width="40" height="9" rx="2" fill="none" stroke="#4493f8" stroke-width="3"/><line x1="289.5" y1="26" x2="289.5" y2="58" stroke="#4493f8" stroke-width="3"/><path d="M289.5 26 C275.5 12 269.5 26 289.5 26 C309.5 26 303.5 12 289.5 26" fill="none" stroke="#4493f8" stroke-width="3"/>
+<text x="289.5" y="104" font-size="30" font-weight="700" text-anchor="middle" fill="#e6edf3">100%</text>
+<text x="289.5" y="134" font-size="14" font-weight="600" text-anchor="middle" fill="#e6edf3">Free forever</text>
+<text x="289.5" y="156" font-size="11.5" text-anchor="middle" fill="#9198a1">no licence, no trial, no ads</text>
+<rect x="386.0" y="4" width="169.0" height="182" rx="12" fill="#161b22" stroke="#30363d"/>
+<path d="M454.5 22 V42 A16 16 0 0 0 486.5 42 V22" fill="none" stroke="#4493f8" stroke-width="9"/><rect x="450.0" y="18" width="9" height="8" fill="#9198a1"/><rect x="482.0" y="18" width="9" height="8" fill="#9198a1"/>
+<text x="470.5" y="104" font-size="30" font-weight="700" text-anchor="middle" fill="#e6edf3">Torrent</text>
+<text x="470.5" y="134" font-size="14" font-weight="600" text-anchor="middle" fill="#e6edf3">Built in</text>
+<text x="470.5" y="156" font-size="11.5" text-anchor="middle" fill="#9198a1">magnet links and .torrent files</text>
+<rect x="567.0" y="4" width="169.0" height="182" rx="12" fill="#161b22" stroke="#30363d"/>
+<circle cx="651.5" cy="40" r="19" fill="none" stroke="#4493f8" stroke-width="3"/><ellipse cx="651.5" cy="40" rx="8" ry="19" fill="none" stroke="#4493f8" stroke-width="2.5"/><line x1="632.5" y1="40" x2="670.5" y2="40" stroke="#4493f8" stroke-width="2.5"/>
+<text x="651.5" y="104" font-size="30" font-weight="700" text-anchor="middle" fill="#e6edf3">10</text>
+<text x="651.5" y="134" font-size="14" font-weight="600" text-anchor="middle" fill="#e6edf3">Languages</text>
+<text x="651.5" y="156" font-size="11.5" text-anchor="middle" fill="#9198a1">switch live, no restart</text>
+</svg>
