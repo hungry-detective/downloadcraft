@@ -117,6 +117,8 @@ pub struct Palette {
     pub fail: egui::Color32,
 }
 
+// The dm_* colours (Download File Info, progress and complete windows) are
+// the main window's own, so every window of a theme reads as one.
 pub const DARK_PAL: Palette = Palette {
     bg: egui::Color32::from_rgb(18, 19, 26),
     surface: egui::Color32::from_rgb(26, 27, 36),
@@ -143,16 +145,16 @@ pub const DARK_PAL: Palette = Palette {
     bar_bd: egui::Color32::from_rgba_premultiplied(20, 20, 21, 25),
     track: egui::Color32::from_rgb(0x3A, 0x3B, 0x44),
     notice: egui::Color32::from_rgb(255, 150, 120),
-    dm_card: egui::Color32::from_rgb(0x0f, 0x0f, 0x22),
-    dm_line: egui::Color32::from_rgb(0x1e, 0x29, 0x3b),
-    dm_box_bd: egui::Color32::from_rgb(0x33, 0x41, 0x55),
-    dm_txt: egui::Color32::from_rgb(0xe2, 0xe8, 0xf0),
-    dm_dim: egui::Color32::from_rgb(0x94, 0xa3, 0xb8),
-    dm_hover: egui::Color32::from_rgb(0x1c, 0x24, 0x36),
-    dm_hover2: egui::Color32::from_rgb(0x27, 0x33, 0x4a),
-    dm_trough: egui::Color32::from_rgb(0x0a, 0x0a, 0x14),
-    dm_lbl: egui::Color32::from_rgb(0x64, 0x74, 0x8b),
-    dm_head: egui::Color32::from_rgb(0x47, 0x55, 0x69),
+    dm_card: egui::Color32::from_rgb(25, 26, 35),
+    dm_line: egui::Color32::from_rgb(35, 36, 48),
+    dm_box_bd: egui::Color32::from_rgb(52, 54, 70),
+    dm_txt: egui::Color32::from_rgb(238, 238, 246),
+    dm_dim: egui::Color32::from_rgb(168, 171, 190),
+    dm_hover: egui::Color32::from_rgb(36, 37, 50),
+    dm_hover2: egui::Color32::from_rgb(46, 48, 64),
+    dm_trough: egui::Color32::from_rgb(18, 19, 26),
+    dm_lbl: egui::Color32::from_rgb(130, 134, 155),
+    dm_head: egui::Color32::from_rgb(100, 104, 125),
     dm_warn: egui::Color32::from_rgb(0xff, 0x96, 0x78),
     // The "Download complete" dialog in the app's own blue-tinted dark
     // (it used neutral greys that did not match the windows around it).
@@ -197,16 +199,16 @@ pub const LIGHT_PAL: Palette = Palette {
     bar_bd: egui::Color32::from_rgba_premultiplied(2, 3, 5, 30),
     track: egui::Color32::from_rgb(0xDD, 0xE1, 0xEC),
     notice: egui::Color32::from_rgb(0xB0, 0x4A, 0x08),
-    dm_card: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
-    dm_line: egui::Color32::from_rgb(0xE2, 0xE8, 0xF0),
-    dm_box_bd: egui::Color32::from_rgb(0xC7, 0xD2, 0xE1),
-    dm_txt: egui::Color32::from_rgb(0x1E, 0x29, 0x3B),
-    dm_dim: egui::Color32::from_rgb(0x64, 0x74, 0x8B),
-    dm_hover: egui::Color32::from_rgb(0xEF, 0xF3, 0xFA),
-    dm_hover2: egui::Color32::from_rgb(0xE1, 0xE8, 0xF2),
-    dm_trough: egui::Color32::from_rgb(0xE8, 0xED, 0xF4),
-    dm_lbl: egui::Color32::from_rgb(0x5A, 0x68, 0x7E),
-    dm_head: egui::Color32::from_rgb(0x7C, 0x89, 0x9C),
+    dm_card: egui::Color32::from_rgb(255, 255, 255),
+    dm_line: egui::Color32::from_rgb(233, 236, 243),
+    dm_box_bd: egui::Color32::from_rgb(200, 205, 220),
+    dm_txt: egui::Color32::from_rgb(32, 36, 51),
+    dm_dim: egui::Color32::from_rgb(74, 81, 96),
+    dm_hover: egui::Color32::from_rgb(238, 240, 246),
+    dm_hover2: egui::Color32::from_rgb(230, 233, 242),
+    dm_trough: egui::Color32::from_rgb(238, 240, 246),
+    dm_lbl: egui::Color32::from_rgb(90, 97, 112),
+    dm_head: egui::Color32::from_rgb(122, 128, 144),
     dm_warn: egui::Color32::from_rgb(0xC0, 0x39, 0x0B),
     cg_bg: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
     cg_bd: egui::Color32::from_rgb(0xD2, 0xD6, 0xDF),
@@ -1915,7 +1917,7 @@ const LEDGER_TOOL_H: f32 = 54.0;
 const PETAL_TOOL_H: f32 = 42.0;
 /// Petal's download cards: the narrowest a grid card gets, its height, and
 /// the gap between cards (both ways).
-const PETAL_CARD_MIN_W: f32 = 300.0;
+const PETAL_CARD_MIN_W: f32 = 260.0;
 const PETAL_CARD_H: f32 = 124.0;
 const PETAL_CARD_GAP: f32 = 14.0;
 
@@ -2907,6 +2909,8 @@ pub struct CraftApp {
     status_open: bool,
     /// Classic's Categories tree: All Downloads, Unfinished, Finished open?
     classic_open: [bool; 3],
+    /// Petal's sidebar folded to its icons (more room for the cards).
+    petal_side_mini: bool,
 }
 
 impl CraftApp {
@@ -3113,6 +3117,7 @@ impl CraftApp {
             cats_open: true,
             status_open: true,
             classic_open: [true, false, false],
+            petal_side_mini: crate::model::ui_pref_bool("petal_side_mini", false),
         };
         app.load_queue();
         app.load_ui_state();
@@ -6396,9 +6401,12 @@ impl CraftApp {
             ("Image", MI_IMAGE, t("Pictures"), tone(0x0891B2)),
         ];
         let cur = self.filter.clone();
+        // Folded: icons only (the name shows on hover), so the cards get
+        // the room for one more per row.
+        let mini = self.petal_side_mini;
         egui::SidePanel::left("petal_side")
             .resizable(false)
-            .exact_width(200.0)
+            .exact_width(if mini { 60.0 } else { 200.0 })
             .show_separator_line(false)
             // One card, on the page like the tiles beside it: same top and
             // bottom gutter (12 px), its rows sharing out the card's height.
@@ -6409,14 +6417,35 @@ impl CraftApp {
                 const PAD: f32 = 8.0;
                 const HEAD_H: f32 = 22.0;
                 const GAP: f32 = 6.0;
+                const TOGGLE_H: f32 = 30.0;
                 let n_rows = (library.len() + cats.len()) as f32;
                 // Every row and head is followed by 1 px of item spacing.
-                let spacing = n_rows + 2.0;
-                let row_h = ((card.height() - 2.0 * PAD - 2.0 * HEAD_H - GAP - spacing - 1.0) / n_rows).floor().clamp(22.0, 34.0);
+                let spacing = n_rows + 3.0;
+                // Open, the "Library" title sits beside the fold button (one
+                // head less below it); folded, a short rule follows the button.
+                let heads = if mini { 2.0 } else { 1.0 };
+                let row_h = ((card.height() - 2.0 * PAD - TOGGLE_H - heads * HEAD_H - GAP - spacing - 1.0) / n_rows).floor().clamp(22.0, 34.0);
                 let inner = card.shrink(PAD);
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
                 let ui = &mut ui;
                 ui.spacing_mut().item_spacing.y = 1.0;
+                // The fold button: a small square at the top, as the
+                // sidebar's own control.
+                let (tr, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), TOGGLE_H), egui::Sense::hover());
+                // Its glyph on the row icons' column (18 px in when open,
+                // the middle when folded).
+                let bx = if mini { tr.center().x } else { tr.min.x + 18.0 };
+                let b = egui::Rect::from_center_size(egui::pos2(bx, tr.min.y + 14.0), egui::vec2(30.0, 28.0));
+                let hov = self.man.hover(&b);
+                ui.painter().rect_filled(b, 8.0, if hov { pl().hover_bg } else { pl().surface_lt });
+                ui.painter().stext(b.center(), egui::Align2::CENTER_CENTER, if mini { "\u{e5d2}" } else { "\u{e9bd}" }, crate::fonts::icon(16.0), pl().txt);
+                if hov {
+                    hover_tip(ui, "petal_fold", if mini { "Show the sidebar's names" } else { "Fold the sidebar to icons" });
+                }
+                self.hits.push((HitKind::SideToggle(20), b));
+                if !mini {
+                    ui.painter().stext(egui::pos2(b.max.x + 10.0, b.center().y + 1.0), egui::Align2::LEFT_CENTER, t("Library"), egui::FontId::proportional(11.0), pl().dim);
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("petal_side_scroll")
                     .auto_shrink([false, false])
@@ -6432,17 +6461,31 @@ impl CraftApp {
                         } else if hov {
                             p.rect_filled(r, 8.0, pl().hover_bg);
                         }
-                        p.stext(egui::pos2(r.min.x + 18.0, r.center().y), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), col);
-                        let font = if on { crate::fonts::semi(12.5) } else { egui::FontId::proportional(12.5) };
-                        p.stext(egui::pos2(r.min.x + 36.0, r.center().y), egui::Align2::LEFT_CENTER, label, font, pl().txt);
-                        p.stext(egui::pos2(r.max.x - 10.0, r.center().y), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(11.0), pl().dim);
+                        if mini {
+                            p.stext(r.center(), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(17.0), col);
+                            if hov {
+                                hover_tip(ui, key, &format!("{label} ({n})"));
+                            }
+                        } else {
+                            p.stext(egui::pos2(r.min.x + 18.0, r.center().y), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), col);
+                            let font = if on { crate::fonts::semi(12.5) } else { egui::FontId::proportional(12.5) };
+                            p.stext(egui::pos2(r.min.x + 36.0, r.center().y), egui::Align2::LEFT_CENTER, label, font, pl().txt);
+                            p.stext(egui::pos2(r.max.x - 10.0, r.center().y), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(11.0), pl().dim);
+                        }
                         self.hits.push((HitKind::SideRow(key.to_string()), r));
                     };
                     let head = |ui: &mut egui::Ui, title: &str| {
                         let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), HEAD_H), egui::Sense::hover());
-                        ui.painter().stext(egui::pos2(r.min.x + 10.0, r.center().y + 1.0), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.0), pl().dim);
+                        if mini {
+                            // Folded: a short rule instead of the title.
+                            ui.painter().hline((r.min.x + 8.0)..=(r.max.x - 8.0), r.center().y, egui::Stroke::new(1.0_f32, pl().card_bd));
+                        } else {
+                            ui.painter().stext(egui::pos2(r.min.x + 10.0, r.center().y + 1.0), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(11.0), pl().dim);
+                        }
                     };
-                    head(ui, &t("Library"));
+                    if mini {
+                        head(ui, &t("Library"));
+                    }
                     for (key, icon, label, n, col) in &library {
                         row(ui, key, icon, label, *n, *col);
                     }
@@ -6854,7 +6897,7 @@ impl CraftApp {
         }
         self.tray_sig = sig;
         if let Some(tray) = &self.tray {
-            tray.set_menu(Some(Box::new(tray_menu(&running, self.start_with_windows))));
+            crate::tray_menu::set_entries(tray_entries(&running, self.start_with_windows));
             let speed: f64 = self.downloads.iter().map(|d| d.speed_bps).sum();
             let tip = if running.is_empty() {
                 crate::tray::tooltip().to_string()
@@ -8132,51 +8175,60 @@ fn resume_file_missing(d: &DownloadItem) -> bool {
 }
 
 /// The tray's menu: the running downloads with their percentages (a click
-/// opens that download's progress window), then the everyday actions.
+/// opens that download's progress window), then the everyday actions. Shown
+/// and drawn by `tray_menu` (each row only as wide as it needs).
 #[cfg(windows)]
-fn tray_menu(running: &[(u64, String)], autostart: bool) -> tray_icon::menu::Menu {
-    use tray_icon::menu::{CheckMenuItem, IconMenuItem, Menu, PredefinedMenuItem};
+fn tray_entries(running: &[(u64, String)], autostart: bool) -> Vec<crate::tray_menu::Entry> {
+    use crate::tray_menu::Entry;
     let t = |s: &str| crate::i18n::t(s).to_string();
     // Every row with a small picture, drawn from the app's own icon font, so
     // the menu reads at a glance: the window first, the running downloads,
     // what to do with them, the everyday tools, Exit last.
-    const NEUTRAL: u32 = 0x5F6368;
-    let item = |id: &str, label: String, enabled: bool, glyph: &str, rgb: u32| {
-        IconMenuItem::with_id(id, label, enabled, tray_glyph(glyph, if enabled { rgb } else { 0xA0A0A0 }), None)
+    const NEUTRAL: u32 = 0x8A8F98;
+    let item = |id: &str, label: String, enabled: bool, glyph: &str, rgb: u32| Entry {
+        id: id.to_string(),
+        label,
+        enabled,
+        icon: tray_glyph_rgba(glyph, rgb),
+        separator: false,
     };
-    let menu = Menu::new();
-    let _ = menu.append(&item("tray-show", t("Show Download Craft"), true, MI_OPEN, 0x1E6FD9));
-    let _ = menu.append(&PredefinedMenuItem::separator());
+    let sep = || Entry { id: String::new(), label: String::new(), enabled: false, icon: None, separator: true };
+    let mut v = vec![item("tray-show", t("Show Download Craft"), true, MI_OPEN, 0x1E6FD9), sep()];
     if running.is_empty() {
-        let _ = menu.append(&item("tray-none", t("No downloads running"), false, MI_CHECK_CIRCLE, NEUTRAL));
+        v.push(item("tray-none", t("No downloads running"), false, MI_CHECK_CIRCLE, NEUTRAL));
     } else {
         for (id, label) in running.iter().take(10) {
-            let _ = menu.append(&item(&format!("tray-dl-{id}"), label.clone(), true, MI_ARROW_DOWN, 0x1E6FD9));
+            v.push(item(&format!("tray-dl-{id}"), label.clone(), true, MI_ARROW_DOWN, 0x1E6FD9));
         }
         if running.len() > 10 {
-            let _ = menu.append(&item("tray-more", format!("+{} more", running.len() - 10), false, MI_ARROW_DOWN, NEUTRAL));
+            v.push(item("tray-more", format!("+{} more", running.len() - 10), false, MI_ARROW_DOWN, NEUTRAL));
         }
     }
-    let _ = menu.append(&PredefinedMenuItem::separator());
-    let _ = menu.append(&item("tray-pause-all", t("Pause all"), !running.is_empty(), MI_PAUSE_CIRCLE, 0xD98200));
-    let _ = menu.append(&item("tray-resume-all", t("Resume all"), true, MI_PLAY_CIRCLE, 0x2E9E44));
-    let _ = menu.append(&PredefinedMenuItem::separator());
-    let _ = menu.append(&item("tray-clip", t("Add the link on the clipboard"), true, MI_ADD, NEUTRAL));
-    let _ = menu.append(&item("tray-folder", t("Open download folder"), true, MI_FOLDER_OPEN, 0xC48A1E));
-    let _ = menu.append(&item("tray-settings", t("Settings"), true, MI_TUNE, NEUTRAL));
-    let _ = menu.append(&item("tray-update", t("Check for updates"), true, MI_ARROW_DOWN, NEUTRAL));
-    let _ = menu.append(&CheckMenuItem::with_id("tray-autostart", t("Start with Windows"), true, autostart, None));
-    let _ = menu.append(&PredefinedMenuItem::separator());
-    let _ = menu.append(&item("tray-exit", t("Exit"), true, "\u{e8ac}", 0xC42B1C)); // power_settings_new
-    menu
+    v.push(sep());
+    v.push(item("tray-pause-all", t("Pause all"), !running.is_empty(), MI_PAUSE_CIRCLE, 0xD98200));
+    v.push(item("tray-resume-all", t("Resume all"), true, MI_PLAY_CIRCLE, 0x2E9E44));
+    v.push(sep());
+    v.push(item("tray-clip", t("Add the link on the clipboard"), true, MI_ADD, NEUTRAL));
+    v.push(item("tray-folder", t("Open download folder"), true, MI_FOLDER_OPEN, 0xC48A1E));
+    v.push(item("tray-settings", t("Settings"), true, MI_TUNE, NEUTRAL));
+    v.push(item("tray-update", t("Check for updates"), true, MI_ARROW_DOWN, NEUTRAL));
+    // A tick when on, nothing when off (as a check-box row reads).
+    let mut auto = item("tray-autostart", t("Start with Windows"), true, "\u{e5ca}", 0x2E9E44); // check
+    if !autostart {
+        auto.icon = None;
+    }
+    v.push(auto);
+    v.push(sep());
+    v.push(item("tray-exit", t("Exit"), true, "\u{e8ac}", 0xC42B1C)); // power_settings_new
+    v
 }
 
-/// A tray menu picture: one glyph of the app's icon font, centred in 16×16
-/// in `rgb`, transparent around it.
+/// A tray menu picture: one glyph of the app's icon font, centred in a
+/// square of `tray_menu::ICON_PX` in `rgb`, transparent around it (RGBA).
 #[cfg(windows)]
-fn tray_glyph(glyph: &str, rgb: u32) -> Option<tray_icon::menu::Icon> {
+fn tray_glyph_rgba(glyph: &str, rgb: u32) -> Option<Vec<u8>> {
     use ab_glyph::{Font, FontRef};
-    const SIZE: u32 = 16;
+    const SIZE: u32 = crate::tray_menu::ICON_PX;
     static FONT: &[u8] = include_bytes!("../assets/fonts/MaterialIcons-Regular.ttf");
     let font = FontRef::try_from_slice(FONT).ok()?;
     let c = glyph.chars().next()?;
@@ -8195,7 +8247,7 @@ fn tray_glyph(glyph: &str, rgb: u32) -> Option<tray_icon::menu::Icon> {
             rgba[i + 3] = (cov.clamp(0.0, 1.0) * 255.0) as u8;
         }
     });
-    tray_icon::menu::Icon::from_rgba(rgba, SIZE, SIZE).ok()
+    Some(rgba)
 }
 
 /// Build the system tray icon (uses the bundled app icon).
@@ -8206,15 +8258,23 @@ fn build_tray() -> Option<tray_icon::TrayIcon> {
         .to_rgba8();
     let (w, h) = (img.width(), img.height());
     let icon = tray_icon::Icon::from_rgba(img.into_raw(), w, h).ok()?;
-    let menu = tray_menu(&[], false);
-    // Menu clicks are acted on as they arrive (see `tray::install_menu_handler`),
-    // so Show and Exit work even if the frame loop has gone to sleep.
-    crate::tray::install_menu_handler();
+    crate::tray_menu::set_entries(tray_entries(&[], false));
+    // Clicks are acted on as they arrive, on the tray's own message loop, so
+    // Show and Exit work even if the frame loop has gone to sleep: a left
+    // click brings the app up, a right click opens the app's own menu.
+    tray_icon::TrayIconEvent::set_event_handler(Some(|ev: tray_icon::TrayIconEvent| match ev {
+        tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Right, button_state: tray_icon::MouseButtonState::Up, .. } => {
+            if let Some(id) = crate::tray_menu::show_at_cursor() {
+                crate::tray::act(&id);
+            }
+        }
+        tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. }
+        | tray_icon::TrayIconEvent::DoubleClick { button: tray_icon::MouseButton::Left, .. } => {
+            crate::tray::act("tray-show");
+        }
+        _ => {}
+    }));
     tray_icon::TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        // Left click must bring the app up, not open the menu (right click
-        // still opens it).
-        .with_menu_on_left_click(false)
         .with_tooltip(crate::tray::tooltip())
         .with_icon(icon)
         .build()
@@ -13078,6 +13138,12 @@ impl CraftApp {
                         } else {
                             self.filter = key.clone();
                         }
+                    }
+                }
+                HitKind::SideToggle(20) => {
+                    if clk {
+                        self.petal_side_mini = !self.petal_side_mini;
+                        crate::model::ui_pref_set_bool("petal_side_mini", self.petal_side_mini);
                     }
                 }
                 HitKind::SideToggle(n @ 10..=12) => {

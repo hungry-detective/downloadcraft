@@ -45,6 +45,8 @@ mod youtube;
 mod extsync;
 #[cfg(windows)]
 mod tray;
+#[cfg(windows)]
+mod tray_menu;
 #[cfg(not(windows))]
 #[path="tray_portable.rs"]
 mod tray;

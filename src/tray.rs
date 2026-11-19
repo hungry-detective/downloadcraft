@@ -182,6 +182,7 @@ pub fn set_menu_mode(mode: &str) {
         return;
     }
     *last = want;
+    crate::tray_menu::set_mode(want);
     unsafe { win32::set_app_mode(want) };
 }
 
@@ -428,21 +429,24 @@ pub fn install_menu_handler() {
     if DONE.swap(true, Ordering::SeqCst) {
         return;
     }
-    tray_icon::menu::MenuEvent::set_event_handler(Some(|ev: tray_icon::menu::MenuEvent| {
-        if ev.id() == "tray-show" {
-            show();
-            nudge_paint();
-        } else if ev.id() == "tray-exit" {
-            request_quit();
-        } else {
-            // The other entries (pause all, a running download…) need the
-            // app's state: queued here, done by the next frame.
-            if let Ok(mut q) = TRAY_ACTIONS.lock() {
-                q.push(ev.id().0.clone());
-            }
-            nudge_paint();
+    tray_icon::menu::MenuEvent::set_event_handler(Some(|ev: tray_icon::menu::MenuEvent| act(&ev.id().0)));
+}
+
+/// Do what a tray menu row says (`id`: "tray-show", "tray-exit", …).
+pub fn act(id: &str) {
+    if id == "tray-show" {
+        show();
+        nudge_paint();
+    } else if id == "tray-exit" {
+        request_quit();
+    } else {
+        // The other entries (pause all, a running download…) need the
+        // app's state: queued here, done by the next frame.
+        if let Ok(mut q) = TRAY_ACTIONS.lock() {
+            q.push(id.to_string());
         }
-    }));
+        nudge_paint();
+    }
 }
 
 /// Tray menu entries waiting for the frame loop.
