@@ -1,4 +1,84 @@
-# Download Craft 0.10.0
+# Download Craft 0.11.0
+
+## What's new
+
+- **Faster, measured against IDM**: on the same PC and local test server,
+  Download Craft finished a 1 GB file 2.2× faster than IDM 6.43, a download
+  whose connections kept being cut 3.2× faster, and a 1 MB file 15× faster.
+  - Small downloads finish at once: the app no longer waits for its next
+    check before opening more connections or after the last byte.
+  - A connection that is cut after receiving data reconnects straight away
+    (it waited half a second).
+  - The results and the test scripts are in the README and `tools/bench`.
+- **Classic layout refresh**:
+  - The sidebar shows All, then Categories and Status sections that fold
+    from their headers, with today's figures at the foot.
+  - Toolbar and sidebar icons are in the text colour: white in dark mode,
+    black in light mode.
+  - The Options window is compact: one row of tabs, section titles instead
+    of frames, buttons of one width, the same height on every tab, and it
+    opens in the middle of the screen. The file type lists show their usual
+    contents.
+- **Petal: fold the sidebar**: the button beside "Library" folds the sidebar
+  to its icons (names on hover), so the downloads fit three cards to a row.
+- **A new tray menu**: drawn by the app, only as wide as its rows (no empty
+  strip on the right), with shorter rows, in dark or light with the app.
+- **Windows remember where you left them**: the Download File Info and
+  progress windows open where you last moved them, and Part Info stays open
+  or folded the way you left it.
+- **One look for every window**: the progress, Download File Info and
+  Download complete windows use the main window's own colours in dark,
+  AMOLED and light.
+- **Ledger is now part of Classic**: the layouts are Craft, Classic and Petal.
+  If you used Ledger, the app opens in Classic, which is built on it.
+- **Streams keep their parts in one folder**: an HLS download keeps its
+  segments in a "name.parts" folder next to the file (not hundreds of loose
+  files), removed when the file is joined. Its size is estimated within a
+  few seconds instead of after checking every segment.
+- **Browser extension**: now named "Download Craft". It is on
+  [addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+  and the app accepts the Microsoft Edge Add-ons version (in review).
+
+## Fixes
+
+- With "Download complete" switched off, the progress window closes when the
+  download finishes (it stayed open and looked like that dialog).
+- The progress window no longer jumps back to the middle of the screen when
+  Part Info is folded or more parts appear.
+- Remove & Delete also removes a video's work folder (its picture and sound
+  parts) and a stream's parts folder.
+- The size icon in the Download File Info window follows the text colour.
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.11.0-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.11.0-windows-x64-portable.zip` and run `download_craft.exe`.
+
+**macOS 12+.** Unzip `DownloadCraft-0.11.0-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.11.0_amd64.deb`; Fedora: install
+`downloadcraft-0.11.0-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.0-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.11.0.xpi` from
+`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
+Chrome ZIP and load the extracted folder in `chrome://extensions`.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.0`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+
+# Earlier: Download Craft 0.10.0
 
 ## What's new
 
@@ -70,72 +150,3 @@
     folders.
   - Web pages can no longer use the extension to list or control your
     downloads.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.10.0-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.10.0-windows-x64-portable.zip` and run `download_craft.exe`.
-
-**macOS 12+.** Unzip `DownloadCraft-0.10.0-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.10.0_amd64.deb`; Fedora: install
-`downloadcraft-0.10.0-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.10.0-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.10.0.xpi` from
-`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
-Chrome ZIP and load the extracted folder in `chrome://extensions`.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.10.0`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
-
-
-# Earlier: Download Craft 0.9.18
-
-## What's new
-
-- **The Download window's head start is the download itself.** While the
-  Download window is open, the app is already downloading the file, YouTube
-  videos included. Press Download and the progress window opens where it has
-  got to, with its connections already receiving, instead of starting again
-  from "Connecting…". Cancel deletes what was fetched.
-- **Classic layout** (Theme → Layout → Classic): laid out the way Internet
-  Download Manager users know it. A toolbar of coloured icons over their
-  labels in that order (Add URL, Add torrent, Resume, Stop, Stop All, Delete,
-  Delete Completed, Options, Scheduler, Start/Stop Queue, Grabber), a
-  Categories tree with a picture for every folder, and the list as File Name,
-  Size, Status, Time left, Transfer rate, Last Try Date. Light and dark.
-- **Torrents show their swarm.** Part Info lists the seeds, peers and
-  connections, a bar of the files, and each connected peer with its client,
-  what it has sent and how fast.
-- **One notice per finished download.** The Download complete window, or one
-  system notification when that window is off. The browser extension no
-  longer adds a second one (#24).
-- **Clipboard watching can be turned off:** Settings → Appearance →
-  Clipboard (#24). Off, the clipboard is read only when you click Add URL.
-- The title bar's window buttons and search icon are larger, the search box is
-  narrower and has no blue glow, and a maximized window shows the usual
-  "restore" icon.
-
-## Fixes
-
-- **Menus, right-click and moving the window stopped working after the window
-  was minimized and brought back** (#24). Clicks now come from the mouse's own
-  press and release, and a release lost while the window was away no longer
-  leaves a button "held".
-- **Torrents:** Cancel really stops a torrent (it went on downloading in the
-  background while the row said Paused), and Resume continues it from what is
-  on disk. Pause and Resume follow the torrent's real state. A stopped row no
-  longer keeps showing its last speed.
-- **macOS:** the app has its icon in Finder, the Dock and Launchpad (#25).
-- Settings → Appearance fits all four layouts on one row at any width.
