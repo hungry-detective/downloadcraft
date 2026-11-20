@@ -848,7 +848,19 @@ impl ConfirmApp {
                     }
                     // A YouTube video: the app's own reader names the size
                     // (from the links themselves) and the title, without
-                    // the pre-roll wait a download needs.
+                    // the pre-roll wait a download needs. The watch page's
+                    // own length is never the video's: a link pasted by hand
+                    // (no title from the browser) kept `download_….bin`
+                    // because that page size stopped the reader from running.
+                    let on_youtube = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).is_some_and(|h| {
+                        h == "youtu.be" || h == "youtube.com" || h.ends_with(".youtube.com")
+                    });
+                    if on_youtube
+                        && crate::engine::youtube_id(&url).is_some()
+                        && !ctype.as_deref().is_some_and(|c| c.starts_with("video/") || c.starts_with("audio/"))
+                    {
+                        total = None;
+                    }
                     if total.is_none() && crate::engine::youtube_id(&url).is_some()
                         && crate::youtube::own_reader_allowed(&opts)
                     {

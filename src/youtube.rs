@@ -389,14 +389,58 @@ async fn player_script(client: &reqwest::Client, path: &str) -> Result<Arc<Strin
             return Ok(js.clone());
         }
     }
+    // The script's path names its version (`/s/player/<id>/…`), so a copy
+    // saved on disk is always the right one: every Download window and the
+    // app (each its own process) skip the 2-3 MB download after the first.
+    let saved = saved_player_path(path);
+    if let Some(js) = saved.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).filter(|js| js.len() > 100_000) {
+        let js = Arc::new(js);
+        crate::engine::mutex_guard(cache()).player = Some((path.to_string(), js.clone()));
+        return Ok(js);
+    }
     let resp = client
         .get(format!("https://www.youtube.com{path}"))
         .header(reqwest::header::USER_AGENT, PAGE_AGENT)
         .send()
         .await?;
     let js = Arc::new(text_capped(resp, "the player script").await?);
+    if let Some(f) = saved {
+        save_player(&f, &js);
+    }
     crate::engine::mutex_guard(cache()).player = Some((path.to_string(), js.clone()));
     Ok(js)
+}
+
+/// Where the player script at `path` is kept: `<config>/cache/youtube/`,
+/// named after the path (its version is in it).
+fn saved_player_path(path: &str) -> Option<std::path::PathBuf> {
+    if !player_path_ok(path) {
+        return None;
+    }
+    let name: String = path.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+    Some(crate::model::config_dir()?.join("cache").join("youtube").join(name))
+}
+
+/// Save a player script (atomically), keeping only the newest few versions.
+fn save_player(file: &std::path::Path, js: &str) {
+    let Some(dir) = file.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let tmp = file.with_extension("part");
+    if std::fs::write(&tmp, js).is_ok() && std::fs::rename(&tmp, file).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    let mut old: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    old.sort();
+    while old.len() > 3 {
+        let _ = std::fs::remove_file(old.remove(0).1);
+    }
 }
 
 /// What the solver turned each challenge into: `n` values and signatures.
@@ -651,11 +695,13 @@ async fn read(client: &reqwest::Client, opts: &EngineOpts, id: &str) -> Result<(
         .send()
         .await?;
     let html = text_capped(page, "the watch page").await?;
+    crate::engine::dbg_step("youtube: watch page read");
     let facts = page_facts(&html);
     let player_path = facts.player_path.clone().ok_or_else(|| anyhow!("the page names no player script"))?;
     let mut sts = facts.sts;
     if sts.is_none() {
         let js = player_script(client, &player_path).await?;
+        crate::engine::dbg_step("youtube: player script read (for sts)");
         sts = sts_in_player(&js);
     }
     let body = json!({
@@ -683,9 +729,13 @@ async fn read(client: &reqwest::Client, opts: &EngineOpts, id: &str) -> Result<(
     if let Some(v) = &facts.visitor {
         ask = ask.header("X-Goog-Visitor-Id", v);
     }
-    let answer = ask.body(body.to_string()).send().await?;
+    // The player script is almost always needed to unlock the streams: load
+    // it (or its saved copy) while the player API answers, not after.
+    let (answer, _) = tokio::join!(ask.body(body.to_string()).send(), player_script(client, &player_path));
+    let answer = answer?;
     let player: Value = serde_json::from_str(&text_capped(answer, "the player API").await?)
         .map_err(|e| anyhow!("the player API answered no JSON ({e})"))?;
+    crate::engine::dbg_step("youtube: player API answered");
     let status = player.pointer("/playabilityStatus/status").and_then(Value::as_str).unwrap_or("");
     if status != "OK" {
         let reason = player.pointer("/playabilityStatus/reason").and_then(Value::as_str).unwrap_or(status);
@@ -732,7 +782,10 @@ async fn read(client: &reqwest::Client, opts: &EngineOpts, id: &str) -> Result<(
         Solved::default()
     } else {
         let js = player_script(client, &player_path).await?;
-        solve(&player_path, &js, ns, sigs).await?
+        crate::engine::dbg_step("youtube: player script read");
+        let solved = solve(&player_path, &js, ns, sigs).await?;
+        crate::engine::dbg_step("youtube: challenges solved");
+        solved
     };
     let video_url = unlocked(&picture, &solved)?;
     let audio_url = sound.as_ref().map(|s| unlocked(s, &solved)).transpose()?;
@@ -778,6 +831,22 @@ fn sts_in_player(js: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Live check: `DC_PEEK_URL=<watch url> cargo test peek_live -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn peek_live() {
+        let Ok(url) = std::env::var("DC_PEEK_URL") else { return };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let opts = EngineOpts::default();
+        let client = opts.build_client().unwrap();
+        let t = std::time::Instant::now();
+        let r = rt.block_on(peek(&client, &opts, &url));
+        println!("peek after {:.2}s: {:?}", t.elapsed().as_secs_f64(), r.as_ref().map(|(s, t)| (s, t)));
+        if let Err(e) = r {
+            println!("error: {e:#}");
+        }
+    }
 
     fn fmt(itag: u64, mime: &str, w: u64, h: u64, br: u64) -> Value {
         json!({"itag": itag, "mimeType": mime, "width": w, "height": h, "bitrate": br, "url": format!("https://r.googlevideo.com/videoplayback?itag={itag}&n=abc")})
