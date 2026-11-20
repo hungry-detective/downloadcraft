@@ -342,7 +342,7 @@ async fn read_reply<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(u32, String)>
         text.push_str(line.trim_end());
         text.push(' ');
         if line.len() >= 4 {
-            if let Ok(c) = line[..3].parse::<u32>() {
+            if let Some(Ok(c)) = line.get(..3).map(str::parse::<u32>) {
                 code = code.max(c);
                 if line.as_bytes().get(3) == Some(&b' ') {
                     break;

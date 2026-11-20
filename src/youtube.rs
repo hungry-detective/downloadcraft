@@ -228,7 +228,15 @@ fn json_string_at(s: &str) -> Option<String> {
 fn page_title(html: &str) -> Option<String> {
     const MARK: &str = "\"videoDetails\":{";
     if let Some(at) = html.find(MARK) {
-        let rest = &html[at..html.len().min(at + 4096)];
+        // 4 KiB is plenty for the title, but the cut must not fall inside a
+        // character: a Bangla (or any non-Latin) title there panicked the
+        // whole download ("not a char boundary"), shown as "connection ended
+        // early".
+        let mut end = html.len().min(at + 4096);
+        while !html.is_char_boundary(end) {
+            end -= 1;
+        }
+        let rest = &html[at..end];
         if let Some(t) = rest.find("\"title\":\"") {
             if let Some(out) = json_string_at(&rest[t + 9..]) {
                 if !out.trim().is_empty() {
@@ -943,6 +951,19 @@ mod tests {
     fn title_from_player_data_unescapes() {
         let html = r#"var x = {"videoDetails":{"videoId":"a","title":"Café \"Live\""}}"#;
         assert_eq!(page_title(html).as_deref(), Some("Café \"Live\""));
+    }
+
+    #[test]
+    fn a_title_near_the_4k_cut_never_splits_a_character() {
+        // Bangla letters are 3 bytes: whichever byte 4096 lands on, the cut
+        // must back up to a whole character instead of panicking.
+        for pad in 0..3 {
+            let filler = "x".repeat(4096 - 40 + pad);
+            let html = format!(r#"{{"videoDetails":{{"videoId":"a","author":"{filler}","title":"মাইকেল বিদ্যাসাগর সংবাদ"}}}}<title>T - YouTube</title>"#);
+            let _ = page_title(&html);
+        }
+        let html = r#"{"videoDetails":{"videoId":"a","title":"মাইকেল বিদ্যাসাগর সংবাদ"}}"#;
+        assert_eq!(page_title(html).as_deref(), Some("মাইকেল বিদ্যাসাগর সংবাদ"));
     }
 
     #[test]
