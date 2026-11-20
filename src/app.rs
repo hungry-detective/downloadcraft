@@ -8038,9 +8038,15 @@ fn ensure_native_host(browser: &str) -> Result<bool, String> {
     // Fresh = manifest exists and names this exact binary, in the form
     // `install_native_host` picks: directly, or through its launcher.
     let direct = !exe_s.is_ascii();
-    let fresh = std::fs::read_to_string(&manifest_path)
+    let manifest = std::fs::read_to_string(&manifest_path)
         .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    // …and lets in every extension this version knows, store copies
+    // included: a file written by an older version (only the self-installed
+    // IDs) refused the Edge and Firefox store extensions.
+    let ids_current = manifest.as_ref().is_some_and(|v| host_allows_current_ids(browser, v));
+    let fresh = ids_current
+        && manifest
         .and_then(|v| {
             v.get("path")
                 .and_then(|p| p.as_str())
@@ -8062,6 +8068,44 @@ fn ensure_native_host(browser: &str) -> Result<bool, String> {
     }
     install_native_host(browser)?;
     Ok(true)
+}
+
+/// Whether a browser host manifest lets in every extension ID this version
+/// allows (`allowed_extensions` for Firefox, `allowed_origins` otherwise).
+fn host_allows_current_ids(browser: &str, manifest: &serde_json::Value) -> bool {
+    let listed = |key: &str| -> Vec<String> {
+        manifest
+            .get(key)
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+    if browser == "firefox" {
+        let have = listed("allowed_extensions");
+        FIREFOX_EXTENSION_IDS.iter().all(|id| have.iter().any(|h| h == id))
+    } else {
+        let have = listed("allowed_origins");
+        std::iter::once(EXTENSION_ID)
+            .chain(STORE_EXTENSION_IDS.iter().copied())
+            .all(|id| have.iter().any(|h| *h == format!("chrome-extension://{id}/")))
+    }
+}
+
+#[cfg(test)]
+mod host_id_tests {
+    #[test]
+    fn an_old_host_manifest_without_the_store_ids_is_rewritten() {
+        let old_edge = serde_json::json!({"allowed_origins": ["chrome-extension://pgdhmfgefjnfijmlheboncdmfhcnoikk/"]});
+        assert!(!super::host_allows_current_ids("edge", &old_edge));
+        let new_edge = serde_json::json!({"allowed_origins": std::iter::once(super::EXTENSION_ID)
+            .chain(super::STORE_EXTENSION_IDS.iter().copied())
+            .map(|id| format!("chrome-extension://{id}/")).collect::<Vec<_>>()});
+        assert!(super::host_allows_current_ids("edge", &new_edge));
+        let old_ff = serde_json::json!({"allowed_extensions": ["send-to-download-craft@example"]});
+        assert!(!super::host_allows_current_ids("firefox", &old_ff));
+        let new_ff = serde_json::json!({"allowed_extensions": super::FIREFOX_EXTENSION_IDS});
+        assert!(super::host_allows_current_ids("firefox", &new_ff));
+    }
 }
 
 #[cfg(not(windows))]
@@ -8507,6 +8551,13 @@ impl eframe::App for CraftApp {
         self.poll_verify_jobs();
         self.write_progress_snapshot();
         self.check_scheduler();
+        // A Download window's "Download" starts at once: its start request
+        // is looked for every frame (one file check), not on the 2-second
+        // round below, which kept a clicked download waiting up to 2 s
+        // before anything happened.
+        if crate::model::config_dir().is_some_and(|d| d.join("wake.json").exists()) {
+            self.check_wake();
+        }
         if self.last_inbox_check.elapsed().as_secs() >= 2 {
             self.last_inbox_check = Instant::now();
             crate::model::touch_heartbeat();

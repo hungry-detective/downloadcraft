@@ -4532,9 +4532,19 @@ async fn sleep_live(shared: &Arc<SharedState>, secs: u64) -> Result<()> {
 /// Plain (non-encrypted) HLS VOD playlists (.m3u8) are assembled
 /// segment-by-segment; DASH (.mpd) likewise; `ftp://` URLs go to the
 /// plain-FTP backend.
+/// `DOWNLOAD_CRAFT_DEBUG`: when each start-up step of a download happens.
+pub(crate) fn dbg_step(what: &str) {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    if std::env::var_os("DOWNLOAD_CRAFT_DEBUG").is_some() {
+        let t = START.get_or_init(std::time::Instant::now).elapsed();
+        eprintln!("[dbg] {:>6.2}s {what}", t.as_secs_f64());
+    }
+}
+
 pub async fn download(
     url: String, dest: PathBuf, connections: usize, mut opts: EngineOpts, shared: Arc<SharedState>,
 ) -> Result<()> {
+    dbg_step("download() called");
     if opts.own_limit.is_none() {
         opts.own_limit = Some(shared.limit_bps.clone());
     }
@@ -4960,10 +4970,12 @@ async fn download_inner(
     let _job = claim_dest_job(&dest).ok_or_else(|| {
         anyhow!("this destination is already downloading elsewhere — wait for it or remove the duplicate queue entry")
     })?;
+    dbg_step("before client");
     let client = match opts.pinned_client(&url).await {
         Some(c) => c,
         None => opts.build_client()?,
     };
+    dbg_step("client ready");
     if !opts.username.trim().is_empty() && mutex_guard(&opts.digest).is_none() {
         learn_digest(&client, &opts, &url).await;
     }
@@ -5010,6 +5022,7 @@ async fn download_inner(
         Some(verified) => (verified.or(seeded_total), verified.is_some(), None, None),
         None => probe(&client, &opts, &url).await,
     };
+    dbg_step("probe done");
     // Some CDNs use opaque manifest URLs. Route by the actual response
     // type as well as extension, instead of saving playlist text as video.
     if let Some(mime) = ctype.as_deref() {
@@ -9682,6 +9695,7 @@ async fn segmented(
     for i in 0..16 {
         let _ = tokio::fs::remove_file(dest.with_extension(format!("dcpart{i}"))).await;
     }
+    dbg_step("engine starts");
     let job = dce::Job::new(url, dest.clone())
         .size_hint(Some(total), true)
         .work_dir(work_dir())

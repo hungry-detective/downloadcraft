@@ -823,21 +823,31 @@ pub fn frame_unsupported() -> bool {
     unsafe { IsThemeActive() == 0 || DwmIsCompositionEnabled(&mut on) != 0 || on == 0 }
 }
 
-/// Windows 10: keep the app's borderless windows free of a hidden caption.
+/// Windows 10: keep the app's borderless windows free of any OS frame.
 ///
-/// winit leaves `WS_CAPTION` on a borderless window and hides the caption in
-/// its own frame handling. Some Windows 10 PCs still reserve or paint that
-/// caption: a dark strip across the top, with the bottom rows pushed out of
-/// the window (the Download File Info buttons cut off). This watches the
-/// process's windows and takes the caption style off (winit puts it back
-/// when the window's state changes, so it keeps watching). Windows 11, and
-/// the Windows title bar setting, are left alone.
+/// winit leaves `WS_CAPTION` and the resizing frame (`WS_THICKFRAME`) on a
+/// borderless window and hides them in its own frame handling. Windows 10
+/// still reserves that frame inside the window: the picture is placed past
+/// it while drawn at the full window size, so a dark band runs along the top
+/// and the right and bottom edges are cut off (the status bar, the Download
+/// File Info buttons). Taking off only the caption (0.11.1) left the frame's
+/// 7-8 px. This takes both off, so what the app draws is exactly the window.
+/// Resizing still works: the app starts it from its own edges
+/// (`BeginResize`), which needs no frame. winit puts the styles back when the
+/// window's state changes, so this keeps watching. Windows 11, and the
+/// Windows title bar setting, are left alone.
 #[cfg(windows)]
 pub fn guard_borderless() {
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     let forced = std::env::var_os("DOWNLOADCRAFT_BORDERLESS_GUARD").is_some_and(|v| v != "0");
     if (windows_build() >= 22000 && !forced) || system_title_bar() {
+        return;
+    }
+    // These windows keep Windows' own title bar and frame: leave them whole
+    // (taking their caption off left them without a title bar).
+    const FRAMED: [&str; 5] = ["--settings", "--links", "--basket", "--mini", "--torrent-files"];
+    if std::env::args().any(|a| FRAMED.contains(&a.as_str())) {
         return;
     }
     unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
@@ -849,10 +859,11 @@ pub fn guard_borderless() {
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         // Only the app's own windows: resizable or with a system menu,
         // never popups (menus, tooltips) or child windows.
-        if style & (WS_POPUP | WS_CHILD) != 0 || style & WS_CAPTION != WS_CAPTION || style & WS_SYSMENU == 0 {
+        let frame = WS_CAPTION | WS_THICKFRAME;
+        if style & (WS_POPUP | WS_CHILD) != 0 || style & WS_SYSMENU == 0 || style & frame == 0 {
             return 1;
         }
-        SetWindowLongW(hwnd, GWL_STYLE, (style & !WS_CAPTION) as i32);
+        SetWindowLongW(hwnd, GWL_STYLE, (style & !frame) as i32);
         SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         1
     }
