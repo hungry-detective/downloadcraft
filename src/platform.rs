@@ -823,6 +823,80 @@ pub fn frame_unsupported() -> bool {
     unsafe { IsThemeActive() == 0 || DwmIsCompositionEnabled(&mut on) != 0 || on == 0 }
 }
 
+/// Windows 10: keep the app's borderless windows free of a hidden caption.
+///
+/// winit leaves `WS_CAPTION` on a borderless window and hides the caption in
+/// its own frame handling. Some Windows 10 PCs still reserve or paint that
+/// caption: a dark strip across the top, with the bottom rows pushed out of
+/// the window (the Download File Info buttons cut off). This watches the
+/// process's windows and takes the caption style off (winit puts it back
+/// when the window's state changes, so it keeps watching). Windows 11, and
+/// the Windows title bar setting, are left alone.
+#[cfg(windows)]
+pub fn guard_borderless() {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    let forced = std::env::var_os("DOWNLOADCRAFT_BORDERLESS_GUARD").is_some_and(|v| v != "0");
+    if (windows_build() >= 22000 && !forced) || system_title_bar() {
+        return;
+    }
+    unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid != std::process::id() || IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        // Only the app's own windows: resizable or with a system menu,
+        // never popups (menus, tooltips) or child windows.
+        if style & (WS_POPUP | WS_CHILD) != 0 || style & WS_CAPTION != WS_CAPTION || style & WS_SYSMENU == 0 {
+            return 1;
+        }
+        SetWindowLongW(hwnd, GWL_STYLE, (style & !WS_CAPTION) as i32);
+        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        1
+    }
+    let _ = std::thread::Builder::new().name("borderless".into()).spawn(|| {
+        let start = std::time::Instant::now();
+        loop {
+            // SAFETY: a plain enumeration with a callback that only reads
+            // and adjusts this process's own top-level windows.
+            unsafe { EnumWindows(Some(each), 0) };
+            // Quick while windows are first appearing, then at ease.
+            let wait = if start.elapsed().as_secs() < 5 { 20 } else { 250 };
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn guard_borderless() {}
+
+/// Windows' build number (22000 and up is Windows 11); 0 if unknown.
+#[cfg(windows)]
+pub fn windows_build() -> u32 {
+    #[repr(C)]
+    struct OsVersionInfo {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        csd: [u16; 128],
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
+    }
+    static BUILD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(|| {
+        let mut info = OsVersionInfo { size: std::mem::size_of::<OsVersionInfo>() as u32, major: 0, minor: 0, build: 0, platform: 0, csd: [0; 128] };
+        // SAFETY: a correctly sized struct the call fills in. RtlGetVersion
+        // reports the real version (GetVersionEx lies without a manifest).
+        if unsafe { RtlGetVersion(&mut info) } == 0 { info.build } else { 0 }
+    })
+}
+
 #[cfg(not(windows))]
 pub fn frame_unsupported() -> bool {
     false

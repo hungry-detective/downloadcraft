@@ -129,6 +129,8 @@ fn main() -> eframe::Result<()> {
     if args.iter().any(|a| a == "--native-host") || native_host::launched_directly(&args) {
         return native_host::run();
     }
+    // Windows 10: no hidden caption strip on the borderless windows.
+    crate::platform::guard_borderless();
     // IDM-style standalone "Download File Info" dialog (one OS window per
     // captured download, always on top). Spawned by the native host.
     if args.iter().any(|a| a == "--confirm-download") {

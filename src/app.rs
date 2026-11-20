@@ -3131,7 +3131,10 @@ impl CraftApp {
         let start_with_windows = app.start_with_windows;
         std::thread::spawn(move || {
             let mut notes = Vec::new();
-            for b in crate::platform::HOST_BROWSERS {
+            // A copy run on a data folder of its own (a test profile, server
+            // mode) leaves the browsers talking to the everyday app.
+            let own_data = std::env::var_os("DOWNLOAD_CRAFT_DATA").is_some_and(|v| !v.is_empty());
+            for b in crate::platform::HOST_BROWSERS.iter().filter(|_| !own_data) {
                 match ensure_native_host(b) {
                     Ok(true) => notes.push(format!("Browser host ready for {b}.")),
                     Err(e) => notes.push(format!("Browser host ({b}) unavailable: {e}")),
@@ -3140,7 +3143,9 @@ impl CraftApp {
             }
             // Keep the extension copy current after the window is visible.
             notes.extend(crate::extsync::sync());
-            crate::autostart::sync(start_with_windows);
+            if !own_data {
+                crate::autostart::sync(start_with_windows);
+            }
             crate::selfupdate::cleanup();
             let _ = maintenance_tx.send(notes);
         });
@@ -6827,6 +6832,12 @@ impl CraftApp {
     fn tray_tick(&mut self, ctx: &egui::Context) {
         // The tray menu follows the app's mode (dark, light, or Windows').
         crate::tray::set_menu_mode(crate::skins::split(&self.theme).1);
+        {
+            // ...in the app's own colours (AMOLED's black included).
+            let p = pl();
+            let hex = |c: egui::Color32| ((c.r() as u32) << 16) | ((c.g() as u32) << 8) | c.b() as u32;
+            crate::tray_menu::set_colors([hex(p.bg), hex(p.surface_lt), hex(p.txt), hex(p.dim), hex(p.card_bd)]);
+        }
         for id in crate::tray::take_actions() {
             match id.as_str() {
                 "tray-pause-all" => self.stop_all(),

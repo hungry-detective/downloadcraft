@@ -77,7 +77,20 @@ struct Colors {
     line: COLORREF,
 }
 
+/// The app's own colours for the menu (0xRRGGBB): background, hovered row,
+/// text, greyed text, separator line. Unset, it uses plain dark or light.
+static APP_COLORS: Mutex<Option<[u32; 5]>> = Mutex::new(None);
+
+pub fn set_colors(c: [u32; 5]) {
+    if let Ok(mut a) = APP_COLORS.lock() {
+        *a = Some(c);
+    }
+}
+
 fn colors() -> Colors {
+    if let Some([bg, hover, text, grey, line]) = APP_COLORS.lock().ok().and_then(|a| *a) {
+        return Colors { bg: rgb(bg), hover: rgb(hover), text: rgb(text), grey: rgb(grey), line: rgb(line) };
+    }
     if is_dark() {
         Colors { bg: rgb(0x2B2B2B), hover: rgb(0x3D3D3D), text: rgb(0xF2F2F2), grey: rgb(0x8A8A8A), line: rgb(0x454545) }
     } else {
@@ -237,6 +250,103 @@ unsafe fn draw_icon(dc: HDC, rgba: &[u8], x: i32, y: i32, size: i32, faded: bool
     DeleteObject(bmp as HGDIOBJ);
 }
 
+// ---- The menu's own window: no light frame, rounded corners. ----
+//
+// Windows draws a popup menu's frame itself (a light line on Windows 10, a
+// DWM border on Windows 11). While our menu is open, a hook catches the menu
+// window being made and takes over its frame painting.
+
+static HOOK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static OLD_PROC: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static RGN_SIZE: Mutex<(i32, i32)> = Mutex::new((0, 0));
+
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmSetWindowAttribute(hwnd: HWND, attr: u32, value: *const core::ffi::c_void, size: u32) -> i32;
+}
+
+unsafe fn is_menu_window(hwnd: HWND) -> bool {
+    let mut buf = [0u16; 16];
+    let n = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+    n > 0 && String::from_utf16_lossy(&buf[..n as usize]) == "#32768"
+}
+
+unsafe fn round_corners(hwnd: HWND) {
+    if crate::platform::windows_build() >= 22000 {
+        // Windows 11: DWM rounds it; drop the border line.
+        let round: u32 = 2; // DWMWCP_ROUND
+        let none: u32 = 0xFFFF_FFFE; // DWMWA_COLOR_NONE
+        DwmSetWindowAttribute(hwnd, 33, &round as *const u32 as *const _, 4);
+        DwmSetWindowAttribute(hwnd, 34, &none as *const u32 as *const _, 4);
+        return;
+    }
+    // Windows 10: cut the corners with a window region.
+    let mut r: RECT = std::mem::zeroed();
+    GetWindowRect(hwnd, &mut r);
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    if let Ok(mut last) = RGN_SIZE.lock() {
+        if *last == (w, h) {
+            return;
+        }
+        *last = (w, h);
+    }
+    let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(hwnd).max(96) as i32;
+    let d = 16 * dpi / 96;
+    let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d);
+    SetWindowRgn(hwnd, rgn, 1);
+}
+
+unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let old: WNDPROC = std::mem::transmute(OLD_PROC.load(std::sync::atomic::Ordering::SeqCst));
+    match msg {
+        WM_NCPAINT => {
+            // Paint the frame in the menu's own background.
+            let dc = GetWindowDC(hwnd);
+            let mut wr: RECT = std::mem::zeroed();
+            GetWindowRect(hwnd, &mut wr);
+            let mut cr: RECT = std::mem::zeroed();
+            GetClientRect(hwnd, &mut cr);
+            let mut tl = POINT { x: 0, y: 0 };
+            ClientToScreen(hwnd, &mut tl);
+            let (ox, oy) = (tl.x - wr.left, tl.y - wr.top);
+            ExcludeClipRect(dc, ox, oy, ox + cr.right, oy + cr.bottom);
+            let all = RECT { left: 0, top: 0, right: wr.right - wr.left, bottom: wr.bottom - wr.top };
+            let bg = CreateSolidBrush(colors().bg);
+            FillRect(dc, &all, bg);
+            DeleteObject(bg as HGDIOBJ);
+            ReleaseDC(hwnd, dc);
+            0
+        }
+        WM_WINDOWPOSCHANGED | WM_SHOWWINDOW => {
+            let r = CallWindowProcW(old, hwnd, msg, wparam, lparam);
+            round_corners(hwnd);
+            r
+        }
+        WM_NCDESTROY => {
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, OLD_PROC.load(std::sync::atomic::Ordering::SeqCst));
+            CallWindowProcW(old, hwnd, msg, wparam, lparam)
+        }
+        _ => CallWindowProcW(old, hwnd, msg, wparam, lparam),
+    }
+}
+
+unsafe extern "system" fn cbt_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HCBT_CREATEWND as i32 {
+        let hwnd = wparam as HWND;
+        if is_menu_window(hwnd) && GetWindowLongPtrW(hwnd, GWLP_WNDPROC) != menu_proc as usize as isize {
+            if let Ok(mut last) = RGN_SIZE.lock() {
+                *last = (0, 0);
+            }
+            let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, menu_proc as usize as isize);
+            OLD_PROC.store(old, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    CallNextHookEx(HOOK.load(std::sync::atomic::Ordering::SeqCst) as HHOOK, code, wparam, lparam)
+}
+
 /// The hidden window that owns the menu and draws its rows.
 unsafe fn owner() -> HWND {
     let have = OWNER.load(std::sync::atomic::Ordering::SeqCst);
@@ -295,7 +405,12 @@ pub fn show_at(at: Option<(i32, i32)>) -> Option<String> {
         }
         // The menu closes when it loses focus only if its owner is in front.
         SetForegroundWindow(hwnd);
-        let picked = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, hwnd, std::ptr::null());
+        let hook = SetWindowsHookExW(WH_CBT, Some(cbt_hook), std::ptr::null_mut(), windows_sys::Win32::System::Threading::GetCurrentThreadId());
+        HOOK.store(hook as isize, std::sync::atomic::Ordering::SeqCst);
+        let picked = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY | TPM_NOANIMATION, pt.x, pt.y, hwnd, std::ptr::null());
+        if !hook.is_null() {
+            UnhookWindowsHookEx(hook);
+        }
         PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
         DeleteObject(bg as HGDIOBJ);

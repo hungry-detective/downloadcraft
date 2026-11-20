@@ -170,16 +170,35 @@ jobs:
       EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
       EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The extension has its own version: upload to the stores only when this
+      # release raised it (the stores refuse a version they already have).
+      - name: Extension changed?
+        id: ext
+        run: |
+          ver() { python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])'; }
+          now=$(ver < browser-extension/manifest.json)
+          prev_tag=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" | head -1 || true)
+          before=""
+          if [ -n "$prev_tag" ]; then
+            before=$(git show "$prev_tag:browser-extension/manifest.json" | ver || true)
+          fi
+          echo "extension $now (was ${before:-none} in ${prev_tag:-no earlier tag})"
+          if [ "$now" != "$before" ]; then echo "publish=true" >> "$GITHUB_OUTPUT"; else echo "publish=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
+        if: steps.ext.outputs.publish == 'true'
         with:
           node-version: 22
       - uses: actions/download-artifact@v4
+        if: steps.ext.outputs.publish == 'true'
         with:
           path: dist
           pattern: DownloadCraft-*
           merge-multiple: true
       - name: Firefox Add-ons
-        if: env.AMO_JWT_ISSUER != '' && env.AMO_JWT_SECRET != ''
+        if: steps.ext.outputs.publish == 'true' && env.AMO_JWT_ISSUER != '' && env.AMO_JWT_SECRET != ''
         run: |
           mkdir firefox
           unzip -q dist/DownloadCraft-Firefox-*.xpi -d firefox
@@ -187,7 +206,7 @@ jobs:
             --channel listed --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET" \
             --approval-timeout 0
       - name: Microsoft Edge Add-ons
-        if: env.EDGE_PRODUCT_ID != '' && env.EDGE_CLIENT_ID != '' && env.EDGE_API_KEY != ''
+        if: steps.ext.outputs.publish == 'true' && env.EDGE_PRODUCT_ID != '' && env.EDGE_CLIENT_ID != '' && env.EDGE_API_KEY != ''
         run: |
           set -euo pipefail
           # The store gives the extension its own ID: the pinned "key" that

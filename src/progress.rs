@@ -300,6 +300,12 @@ const PG_PART_HEAD_H: f32 = 320.0;
 const PG_DEAD_H: f32 = 148.0;
 
 const HDR_H: f32 = 38.0;
+/// With Windows' own frame (Windows 10, or the setting), its caption has
+/// the title and the buttons: the window's own header is moved out of view
+/// and the window is this much shorter.
+fn os_hdr() -> f32 {
+    if crate::platform::system_title_bar() { 36.0 } else { 0.0 }
+}
 const MARK_X: f32 = 15.0;
 const MARK_Y: f32 = 10.0;
 const MARK_S: f32 = 18.0;
@@ -675,7 +681,7 @@ pub fn run() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_app_id(crate::platform::app_id())
         .with_title(title)
-        .with_inner_size([PG_W, PG_MIN_H])
+        .with_inner_size([PG_W, PG_MIN_H - os_hdr()])
         .with_resizable(false)
         .with_decorations(crate::platform::system_title_bar())
         .with_transparent(!crate::platform::system_title_bar())
@@ -771,7 +777,7 @@ impl eframe::App for ProgressApp {
         let want_h = match crate::model::work_area_rect(ctx) {
             Some(w) => want_h.min((w.height() - 40.0).max(PG_MIN_H)),
             None => want_h,
-        };
+        } - os_hdr();
         if (self.win_h - want_h).abs() > 0.5 {
             self.win_h = want_h;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(PG_W, want_h)));
@@ -796,7 +802,7 @@ impl eframe::App for ProgressApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                let o = ui.max_rect().min;
+                let o = ui.max_rect().min - egui::vec2(0.0, os_hdr());
                 match item.as_ref() {
                     Some(it) => self.paint(ui, it, o),
                     None => self.paint_dead(ui, o),

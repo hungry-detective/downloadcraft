@@ -1,4 +1,53 @@
-# Download Craft 0.11.0
+# Download Craft 0.11.1
+
+## What's new
+
+- **Browser downloads start sooner when the app is closed**: when a download
+  is caught from the browser and Download Craft is not open, the app now
+  starts quietly in the tray as the Download File Info window appears. The
+  download begins inside it straight away, so pressing Download simply shows
+  it, the same as when the app is already open (it used to start the app
+  only after the click, then connect again).
+- **Tray menu**: no light border, rounded corners, and the app's own colours
+  in dark, AMOLED and light.
+
+## Fixes
+
+- **Windows 10**: the app's own title bar no longer shows a dark strip above
+  it, and the Download File Info window is no longer cut off at the bottom.
+- The browser extension keeps its version (0.11.0) when it has not changed;
+  there is nothing new to install in the browser.
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.11.1-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.11.1-windows-x64-portable.zip` and run `download_craft.exe`.
+
+**macOS 12+.** Unzip `DownloadCraft-0.11.1-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.11.1_amd64.deb`; Fedora: install
+`downloadcraft-0.11.1-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.1-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.11.0.xpi` from
+`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
+Chrome ZIP and load the extracted folder in `chrome://extensions`.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.1`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+
+# Earlier: Download Craft 0.11.0
 
 ## What's new
 
@@ -48,34 +97,6 @@
 - Remove & Delete also removes a video's work folder (its picture and sound
   parts) and a stream's parts folder.
 - The size icon in the Download File Info window follows the text colour.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.11.0-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.11.0-windows-x64-portable.zip` and run `download_craft.exe`.
-
-**macOS 12+.** Unzip `DownloadCraft-0.11.0-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.0_amd64.deb`; Fedora: install
-`downloadcraft-0.11.0-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.0-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.11.0.xpi` from
-`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
-Chrome ZIP and load the extracted folder in `chrome://extensions`.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.0`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
 
 
 # Earlier: Download Craft 0.10.0

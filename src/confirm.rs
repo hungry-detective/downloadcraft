@@ -240,6 +240,8 @@ const NOT_RUNNING: &str = "Download Craft isn't running — open it, then click 
 const STARTING: &str = "Starting Download Craft…";
 /// How long Download waits for the app it started before giving up.
 const START_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long the background download waits for an app started quietly.
+const APP_WARM_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// True when the main window is already running (fresh heartbeat).
 /// Replaces process-name counting (two dialogs used to look "live").
@@ -249,10 +251,24 @@ fn main_app_running() -> bool {
 
 /// Launch the main window detached (fire-and-forget).
 fn launch_main_app() {
+    launch_main_app_as(false);
+}
+
+/// Launch the main app straight into the tray (minimized when the tray is
+/// off), as at sign-in: started when a capture opens with the app closed,
+/// so the download begins inside it while this window is still up.
+fn launch_main_app_quietly() {
+    launch_main_app_as(true);
+}
+
+fn launch_main_app_as(quiet: bool) {
     let Ok(exe) = crate::platform::launch_path() else {
         return;
     };
     let mut cmd = std::process::Command::new(exe);
+    if quiet {
+        cmd.arg(crate::autostart::STARTUP_ARG);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -337,6 +353,9 @@ struct ConfirmApp {
     /// Download was pressed while the app was closed: it was started at this
     /// moment and the download is handed over once it is live (issue #7).
     waiting_app: Option<std::time::Instant>,
+    /// The app was closed when this window opened and was started quietly
+    /// then: the download waits for it (briefly) instead of starting here.
+    app_warming: Option<std::time::Instant>,
     exited: bool,
     notice: String,
     /// State for controls the concept does not show (dropdown + extras).
@@ -635,6 +654,11 @@ impl ConfirmApp {
             self.prefetch_in_app();
             return;
         }
+        // Started a moment ago: give it a few seconds to come up, then
+        // download here as before.
+        if self.app_warming.is_some_and(|t| t.elapsed() < APP_WARM_WAIT) {
+            return;
+        }
         let url = self.url.trim().to_string();
         let plain = is_download_url(&url)
             && self.pair_url.is_empty()
@@ -908,7 +932,11 @@ impl ConfirmApp {
             if self.waiting_app.is_none() {
                 self.waiting_app = Some(std::time::Instant::now());
                 self.notice = crate::i18n::t(STARTING).to_string();
-                std::thread::spawn(launch_main_app);
+                // Already on its way (started quietly at open): a second
+                // launch would only bring its window up.
+                if !self.app_warming.is_some_and(|t| t.elapsed() < START_WAIT) {
+                    std::thread::spawn(launch_main_app);
+                }
             }
             return;
         }
@@ -1073,6 +1101,11 @@ pub(crate) fn request_start(targets: &[u64]) {
 
 /// Entry point for `--confirm-download`. Never returns normally
 /// (runs the dialog window until it closes).
+/// The header height hidden under Windows' own caption (see `want_h`).
+fn os_hdr() -> f32 {
+    if crate::platform::system_title_bar() { 40.0 } else { 0.0 }
+}
+
 pub fn run() -> eframe::Result<()> {
     // Index-iterated flag parsing: a VALUE that looks like a flag (e.g. a
     // `Content-Disposition` filename of `--referer`) must not shift parsing.
@@ -1198,6 +1231,7 @@ pub fn run() -> eframe::Result<()> {
         show_adv: false,
         done: false,
         waiting_app: None,
+        app_warming: None,
         exited: false,
         notice: initial_notice,
         cat_open: false,
@@ -1248,10 +1282,19 @@ pub fn run() -> eframe::Result<()> {
         }
     }
 
+    // The app is closed: start it now, into the tray, so the download runs
+    // in it from the start and Download only shows it (no second start from
+    // "Connecting..." after the click). IDM's app is simply always running.
+    if !main_app_running() {
+        app.app_warming = Some(std::time::Instant::now());
+        app.notice = crate::i18n::t(STARTING).to_string();
+        std::thread::spawn(launch_main_app_quietly);
+    }
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Add download")
         .with_app_id(crate::platform::app_id())
-        .with_inner_size([DM_W, DM_H])
+        .with_inner_size([DM_W, DM_H - os_hdr()])
         .with_resizable(false)
         .with_decorations(crate::platform::system_title_bar())
         .with_transparent(!crate::platform::system_title_bar())
@@ -1318,9 +1361,10 @@ impl eframe::App for ConfirmApp {
             ctx.data_mut(|d| d.insert_temp(egui::Id::new("run-check"), now));
             let note = crate::i18n::t(NOT_RUNNING).to_string();
             let running = main_app_running();
-            if !running && self.notice.is_empty() && self.waiting_app.is_none() {
+            let warming = self.app_warming.is_some_and(|t| t.elapsed() < START_WAIT);
+            if !running && (self.notice.is_empty() || (!warming && self.notice == crate::i18n::t(STARTING))) && self.waiting_app.is_none() && !warming {
                 self.notice = note;
-            } else if running && self.notice == note {
+            } else if running && (self.notice == note || (self.waiting_app.is_none() && self.notice == crate::i18n::t(STARTING))) {
                 self.notice.clear();
             }
         }
@@ -1391,6 +1435,11 @@ impl eframe::App for ConfirmApp {
         if self.probing {
             ctx.request_repaint();
         }
+        // Waiting for the app started at open: look again soon, so the
+        // download starts in it the moment it is up.
+        if !self.pre_tried && self.app_warming.is_some_and(|t| t.elapsed() < APP_WARM_WAIT + std::time::Duration::from_secs(1)) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
         // Grow the window when the gear panel (or a notice) needs room, so the
         // concept surface itself never changes size or position.
         let notes = self.extra_notes();
@@ -1400,7 +1449,9 @@ impl eframe::App for ConfirmApp {
             0.0
         };
         let adv_h = if self.show_adv { panel_h + 14.0 } else { 0.0 };
-        let mut want_h = DM_H + adv_h;
+        // With Windows' own frame its caption has the title and buttons:
+        // the window's own header moves out of view (40 px shorter).
+        let mut want_h = DM_H + adv_h - os_hdr();
         if !self.notice.is_empty() {
             want_h += 16.0;
         }
@@ -1418,7 +1469,7 @@ impl eframe::App for ConfirmApp {
             // The concept card IS the window: 562x253, 1px #1e293b border,
             // 8px radius, painted edge to edge over the clear surface.
             let card = ui.max_rect();
-            let o = card.min;
+            let o = card.min - egui::vec2(0.0, os_hdr());
             let p = ui.painter().clone();
             let at = |x: f32, y: f32, w: f32, h: f32| {
                 egui::Rect::from_min_size(egui::pos2(o.x + x, o.y + y), egui::vec2(w, h))

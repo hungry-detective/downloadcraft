@@ -143,4 +143,19 @@ mod tests {
         assert_eq!(mirror(&src, &dest).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The extension has its own version (not the app's): both manifests and
+    /// both scripts' EXT_VER must carry the same one.
+    #[test]
+    fn extension_version_is_the_same_everywhere() {
+        let manifest = |t: &str| serde_json::from_str::<serde_json::Value>(t).unwrap()["version"].as_str().unwrap().to_string();
+        let ext_ver = |t: &str| {
+            let at = t.find("const EXT_VER = \"").expect("EXT_VER") + "const EXT_VER = \"".len();
+            t[at..].split('"').next().unwrap().to_string()
+        };
+        let v = manifest(include_str!("../browser-extension/manifest.json"));
+        assert_eq!(manifest(include_str!("../browser-extension/manifest-firefox.json")), v);
+        assert_eq!(ext_ver(include_str!("../browser-extension/background.js")), v);
+        assert_eq!(ext_ver(include_str!("../browser-extension/content.js")), v);
+    }
 }
