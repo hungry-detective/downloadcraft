@@ -158,6 +158,27 @@ fn old_path(p: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// Where `dest` is moved aside to. A backup from an earlier update that is
+/// still in use (the browser helper keeps running the old program until the
+/// browser closes, sometimes for days) cannot be removed: this backup then
+/// takes a numbered name of its own, so the update still goes ahead. Every
+/// name ends in `.dcold`, which `cleanup` removes once nothing uses it.
+fn free_old_path(dest: &Path) -> Result<PathBuf> {
+    let first = old_path(dest);
+    if !first.exists() || std::fs::remove_file(&first).is_ok() {
+        return Ok(first);
+    }
+    for n in 1..100 {
+        let mut s = dest.as_os_str().to_os_string();
+        s.push(format!(".{n}{OLD_SUFFIX}"));
+        let p = PathBuf::from(s);
+        if !p.exists() || std::fs::remove_file(&p).is_ok() {
+            return Ok(p);
+        }
+    }
+    Err(anyhow!("no free name to move {} aside", dest.display()))
+}
+
 /// Copy the new folder over `target`, all or nothing.
 pub fn install(new_dir: &Path, target: &Path) -> Result<usize> {
     let files = files_under(new_dir)?;
@@ -174,13 +195,7 @@ pub fn install(new_dir: &Path, target: &Path) -> Result<usize> {
                 std::fs::create_dir_all(p)?;
             }
             if dest.exists() {
-                let bak = old_path(&dest);
-                // A backup from an earlier update that is still in use (an
-                // old program a browser started) cannot be removed: then
-                // this file is replaced without one only if that fails too.
-                if bak.exists() {
-                    std::fs::remove_file(&bak).with_context(|| format!("removing {}", bak.display()))?;
-                }
+                let bak = free_old_path(&dest)?;
                 std::fs::rename(&dest, &bak).with_context(|| format!("moving {} aside", dest.display()))?;
                 moved.push((dest.clone(), bak));
             }
@@ -260,13 +275,18 @@ fn remove_dropped(target: &Path, files: &[PathBuf]) {
 /// Remove `.dcold` leftovers in the app's folder (best effort, at start).
 pub fn cleanup() {
     let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) else { return };
-    let Ok(files) = files_under(&dir) else { return };
+    cleanup_in(&dir);
+    let _ = std::fs::remove_dir_all(work_dir());
+}
+
+/// Remove the backups in `dir` that nothing uses any more.
+fn cleanup_in(dir: &Path) {
+    let Ok(files) = files_under(dir) else { return };
     for rel in files {
         if rel.to_string_lossy().ends_with(OLD_SUFFIX) {
             let _ = std::fs::remove_file(dir.join(rel));
         }
     }
-    let _ = std::fs::remove_dir_all(work_dir());
 }
 
 /// Start the (new) program; it waits for this process to end first.
@@ -508,5 +528,30 @@ mod tests {
         assert_eq!(std::fs::read(p).unwrap(), body);
         let bad = Asset { sha256: Some("0".repeat(64)), ..good };
         assert!(download(&client, &bad, |_| {}).await.unwrap_err().to_string().contains("checksum"));
+    }
+
+    /// The program from two updates ago is still running (a browser helper):
+    /// its backup cannot be removed, and the next update still installs.
+    #[cfg(windows)]
+    #[test]
+    fn an_old_program_still_running_does_not_stop_an_update() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let app = tmp("busy-app");
+        let new = tmp("busy-new");
+        std::fs::write(app.join(exe_name()), b"v2").unwrap();
+        std::fs::write(app.join(format!("{}{OLD_SUFFIX}", exe_name())), b"v1").unwrap();
+        // Held open without delete sharing, as a running program's file is.
+        let busy = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1 /* FILE_SHARE_READ */)
+            .open(app.join(format!("{}{OLD_SUFFIX}", exe_name())))
+            .unwrap();
+        std::fs::write(new.join(exe_name()), b"v3").unwrap();
+        install(&new, &app).unwrap();
+        assert_eq!(std::fs::read(app.join(exe_name())).unwrap(), b"v3");
+        drop(busy);
+        cleanup_in(&app);
+        let left: Vec<_> = std::fs::read_dir(&app).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        assert!(left.iter().all(|n| !n.to_string_lossy().ends_with(OLD_SUFFIX)), "{left:?}");
     }
 }

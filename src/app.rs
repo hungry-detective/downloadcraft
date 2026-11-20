@@ -8095,16 +8095,20 @@ async fn update_check_async() -> (String, Option<crate::selfupdate::Asset>, bool
         .header("Accept", "application/vnd.github+json")
         .send()
         .await;
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => return (format!("Update check failed (network): {e:#}"), None, false),
+    let api_answer: Result<serde_json::Value, String> = match resp {
+        Err(e) => Err(format!("Update check failed (network): {e:#}")),
+        Ok(r) if !r.status().is_success() => Err(format!("Update check failed: HTTP {}", r.status())),
+        Ok(r) => r.json().await.map_err(|e| format!("Update check failed (parse): {e:#}")),
     };
-    if !resp.status().is_success() {
-        return (format!("Update check failed: HTTP {}", resp.status()), None, false);
-    }
-    let v: serde_json::Value = match resp.json().await {
+    // GitHub's API allows 60 unsigned calls an hour per connection (shared by
+    // everyone behind the same address) and answers 403 past that: read the
+    // release from the ordinary web pages instead, which have no such limit.
+    let v = match api_answer {
         Ok(v) => v,
-        Err(e) => return (format!("Update check failed (parse): {e:#}"), None, false),
+        Err(why) => match release_from_web(&client).await {
+            Some(v) => v,
+            None => return (why, None, false),
+        },
     };
     let tag = v.get("tag_name").and_then(|t| t.as_str()).unwrap_or("");
     if tag.is_empty() {
@@ -8125,6 +8129,69 @@ async fn update_check_async() -> (String, Option<crate::selfupdate::Asset>, bool
     } else {
         (format!("Up to date (v{current})."), None, false)
     }
+}
+
+/// The latest release read from github.com's own pages, in the shape of the
+/// API's answer (tag, page, notes, files with their SHA-256): the fallback
+/// when the API refuses (its hourly limit).
+async fn release_from_web(client: &reqwest::Client) -> Option<serde_json::Value> {
+    const REPO: &str = "hungry-detective/downloadcraft";
+    // /releases/latest redirects to /releases/tag/<tag>.
+    let r = client.get(format!("https://github.com/{REPO}/releases/latest")).send().await.ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    let page = r.url().to_string();
+    let tag = page.rsplit_once("/releases/tag/")?.1.split(['?', '#']).next()?.to_string();
+    if tag.is_empty() || tag.contains('/') {
+        return None;
+    }
+    let html = client
+        .get(format!("https://github.com/{REPO}/releases/expanded_assets/{tag}"))
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    let assets = web_release_assets(&html, REPO, &tag);
+    if assets.is_empty() {
+        return None;
+    }
+    // The notes, for the About window's highlights: this release's section.
+    let body = match client.get(format!("https://raw.githubusercontent.com/{REPO}/{tag}/RELEASE-NOTES.md")).send().await {
+        Ok(r) if r.status().is_success() => {
+            let t = r.text().await.unwrap_or_default();
+            t.split("## Install").next().unwrap_or("").to_string()
+        }
+        _ => String::new(),
+    };
+    Some(serde_json::json!({ "tag_name": tag, "html_url": page, "body": body, "assets": assets }))
+}
+
+/// Each file of a release's "expanded assets" page: its name, link and
+/// SHA-256 (sizes there are rounded, so none is given).
+fn web_release_assets(html: &str, repo: &str, tag: &str) -> Vec<serde_json::Value> {
+    let prefix = format!("href=\"/{repo}/releases/download/{tag}/");
+    let mut out = Vec::new();
+    for item in html.split("<li").skip(1) {
+        let Some(at) = item.find(&prefix) else { continue };
+        let rest = &item[at + prefix.len()..];
+        let Some(name) = rest.split('"').next().filter(|n| !n.is_empty() && !n.contains('/')) else { continue };
+        let digest = item.find("sha256:").map(|i| &item[i..]).and_then(|d| {
+            let hex: String = d["sha256:".len()..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            (hex.len() == 64).then(|| format!("sha256:{}", hex.to_ascii_lowercase()))
+        });
+        let mut a = serde_json::json!({
+            "name": name,
+            "browser_download_url": format!("https://github.com/{repo}/releases/download/{tag}/{name}"),
+        });
+        if let Some(d) = digest {
+            a["digest"] = serde_json::json!(d);
+        }
+        out.push(a);
+    }
+    out
 }
 
 /// A failed download's toast: what went wrong, the next step, and Retry
@@ -13485,5 +13552,24 @@ mod audit_completion_tests {
         assert!(!task_can_complete(&success,false));
         success.cancelled.store(true,Ordering::SeqCst);
         assert!(!task_can_complete(&success,true));
+    }
+}
+
+#[cfg(test)]
+mod web_release_tests {
+    #[test]
+    fn release_files_are_read_from_the_web_page() {
+        let html = r#"<ul><li class="Box-row"><a href="/o/r/releases/download/v1.2.3/App-1.2.3-windows-x64-portable.zip" rel="nofollow"><span>App</span></a>
+            <span class="Truncate-text">sha256:F6D0809D84A8650D7EC87A3BD3014E4B2420C4D36DAA6E748B16CFA104071F48</span></li>
+            <li class="Box-row"><a href="/o/r/releases/download/v1.2.3/App-1.2.3.deb">deb</a></li>
+            <li class="Box-row"><a href="/o/r/archive/refs/tags/v1.2.3.zip">Source code</a></li></ul>"#;
+        let a = super::web_release_assets(html, "o/r", "v1.2.3");
+        assert_eq!(a.len(), 2);
+        let v = serde_json::json!({ "assets": a });
+        let picked = crate::selfupdate::pick_asset(&v).unwrap();
+        assert_eq!(picked.name, "App-1.2.3-windows-x64-portable.zip");
+        assert_eq!(picked.url, "https://github.com/o/r/releases/download/v1.2.3/App-1.2.3-windows-x64-portable.zip");
+        assert_eq!(picked.sha256.as_deref(), Some("f6d0809d84a8650d7ec87a3bd3014e4b2420c4d36daa6e748b16cfa104071f48"));
+        assert!(a[1].get("digest").is_none());
     }
 }

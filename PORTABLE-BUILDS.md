@@ -1,9 +1,9 @@
-# Download Craft 0.11.1
+# Download Craft 0.11.2
 
 Use [the current release instructions](RELEASE-NOTES.md) for Windows, universal
 Mac, Fedora/RPM, Debian-family DEB and AppImage installation and media helpers.
 
-`VERSION` contains the public app version; Cargo, UI and CLI use it (0.11.1).
+`VERSION` contains the public app version; Cargo, UI and CLI use it (0.11.2).
 
 The browser extension keeps its own version, raised only when something in
 `browser-extension/` changes: `version` in both manifests and `EXT_VER` in
