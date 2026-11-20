@@ -7901,6 +7901,28 @@ pub async fn download_adaptive(
     Ok(())
 }
 
+/// A YouTube stream (`googlevideo.com`) names its exact size (`clen`) and
+/// type (`mime`) in its own address, and always serves byte ranges. While
+/// YouTube holds a stream for the length of its pre-roll ad, the size probe
+/// is refused (403): without these facts the leg fell back to one plain
+/// stream of the whole file, which YouTube throttles to 1-2 MB/s, and which
+/// keeps no resume journal, so Resume started again from 0.
+fn with_stream_facts(
+    probed: (Option<u64>, bool, Option<String>, Option<String>),
+    url: &str,
+) -> (Option<u64>, bool, Option<String>, Option<String>) {
+    let (total, range, ctype, disp) = probed;
+    if total.is_some() || !is_googlevideo_url(url) {
+        return (total, range, ctype, disp);
+    }
+    let Some(q) = url::Url::parse(url).ok() else { return (total, range, ctype, disp) };
+    let param = |k: &str| q.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned());
+    match param("clen").and_then(|c| c.parse::<u64>().ok()).filter(|c| *c > 0) {
+        Some(clen) => (Some(clen), true, ctype.or_else(|| param("mime")), disp),
+        None => (total, range, ctype, disp),
+    }
+}
+
 async fn download_adaptive_inner(
     video_url: String,
     audio_url: Option<String>,
@@ -7932,7 +7954,7 @@ async fn download_adaptive_inner(
         tokio::fs::create_dir_all(parent).await?;
     }
     // Probe both legs (referer/cookies apply — media servers expect them).
-    let (v_total, v_range, vtype, v_disp) = probe(&client, &opts, &video_url).await;
+    let (v_total, v_range, vtype, v_disp) = with_stream_facts(probe(&client, &opts, &video_url).await, &video_url);
     shared.resumable.store(v_range, Ordering::SeqCst);
     if opts.allow_rename {
         if let Some(n) = v_disp {
@@ -7942,7 +7964,7 @@ async fn download_adaptive_inner(
     }
     let (a_total, a_range, atype, _) = match &audio_url {
         Some(a) => {
-            let (t, r, c, _) = probe(&client, &opts, a).await;
+            let (t, r, c, _) = with_stream_facts(probe(&client, &opts, a).await, a);
             (t, r, c, ())
         }
         None => (None, false, None, ()),
@@ -9892,6 +9914,17 @@ fn engine_error(url: &str, e: downloadcraft_engine::Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_youtube_probe_still_knows_size_and_ranges() {
+        let u = "https://rr3---sn-x.googlevideo.com/videoplayback?itag=401&mime=video%2Fmp4&clen=1124418801&dur=1371.7";
+        let (t, r, c, _) = with_stream_facts((None, false, None, None), u);
+        assert_eq!((t, r, c.as_deref()), (Some(1124418801), true, Some("video/mp4")));
+        // A real probe answer wins, and other hosts are left alone.
+        assert_eq!(with_stream_facts((Some(5), false, None, None), u).0, Some(5));
+        let other = "https://example.com/v.mp4?clen=99";
+        assert_eq!(with_stream_facts((None, false, None, None), other).0, None);
+    }
 
     #[test]
     fn removing_a_video_removes_its_work_folders() {

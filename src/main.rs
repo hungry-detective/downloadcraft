@@ -8,6 +8,7 @@ mod archive;
 mod app;
 mod basket;
 mod cli;
+mod crash;
 mod complete;
 mod confirm;
 mod dm;
@@ -62,27 +63,10 @@ use std::sync::Arc;
 fn install_panic_hook() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let bt = std::backtrace::Backtrace::force_capture();
-        let msg = format!("panic: {info}\nlocation: {:?}\nbacktrace:\n{bt}\n", info.location());
-        if let Some(dir) = model::config_dir() {
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(dir.join("crash.log"), &msg);
-            // Kept per crash, and offered for a report on the next start.
-            let reports = dir.join("crash-reports");
-            let _ = std::fs::create_dir_all(&reports);
-            let name = format!("crash-{}.txt", chrono::Local::now().format("%Y%m%d-%H%M%S"));
-            let full = format!(
-                "Download Craft {} on {} {}
-
-{msg}",
-                model::APP_VERSION,
-                std::env::consts::OS,
-                std::env::consts::ARCH
-            );
-            let _ = std::fs::write(reports.join(&name), full);
-            let _ = std::fs::write(reports.join("pending.txt"), name);
-        }
-        eprintln!("{msg}");
+        // Kept per crash (`crash-reports/`), and offered for a report on
+        // the next start (src/crash.rs).
+        crash::record(info);
+        eprintln!("panic: {info}");
         prev(info);
     }));
 }
@@ -161,6 +145,9 @@ fn main() -> eframe::Result<()> {
     if let Some(i) = args.iter().position(|a| a == "--torrent-files") {
         let id = args.get(i + 1).cloned().unwrap_or_default();
         return window_result(torrent_pick::run(&id));
+    }
+    if args.iter().any(|a| a == "--crash-report") {
+        return window_result(crash::run());
     }
     if args.iter().any(|a| a == "--about") {
         return window_result(about::run());
@@ -260,7 +247,7 @@ fn main() -> eframe::Result<()> {
     // most once a day, off the UI thread.
     std::thread::spawn(crate::native_host::refresh_site_rules);
     // The last run crashed: offer to report it (once per crash).
-    std::thread::spawn(crate::platform::offer_crash_report);
+    std::thread::spawn(crate::crash::offer_if_pending);
     let run = |options: eframe::NativeOptions| {
         let rt = rt.clone();
         eframe::run_native(
