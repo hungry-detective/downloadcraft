@@ -17,15 +17,15 @@ yt-dlp, and an extension that works with the app — or on its own.
 
 <br>
 
-[![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHBhdGggZmlsbD0nd2hpdGUnIGQ9J00yIDQuMmw4LjUtMS4ydjguNEgyek0xMS42IDIuOUwyMiAxLjV2OS45SDExLjZ6TTIgMTIuNmg4LjVWMjFMMiAxOS44ek0xMS42IDEyLjZIMjJ2OS45bC0xMC40LTEuNHonLz48L3N2Zz4=)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.6/DownloadCraft-0.11.6-windows-x64-setup.exe)
+[![Download for Windows](https://img.shields.io/badge/Download-Windows-0078D4?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCc+PHBhdGggZmlsbD0nd2hpdGUnIGQ9J00yIDQuMmw4LjUtMS4ydjguNEgyek0xMS42IDIuOUwyMiAxLjV2OS45SDExLjZ6TTIgMTIuNmg4LjVWMjFMMiAxOS44ek0xMS42IDEyLjZIMjJ2OS45bC0xMC40LTEuNHonLz48L3N2Zz4=)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.7/DownloadCraft-0.11.7-windows-x64-setup.exe)
 &nbsp;
-[![Download for macOS](https://img.shields.io/badge/Download-macOS-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.6/DownloadCraft-0.11.6-macos-Universal.zip)
+[![Download for macOS](https://img.shields.io/badge/Download-macOS-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.7/DownloadCraft-0.11.7-macos-Universal.zip)
 &nbsp;
-[![Download for Linux](https://img.shields.io/badge/Download-Linux-E95420?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/tag/v0.11.6)
+[![Download for Linux](https://img.shields.io/badge/Download-Linux-E95420?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/tag/v0.11.7)
 
-[![Chrome / Edge extension](https://img.shields.io/badge/Extension-Chrome%20%2F%20Edge-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.6/DownloadCraft-Chrome-0.11.0.zip)
+[![Chrome / Edge extension](https://img.shields.io/badge/Extension-Chrome%20%2F%20Edge-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.7/DownloadCraft-Chrome-0.11.1.zip)
 &nbsp;
-[![Firefox extension](https://img.shields.io/badge/Extension-Firefox-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.6/DownloadCraft-Firefox-0.11.0.xpi)
+[![Firefox extension](https://img.shields.io/badge/Extension-Firefox-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white)](https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.7/DownloadCraft-Firefox-0.11.1.xpi)
 
 <sub>Windows 10/11 · macOS 12+ (Apple Silicon & Intel) · Linux x86-64 (DEB, RPM, AppImage) · <a href="https://github.com/hungry-detective/downloadcraft/releases">all releases</a></sub>
 
@@ -61,17 +61,18 @@ https://github.com/user-attachments/assets/acd6afd0-926c-4e11-a718-3edf42c4f7c6
 
 ---
 
-## ✨ What's new in 0.11.6
+## ✨ What's new in 0.11.7
 
-- **YouTube at full speed, always**: a video no longer drops to one slow
-  stream when YouTube holds it for an ad (a 1.15 GB 4K video: 2 minutes
-  instead of about 12), and Resume continues instead of starting again.
-- **Problem reports in the app's own style**, with the details a fix needs
-  filled in for you.
-- From 0.11.5 and 0.11.4: Bangla YouTube titles download, YouTube starts
-  about twice as fast, and pasted YouTube links get the video's name.
+- **Video downloads resume** after Cancel or a restart (YouTube, Facebook),
+  and **Redownload** really starts again, under the same name.
+- **yt-dlp downloads at full speed**: it finds the file, the app fetches it
+  over every connection.
+- **Windows 10**: windows no longer get stuck and refuse to move or resize.
+- **Add URL** lets you pick a YouTube video's quality, and the extension
+  names videos by their real title. The Firefox extension is on
+  [addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/).
 
-Full notes: [Release 0.11.6](https://github.com/hungry-detective/downloadcraft/releases/tag/v0.11.6).
+Full notes: [Release 0.11.7](https://github.com/hungry-detective/downloadcraft/releases/tag/v0.11.7).
 
 ---
 
@@ -233,17 +234,17 @@ way, in Rust. It contains no IDM code.
 
 | Platform | Download | How |
 |---|---|---|
-| **Windows 10/11** | `DownloadCraft-0.11.6-windows-x64-setup.exe` or `DownloadCraft-0.11.6-windows-x64-portable.zip` | Run the installer (no administrator rights), or extract the zip and run `download_craft.exe`. |
-| **macOS 12+** | `DownloadCraft-0.11.6-macos-Universal.zip` | Move *Download Craft.app* to Applications (development build, not notarized — right-click → Open the first time). |
-| **Ubuntu / Debian / Mint** | `downloadcraft_0.11.6_amd64.deb` | `sudo apt install ./downloadcraft_0.11.6_amd64.deb` |
-| **Fedora** | `downloadcraft-0.11.6-1.x86_64.rpm` | `sudo dnf install ./downloadcraft-0.11.6-1.x86_64.rpm` |
-| **Other Linux** | `DownloadCraft-0.11.6-x86_64.AppImage` | Make it executable and open it. |
+| **Windows 10/11** | `DownloadCraft-0.11.7-windows-x64-setup.exe` or `DownloadCraft-0.11.7-windows-x64-portable.zip` | Run the installer (no administrator rights), or extract the zip and run `download_craft.exe`. |
+| **macOS 12+** | `DownloadCraft-0.11.7-macos-Universal.zip` | Move *Download Craft.app* to Applications (development build, not notarized — right-click → Open the first time). |
+| **Ubuntu / Debian / Mint** | `downloadcraft_0.11.7_amd64.deb` | `sudo apt install ./downloadcraft_0.11.7_amd64.deb` |
+| **Fedora** | `downloadcraft-0.11.7-1.x86_64.rpm` | `sudo dnf install ./downloadcraft-0.11.7-1.x86_64.rpm` |
+| **Other Linux** | `DownloadCraft-0.11.7-x86_64.AppImage` | Make it executable and open it. |
 
 **Browser extension**
-1. **Chrome / Edge / Brave:** extract `DownloadCraft-Chrome-0.11.0.zip`, open `chrome://extensions`, turn on
+1. **Chrome / Edge / Brave:** extract `DownloadCraft-Chrome-0.11.1.zip`, open `chrome://extensions`, turn on
    *Developer mode*, choose **Load unpacked** and pick the `browser-extension` folder.
 2. **Firefox:** open `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** → pick
-   `DownloadCraft-Firefox-0.11.0.xpi`.
+   `DownloadCraft-Firefox-0.11.1.xpi`.
 3. In the app, open **Settings → Browser Integration** and press **Install** for your browser, so the
    extension can talk to the app. (Without it, the extension still downloads in the browser.)
 
