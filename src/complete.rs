@@ -274,7 +274,7 @@ impl CompleteApp {
             )
             .drag_started()
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            crate::platform::start_drag(&ctx);
         }
         // Minimise, the concept's maximise box (nothing to maximise on a
         // fixed-size dialog, so it is drawn but inert) and Close.

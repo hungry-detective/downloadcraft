@@ -856,6 +856,14 @@ pub fn guard_borderless() {
         if pid != std::process::id() || IsWindowVisible(hwnd) == 0 {
             return 1;
         }
+        // Never in the middle of a move or resize: a style change there ends
+        // the system's move loop and leaves the window stuck (issue #28).
+        let mut gui: GUITHREADINFO = std::mem::zeroed();
+        gui.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+        let thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+        if GetGUIThreadInfo(thread, &mut gui) != 0 && gui.flags & GUI_INMOVESIZE != 0 {
+            return 1;
+        }
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
         // Only the app's own windows: resizable or with a system menu,
         // never popups (menus, tooltips) or child windows.
@@ -882,6 +890,70 @@ pub fn guard_borderless() {
 
 #[cfg(not(windows))]
 pub fn guard_borderless() {}
+
+/// Move the window under the mouse (a press on a custom title bar).
+///
+/// On Windows the move is started here with the system's own move command
+/// (`SC_MOVE` from the caption), not through winit: winit marks a window as
+/// "being dragged" and clears the mark only when Windows reports the move
+/// loop ending. A request that never started a loop (a resize asked of a
+/// window without a sizing frame, a style change racing the press) left the
+/// mark set, and every later drag and resize was ignored: the window stayed
+/// stuck where it was (issue #28). The system command has no such state.
+pub fn start_drag(ctx: &egui::Context) {
+    #[cfg(windows)]
+    if let Some(hwnd) = active_window() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
+        const SC_DRAGMOVE: usize = 0xF012; // SC_MOVE | HTCAPTION
+        // SAFETY: our own window; the message is handled on its thread.
+        unsafe {
+            ReleaseCapture();
+            PostMessageW(hwnd, WM_SYSCOMMAND, SC_DRAGMOVE, 0);
+        }
+        return;
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+}
+
+/// Resize the window from one of its edges or corners (see [`start_drag`]).
+/// The system's size command works on windows without a sizing frame too.
+pub fn begin_resize(ctx: &egui::Context, dir: egui::viewport::ResizeDirection) {
+    #[cfg(windows)]
+    if let Some(hwnd) = active_window() {
+        use egui::viewport::ResizeDirection as D;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_SYSCOMMAND};
+        // SC_SIZE plus the edge (WMSZ_LEFT = 1 … WMSZ_BOTTOMRIGHT = 8).
+        let edge: usize = match dir {
+            D::West => 1,
+            D::East => 2,
+            D::North => 3,
+            D::NorthWest => 4,
+            D::NorthEast => 5,
+            D::South => 6,
+            D::SouthWest => 7,
+            D::SouthEast => 8,
+        };
+        // SAFETY: our own window; the message is handled on its thread.
+        unsafe {
+            ReleaseCapture();
+            PostMessageW(hwnd, WM_SYSCOMMAND, 0xF000 + edge, 0);
+        }
+        return;
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+}
+
+/// This thread's active window: the one the user just pressed on (each of
+/// the app's windows runs on its own process's UI thread).
+#[cfg(windows)]
+fn active_window() -> Option<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
+    // SAFETY: a plain query about the calling thread.
+    let h = unsafe { GetActiveWindow() };
+    (!h.is_null()).then_some(h)
+}
 
 /// Windows' build number (22000 and up is Windows 11); 0 if unknown.
 #[cfg(windows)]

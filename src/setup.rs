@@ -362,7 +362,7 @@ impl SetupApp {
         let head = egui::Rect::from_min_size(o, egui::vec2(full.width(), 54.0));
         let drag = ui.interact(head.with_max_x(head.max.x - 48.0), egui::Id::new("setup-drag"), egui::Sense::click_and_drag());
         if drag.drag_started() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            crate::platform::start_drag(&ctx);
         }
         let ready = self.states.iter().filter(|(_, s)| s.ready()).count();
         let all = self.states.len();

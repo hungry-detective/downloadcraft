@@ -842,7 +842,7 @@ impl ProgressApp {
             )
             .drag_started()
         {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            crate::platform::start_drag(&ctx);
         }
         for (i, cx, icon, id, tip) in [
             (0usize, CTL_X1, DmIcon::Minimize, "pg-min", "Minimise"),

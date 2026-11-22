@@ -2785,6 +2785,8 @@ pub struct CraftApp {
     probe_done_for: String,
     probe_rx: Option<std::sync::mpsc::Receiver<(Option<u64>, Option<String>)>>,
     add_adv: bool,
+    /// The Add dialog's quality list (YouTube links) is open.
+    add_quality_open: bool,
     add_checksum: String,
     add_overwrite: bool,
     verify_jobs: Vec<(u64, std::sync::mpsc::Receiver<anyhow::Result<String>>)>,
@@ -3039,6 +3041,7 @@ impl CraftApp {
             probe_done_for: String::new(),
             probe_rx: None,
             add_adv: false,
+            add_quality_open: false,
             add_checksum: String::new(),
             add_overwrite: false,
             verify_jobs: Vec::new(),
@@ -3284,6 +3287,8 @@ impl CraftApp {
                 "cancel" => self.cancel_task(id),
                 // The phone remote's Remove (the file stays).
                 "remove" => self.remove(id),
+                // Download it again from the start (the row's Redownload).
+                "redownload" => self.redownload(id),
                 // A torrent's new choice of files: start it again with it.
                 "restart" => {
                     if self.tasks.contains_key(&id) {
@@ -3718,25 +3723,45 @@ impl CraftApp {
 
     fn redownload(&mut self, id: u64) {
         self.cancel_task(id);
-        if let Some(d) = self.downloads.iter().find(|d| d.id == id) {
-            let dest = d.dest_path();
-            // Replace semantics: drop the previous file so the engine does
-            // not auto-rename to `name (1).ext`.
-            if dest.exists() {
-                let _ = std::fs::remove_file(&dest);
-            }
-            for p in Self::part_files(&dest) {
-                let _ = std::fs::remove_file(p);
-            }
-        }
+        let Some(dest) = self.downloads.iter().find(|d| d.id == id).map(|d| d.dest_path()) else { return };
+        let parts = Self::part_files(&dest);
+        // Starts again from nothing, under the same name: everything this
+        // download left goes first (the file, the engine's parts, a video's
+        // work folder, yt-dlp's unfinished files, which yt-dlp would simply
+        // have continued). The stopped transfer lets go of them a moment
+        // later, so this retries, then asks for the start; the row waits
+        // Paused meanwhile, so the queue does not start it early (an early
+        // start saw the old file and saved as `name (1)`).
         if let Some(d) = self.downloads.iter_mut().find(|d| d.id == id) {
             d.downloaded_bytes = 0;
             d.total_bytes = None;
             d.speed_bps = 0.0;
-            d.status = Status::Queued;
+            d.status = Status::Paused;
         }
         self.save_queue();
-        self.start(id);
+        self.push_log(format!("Downloading #{id} again from the start…"));
+        std::thread::spawn(move || {
+            for _ in 0..40 {
+                if dest.is_file() {
+                    let _ = std::fs::remove_file(&dest);
+                }
+                for p in &parts {
+                    let _ = std::fs::remove_file(p);
+                }
+                crate::engine::remove_partial(&dest);
+                crate::engine::remove_ytdlp_partials(&dest);
+                let left = dest.is_file()
+                    || parts.iter().any(|p| p.exists())
+                    || crate::engine::has_partial(&dest)
+                    || crate::engine::has_work_dirs(&dest)
+                    || crate::engine::has_ytdlp_partials(&dest);
+                if !left {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            crate::confirm::request_start(&[id]);
+        });
     }
 
     /// Re-queue every failed item and pump the queue. Real action behind
@@ -4502,7 +4527,8 @@ impl CraftApp {
             std::thread::spawn(move || {
                 for _ in 0..40 {
                     crate::engine::remove_partial(&dest);
-                    if !crate::engine::has_work_dirs(&dest) {
+                    crate::engine::remove_ytdlp_partials(&dest);
+                    if !crate::engine::has_work_dirs(&dest) && !crate::engine::has_ytdlp_partials(&dest) {
                         return;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(250));
@@ -4572,6 +4598,20 @@ impl CraftApp {
                     // A playlist's length is its text, never the video size.
                     if crate::engine::is_stream_manifest(&url, ctype.as_deref(), "") {
                         total = None;
+                    }
+                    // A YouTube video: the watch page's own length is never
+                    // the video's. The app's own reader names the size of
+                    // the chosen quality and the title.
+                    if is_youtube_video_link(&url) {
+                        total = None;
+                        if crate::youtube::own_reader_allowed(&opts) {
+                            if let Ok((size, title)) = crate::youtube::peek(&client, &opts, &url).await {
+                                total = size;
+                                if !title.trim().is_empty() {
+                                    disp = Some(crate::engine::sanitize_filename(&title));
+                                }
+                            }
+                        }
                     }
                     // Page URLs (YouTube watch / generic video pages) answer
                     // HEAD with HTML and no length → resolve the media stream
@@ -4767,7 +4807,7 @@ impl CraftApp {
             if rect.contains(q) {
                 ctx.set_cursor_icon(icon);
                 if self.man.press_started_in(&rect) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+                    crate::platform::begin_resize(&ctx, dir);
                 }
                 return;
             }
@@ -8092,6 +8132,30 @@ fn host_allows_current_ids(browser: &str, manifest: &serde_json::Value) -> bool 
 }
 
 #[cfg(test)]
+mod resume_tests {
+    #[test]
+    fn a_video_with_a_work_folder_is_not_lost() {
+        let dir = std::env::temp_dir().join("dc_resume_workdir_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut d = crate::model::DownloadItem::new(1, "https://www.youtube.com/watch?v=abcdefghijk".into(), "Clip.mp4".into(), dir.to_string_lossy().into(), 8);
+        d.downloaded_bytes = 200_000_000;
+        // Nothing on disk: the bytes are gone.
+        assert!(super::resume_file_missing(&d));
+        // The picture and sound parts in the work folder: still there.
+        std::fs::create_dir_all(dir.join("Clip.dcwork")).unwrap();
+        std::fs::write(dir.join("Clip.dcwork").join("v.dcjournal"), "{}").unwrap();
+        assert!(!super::resume_file_missing(&d));
+        // yt-dlp's unfinished file counts too.
+        std::fs::remove_dir_all(dir.join("Clip.dcwork")).unwrap();
+        assert!(super::resume_file_missing(&d));
+        std::fs::write(dir.join("Clip.f398.mp4.part"), "x").unwrap();
+        assert!(!super::resume_file_missing(&d));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod host_id_tests {
     #[test]
     fn an_old_host_manifest_without_the_store_ids_is_rewritten() {
@@ -8282,6 +8346,28 @@ fn notify(title: &str, body: &str) {
         .show();
 }
 
+/// A single YouTube video (not a playlist or channel page).
+fn is_youtube_video_link(url: &str) -> bool {
+    let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
+    (host == "youtu.be" || host == "youtube.com" || host.ends_with(".youtube.com"))
+        && crate::engine::youtube_id(url).is_some()
+        && !crate::engine::is_youtube_list(url)
+}
+
+/// The qualities the Add dialog offers for a YouTube link: (preference the
+/// engine reads, label).
+const YT_QUALITIES: [(&str, &str); 9] = [
+    ("", "Best"),
+    ("2160p", "2160p (4K)"),
+    ("1440p", "1440p"),
+    ("1080p", "1080p"),
+    ("720p", "720p"),
+    ("480p", "480p"),
+    ("360p", "360p"),
+    ("mp3", "Audio (MP3)"),
+    ("m4a", "Audio (M4A)"),
+];
+
 /// A paused HTTP download whose unfinished data is no longer on disk.
 fn resume_file_missing(d: &DownloadItem) -> bool {
     if d.downloaded_bytes == 0 || crate::torrent::is_torrent(&d.url) {
@@ -8293,7 +8379,14 @@ fn resume_file_missing(d: &DownloadItem) -> bool {
     }
     let dest = d.dest_path();
     let part = std::path::PathBuf::from(format!("{}.part", dest.display()));
-    !crate::engine::has_partial(&dest) && !dest.exists() && !part.exists()
+    // A video from YouTube or Facebook keeps its picture and sound parts in
+    // its work folder (`<name>.dcwork`), not next to the file: those count
+    // too, or Resume after Cancel reset such a download to 0.
+    !crate::engine::has_partial(&dest)
+        && !crate::engine::has_work_dirs(&dest)
+        && !crate::engine::has_ytdlp_partials(&dest)
+        && !dest.exists()
+        && !part.exists()
 }
 
 /// The tray's menu: the running downloads with their percentages (a click
@@ -9144,7 +9237,7 @@ impl eframe::App for CraftApp {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
                             } else {
                                 self.tb_press = Some((now, q));
-                                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                                crate::platform::start_drag(&ctx);
                             }
                         }
                     }
@@ -10272,7 +10365,8 @@ impl eframe::App for CraftApp {
                         0.0,
                     );
                     let known = !pbusy && psize.filter(|s| *s > 0).is_some();
-                    let sz_txt: String = if pbusy {
+                    let yt = is_youtube_video_link(self.add_url.trim());
+                    let size_part: String = if pbusy {
                         "…".to_string()
                     } else {
                         psize
@@ -10280,6 +10374,50 @@ impl eframe::App for CraftApp {
                             .map(format_bytes)
                             .unwrap_or_else(|| "—".to_string())
                     };
+                    // A YouTube link: the box names the quality too, and a
+                    // click on it picks another.
+                    let sz_txt: String = if yt {
+                        let q = YT_QUALITIES
+                            .iter()
+                            .find(|(k, _)| k.eq_ignore_ascii_case(self.add_quality.trim()))
+                            .map(|(k, l)| if k.is_empty() { "Best" } else { l.split(' ').next().unwrap_or(l) })
+                            .unwrap_or("Best");
+                        format!("{q} · {size_part} ▾")
+                    } else {
+                        size_part
+                    };
+                    if yt && self.man.clicked(&chip) {
+                        self.add_quality_open = !self.add_quality_open;
+                    }
+                    if !yt {
+                        self.add_quality_open = false;
+                    }
+                    if self.add_quality_open {
+                        let mut pick: Option<String> = None;
+                        egui::Area::new(egui::Id::new("add_quality_list"))
+                            .order(egui::Order::Tooltip)
+                            .fixed_pos(egui::pos2(chip.min.x, chip.max.y + 4.0))
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::popup(ui.style()).fill(pl().dm_card).show(ui, |ui| {
+                                    ui.set_min_width(chip.width());
+                                    for (k, l) in YT_QUALITIES {
+                                        let on = k.eq_ignore_ascii_case(self.add_quality.trim());
+                                        if ui.selectable_label(on, l).clicked() {
+                                            pick = Some(k.to_string());
+                                        }
+                                    }
+                                });
+                            });
+                        if let Some(k) = pick {
+                            self.add_quality_open = false;
+                            if k != self.add_quality {
+                                self.add_quality = k;
+                                // The size follows the quality: measure again.
+                                self.stop_add_prestart(None);
+                                self.probe_done_for.clear();
+                            }
+                        }
+                    }
                     let g = p.layout_no_wrap(sz_txt, crate::fonts::reg(11.0), pl().dm_txt);
                     let tw = g.size().x;
                     let tx = chip.min.x + 37.0;

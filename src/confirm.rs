@@ -1517,7 +1517,7 @@ impl eframe::App for ConfirmApp {
                 )
                 .drag_started()
             {
-                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                crate::platform::start_drag(&ctx);
             }
             let ctl = |x: f32| {
                 egui::Rect::from_center_size(

@@ -341,7 +341,7 @@ impl CrashApp {
         let bar = egui::Rect::from_min_size(o, egui::vec2(full.width(), 44.0));
         let drag = ui.interact(bar.with_max_x(bar.max.x - 50.0), egui::Id::new("crash-drag"), egui::Sense::click_and_drag());
         if drag.drag_started() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            crate::platform::start_drag(&ctx);
         }
         p.stext(egui::pos2(x0 - 4.0, o.y + 22.0), egui::Align2::LEFT_CENTER, "Problem report", semi(14.0), t.txt);
         let close = egui::Rect::from_center_size(egui::pos2(full.max.x - 27.0, o.y + 22.0), egui::vec2(30.0, 30.0));

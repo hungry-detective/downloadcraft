@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.11.0";
+  const EXT_VER = "0.11.1";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -3600,7 +3600,7 @@
     let api = null;
     const pick = (q) => { rememberQuality(q); socialSend(post, q, video); };
     api = dcPanel({
-      title: String(document.title || "Video").slice(0, 120),
+      title: String(pageTitle() || document.title || "Video").slice(0, 120),
       thumb: socialThumb(post, video),
       dur: (() => { try { const d = video.duration; return Number.isFinite(d) && d > 0 ? fmtDurSec(d) : ""; } catch (e) { return ""; } })(),
       res: "", size: "", format: "MP4",
@@ -3918,7 +3918,9 @@
           fb,
           net: net.map((n) => (n.thumb ? n : { ...n, thumb })),
           page: location.href,
-          title: document.title || "",
+          // The same name the player's own button uses (the page's
+          // og:title, the site's suffix dropped), not the raw tab text.
+          title: pageTitle() || document.title || "",
         });
       })();
       return true;

@@ -926,6 +926,63 @@ pub fn remove_work_dirs(dest: &std::path::Path) {
     }
 }
 
+/// `https://host/dir/movie.mp4/index.m3u8?t=…` → `https://host/dir/movie.mp4?t=…`:
+/// a stream a server makes on the fly from one video file names that file
+/// just before its playlist.
+pub(crate) fn vod_file_url(url: &str) -> Option<String> {
+    let mut u = url::Url::parse(url).ok()?;
+    let path = u.path().to_string();
+    let (dir, last) = path.rsplit_once('/')?;
+    let last = last.to_ascii_lowercase();
+    if !last.ends_with(".m3u8") || !(last.starts_with("index") || last.starts_with("master") || last.starts_with("playlist")) {
+        return None;
+    }
+    let file = dir.rsplit('/').next()?.to_ascii_lowercase();
+    if ![".mp4", ".mkv", ".m4v", ".mov", ".webm"].iter().any(|e| file.ends_with(e)) {
+        return None;
+    }
+    u.set_path(dir);
+    Some(u.to_string())
+}
+
+/// yt-dlp's unfinished files for `dest` (`<name>.f398.mp4.part`,
+/// `<name>.mp4.part`, `<name>….ytdl`, fragments), next to it or in the
+/// hidden parts folder yt-dlp works in: a download it started can only be
+/// continued by yt-dlp itself.
+fn ytdlp_partial_paths(dest: &std::path::Path) -> Vec<PathBuf> {
+    let (Some(dir), Some(stem)) = (dest.parent(), dest.file_stem().map(|s| s.to_string_lossy().to_string())) else {
+        return Vec::new();
+    };
+    let prefix = format!("{stem}.");
+    let mut found = Vec::new();
+    for folder in [dir.to_path_buf(), dir.join(PARTS_DIR)] {
+        for e in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let Ok(name) = e.file_name().into_string() else { continue };
+            let Some(rest) = name.strip_prefix(&prefix) else { continue };
+            if rest.contains(".part") || rest.ends_with("ytdl") || rest.ends_with(".temp") || rest == "part" {
+                found.push(e.path());
+            }
+        }
+    }
+    found
+}
+
+pub fn has_ytdlp_partials(dest: &std::path::Path) -> bool {
+    !ytdlp_partial_paths(dest).is_empty()
+}
+
+/// Delete yt-dlp's unfinished files for `dest` (see [`has_ytdlp_partials`]),
+/// and the hidden parts folder once nothing else is left in it.
+pub fn remove_ytdlp_partials(dest: &std::path::Path) {
+    for p in ytdlp_partial_paths(dest) {
+        let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+    }
+    if let Some(dir) = dest.parent() {
+        // Only removes an empty folder.
+        let _ = std::fs::remove_dir(dir.join(PARTS_DIR));
+    }
+}
+
 /// Whether a download still has a work folder on disk (see `remove_work_dirs`).
 pub fn has_work_dirs(dest: &std::path::Path) -> bool {
     adaptive_work_dir(dest).exists() || hls_dir(dest).exists()
@@ -4958,6 +5015,22 @@ async fn download_inner(
         );
         return crate::ftp::download_ftp(&url, &dest, &opts, shared, limiter, connections).await;
     }
+    // A stream made on the fly from one file (`movie.mp4/index.m3u8`, the
+    // nginx "vod" style): the file itself downloads over every connection
+    // and resumes, instead of hundreds of small pieces in a `.parts` folder.
+    if let Some(file) = vod_file_url(&url) {
+        if let Ok(client) = opts.build_client() {
+            let (total, _, ctype, _) = probe(&client, &opts, &file).await;
+            let media = ctype.as_deref().is_none_or(|c| {
+                let c = c.to_ascii_lowercase();
+                c.starts_with("video/") || c.starts_with("audio/") || c.contains("octet-stream")
+            });
+            if total.is_some_and(|t| t > 1_000_000) && media {
+                job_log(&opts.log_key, "the stream is made from one file: downloading that file itself");
+                url = file;
+            }
+        }
+    }
     if is_playlist_url(&url) {
         if url.to_ascii_lowercase().split(['?', '#']).next().unwrap_or("").ends_with(".mpd")
             || url.contains(".mpd")
@@ -5124,7 +5197,14 @@ async fn download_inner(
     // on the app's own connections. When it cannot read the video, yt-dlp
     // takes over as before.
     let mut own_hit: Option<ResolvedMedia> = None;
-    if is_yt && youtube_own_reader_allowed(&opts) && youtube_id(&url).is_some() {
+    // A download yt-dlp started (the app's reader could not read the page
+    // then) continues in yt-dlp: the app's engine cannot use its files and
+    // would begin again at 0.
+    let ytdlp_started = is_yt && has_ytdlp_partials(&dest);
+    if ytdlp_started {
+        job_log(&opts.log_key, "yt-dlp's unfinished files are here: yt-dlp continues them");
+    }
+    if is_yt && !ytdlp_started && youtube_own_reader_allowed(&opts) && youtube_id(&url).is_some() {
         match crate::youtube::resolve(&client, &opts, &url, &shared).await {
             Ok(hit) => {
                 job_log(&opts.log_key, "read by the app's own YouTube reader");
@@ -5140,7 +5220,7 @@ async fn download_inner(
             }
         }
     }
-    if is_yt && own_hit.is_none() && youtube_ytdlp_first(&opts) {
+    if is_yt && own_hit.is_none() && (youtube_ytdlp_first(&opts) || ytdlp_started) {
         match ensure_ytdlp(&client).await {
             Ok(exe) => {
                 match download_with_ytdlp(&exe, &url, &dest, connections, &opts, &shared).await {
@@ -7434,6 +7514,113 @@ fn valid_ytdlp_output(path: &std::path::Path, dest: &std::path::Path) -> bool {
     matches!((parent(path),parent(dest)),(Some(a),Some(b)) if a==b)
 }
 
+/// yt-dlp reads the page and names the video's file(s) (`-j`); the app's
+/// engine downloads them over every connection, merging picture and sound,
+/// with resume (yt-dlp itself fetches a plain file over one connection).
+/// Errors when there is nothing plain to fetch (pieces of a stream, a live
+/// video): yt-dlp then downloads it itself.
+#[allow(clippy::too_many_arguments)]
+async fn ytdlp_direct(
+    exe: &std::path::Path,
+    url: &str,
+    dest: &PathBuf,
+    format: &str,
+    connections: usize,
+    opts: &EngineOpts,
+    shared: &Arc<SharedState>,
+    cookies: Option<&std::path::Path>,
+    source_ip: Option<std::net::IpAddr>,
+) -> Result<()> {
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.arg("--no-playlist").arg("--no-warnings").arg("-j").arg("-f").arg(format);
+    if let Some(ip) = source_ip {
+        cmd.arg("--source-address").arg(ip.to_string());
+    }
+    if let Some((name, path)) = js_runtime_path() {
+        cmd.arg("--js-runtimes").arg(format!("{name}:{}", path.display()));
+    }
+    if let Some(jar) = cookies {
+        cmd.arg("--cookies").arg(jar);
+    }
+    if !opts.referer.trim().is_empty() {
+        cmd.arg("--referer").arg(opts.referer.trim());
+    }
+    if opts.captured_headers.applies_to(url) {
+        for (name, value) in &opts.captured_headers.headers {
+            cmd.arg("--add-header").arg(format!("{name}:{value}"));
+        }
+    }
+    if let Some(p) = opts.effective_proxy(url) {
+        cmd.arg("--proxy").arg(p);
+    }
+    if opts.impersonate {
+        cmd.arg("--impersonate").arg("chrome");
+    }
+    cmd.arg(url).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    shared.set_phase("Getting info");
+    let out = tokio::time::timeout(std::time::Duration::from_secs(90), cmd.output())
+        .await
+        .map_err(|_| anyhow!("finding the file took too long"))??;
+    if shared.cancelled.load(Ordering::SeqCst) {
+        return Err(anyhow!("cancelled"));
+    }
+    let info: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| anyhow!("yt-dlp named no file"))?;
+    if info.get("is_live").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Err(anyhow!("a live stream"));
+    }
+    let picked: Vec<&serde_json::Value> = match info.get("requested_formats").and_then(|v| v.as_array()) {
+        Some(list) => list.iter().collect(),
+        None => vec![&info],
+    };
+    let plain = |f: &serde_json::Value| -> Option<String> {
+        let proto = f.get("protocol").and_then(|v| v.as_str()).unwrap_or("");
+        (proto == "https" || proto == "http").then(|| f.get("url").and_then(|v| v.as_str()).map(str::to_string)).flatten()
+    };
+    if picked.is_empty() || picked.len() > 2 {
+        return Err(anyhow!("an unusual set of streams"));
+    }
+    let urls: Vec<String> = picked.iter().filter_map(|f| plain(f)).collect();
+    if urls.len() != picked.len() {
+        return Err(anyhow!("a stream made of pieces"));
+    }
+    // The headers yt-dlp would send (its user agent above all): some sites
+    // only serve the file to the client that asked for it.
+    let mut o = opts.clone();
+    if let Some(h) = picked[0].get("http_headers").and_then(|v| v.as_object()) {
+        if let Some(ua) = h.get("User-Agent").and_then(|v| v.as_str()) {
+            o.user_agent = ua.to_string();
+        }
+        if let Some(r) = h.get("Referer").and_then(|v| v.as_str()) {
+            o.referer = r.to_string();
+        }
+    }
+    if let Some(d) = info.get("duration").and_then(|v| v.as_f64()) {
+        o.expected_duration_secs = d.round() as u64;
+    }
+    // The file must answer the app as it answers yt-dlp: one byte first, so
+    // a refusal (YouTube ties some links to yt-dlp's own session) hands
+    // straight back to yt-dlp instead of costing retries.
+    let client = o.build_client()?;
+    let check = o.get(&client, &urls[0]).header(reqwest::header::RANGE, "bytes=0-0").send().await;
+    match check {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => return Err(anyhow!("the file refused the app (HTTP {})", r.status().as_u16())),
+        Err(e) => return Err(anyhow!("the file did not answer ({e})")),
+    }
+    shared.external_helper.store(false, Ordering::SeqCst);
+    job_log(&opts.log_key, format!("yt-dlp found the file; the app downloads it over {} connections", connections.clamp(1, 32)));
+    let mut legs = urls.into_iter();
+    let video = legs.next().unwrap_or_default();
+    let audio = legs.next();
+    download_adaptive_as(video, audio, dest.clone(), connections, o, shared.clone(), true).await
+}
+
 async fn download_with_ytdlp(
     exe: &std::path::Path,
     url: &str,
@@ -7490,12 +7677,32 @@ async fn download_with_ytdlp(
     }
     // Settings → Network: yt-dlp goes out through the same adapter, and does
     // not start while it is down (the kill switch).
-    match crate::netlock::bind_ip() {
+    let source_ip = match crate::netlock::bind_ip() {
         Err(e) => return Err(anyhow!(e)),
-        Ok(Some(ip)) => {
-            cmd.arg("--source-address").arg(ip.to_string());
+        Ok(ip) => ip,
+    };
+    if let Some(ip) = source_ip {
+        cmd.arg("--source-address").arg(ip.to_string());
+    }
+    let format = if wants_audio_only(&opts.quality_pref) {
+        "ba[ext=m4a]/ba/b".to_string()
+    } else if vimeo_needs_audio(url) || opts.require_audio {
+        audio_required_format(&opts.quality_pref, merge_ffmpeg.is_some())
+    } else {
+        ytdlp_format_with(&opts.quality_pref, merge_ffmpeg.is_some())
+    };
+    // yt-dlp fetches a plain video file over one connection. When it only
+    // has to find the file (not convert it, not gather a stream's pieces),
+    // the app downloads what it found over every connection, with resume.
+    if !wants_audio_only(&opts.quality_pref) && !is_playlist_url(url) && !opts.overwrite_existing {
+        match ytdlp_direct(exe, url, dest, &format, connections, opts, shared, jar.as_ref().map(|j| j.0.as_path()), source_ip).await {
+            Ok(()) => return Ok(()),
+            Err(e) if e.to_string() == "cancelled" => return Err(e),
+            Err(e) => {
+                job_log(&opts.log_key, format!("yt-dlp downloads it itself ({e:#})"));
+                shared.external_helper.store(true, Ordering::SeqCst);
+            }
         }
-        Ok(None) => {}
     }
     cmd.arg("--no-playlist")
         .arg("--no-warnings")
@@ -7519,13 +7726,7 @@ async fn download_with_ytdlp(
         .arg("--merge-output-format")
         .arg(if wants_hdr(&opts.quality_pref) { "mkv" } else { "mp4" })
         .arg("-f")
-        .arg(if wants_audio_only(&opts.quality_pref) {
-            "ba[ext=m4a]/ba/b".to_string()
-        } else if vimeo_needs_audio(url) || opts.require_audio {
-            audio_required_format(&opts.quality_pref, merge_ffmpeg.is_some())
-        } else {
-            ytdlp_format_with(&opts.quality_pref, merge_ffmpeg.is_some())
-        })
+        .arg(&format)
         .arg("-o")
         .arg(if wants_audio_only(&opts.quality_pref) {
             // The audio arrives as m4a/webm and becomes .mp3 afterwards:
@@ -7834,18 +8035,35 @@ async fn adaptive_leg(
         // Legs start at zero (fresh work dir), so the counter holds only
         // this attempt's bytes — safe to retry the split downward.
         let mut n = parts;
+        // A refusal from YouTube or Facebook is often for a moment only (a
+        // stream held for its ad, a burst of connections): the split is
+        // tried again before its saved progress is given up for one stream.
+        let mut refusals = 0u32;
         loop {
             match segmented(client, opts, url, leg_dest, total.unwrap(), n, sub.clone(), limiter.clone()).await
             {
                 Ok(()) => return Ok(()),
                 Err(e) => {
+                    job_log(&opts.log_key, format!("{label} part: split download stopped ({e:#})"));
+                    if sub.cancelled.load(Ordering::SeqCst) {
+                        return Err(e);
+                    }
                     if !is_final_http_error(&e) {
                         if let Some(h) = halve_conns(n) {
                             n = h;
                             continue;
                         }
                     }
+                    // Worth waiting for only when there is progress to keep.
+                    if strict && refusals < 3 && sub.downloaded.load(Ordering::SeqCst) > 0 {
+                        refusals += 1;
+                        let wait = [3u64, 6, 10][refusals as usize - 1];
+                        job_log(&opts.log_key, format!("{label} part: trying again in {wait}s, keeping what is downloaded"));
+                        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                        continue;
+                    }
                     if can_chunk {
+                        job_log(&opts.log_key, format!("{label} part: continuing as one stream"));
                         // Stale parts belong to the failed split; the
                         // chunked round rebinds its own offset, and the
                         // counter restarts with it (never double-counts).
@@ -7892,10 +8110,20 @@ pub async fn download_adaptive(
     video_url: String, audio_url: Option<String>, dest: PathBuf, connections: usize,
     opts: EngineOpts, shared: Arc<SharedState>,
 ) -> Result<()> {
+    download_adaptive_as(video_url, audio_url, dest, connections, opts, shared, false).await
+}
+
+/// [`download_adaptive`] for a download that already holds its
+/// destination (`claim_dest_job`): taking it again would refuse itself
+/// ("already downloading elsewhere").
+async fn download_adaptive_as(
+    video_url: String, audio_url: Option<String>, dest: PathBuf, connections: usize,
+    opts: EngineOpts, shared: Arc<SharedState>, claimed: bool,
+) -> Result<()> {
     if opts.expected_duration_secs > 0 { shared.expected_duration.store(opts.expected_duration_secs, Ordering::SeqCst); }
     shared.expects_audio.store(opts.require_audio || audio_url.is_some(), Ordering::SeqCst);
     shared.merged.store(audio_url.is_some(), Ordering::SeqCst);
-    download_adaptive_inner(video_url, audio_url, dest.clone(), connections, opts, shared.clone()).await?;
+    download_adaptive_inner(video_url, audio_url, dest.clone(), connections, opts, shared.clone(), claimed).await?;
     verify_completed_media(&dest, &shared).await?;
     cleanup_completed_job(&dest, &shared);
     Ok(())
@@ -7930,12 +8158,17 @@ async fn download_adaptive_inner(
     connections: usize,
     opts: EngineOpts,
     shared: Arc<SharedState>,
+    claimed: bool,
 ) -> Result<()> {
     let video_url = normalize_media_url(&video_url);
     let audio_url = audio_url.map(|u| normalize_media_url(&u));
-    let _job = claim_dest_job(&dest).ok_or_else(|| {
-        anyhow!("this destination is already downloading elsewhere — wait for it or remove the duplicate queue entry")
-    })?;
+    let _job = if claimed {
+        None
+    } else {
+        Some(claim_dest_job(&dest).ok_or_else(|| {
+            anyhow!("this destination is already downloading elsewhere — wait for it or remove the duplicate queue entry")
+        })?)
+    };
     let client = opts.build_client()?;
     // Merging needs ffmpeg: resolve (and, for the app's own copy, fetch it)
     // BEFORE any bytes move, not after two quarter-gigabyte legs finish.
@@ -9914,6 +10147,40 @@ fn engine_error(url: &str, e: downloadcraft_engine::Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ytdlp_leftovers_go_with_their_download_only() {
+        let dir = std::env::temp_dir().join("dc_ytdlp_leftovers_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let parts = dir.join(PARTS_DIR);
+        std::fs::create_dir_all(&parts).unwrap();
+        let dest = dir.join("Movie.mp4");
+        for f in ["Movie.f399.mp4.part", "Movie.f251.webm.part-Frag3", "Movie.mp4.ytdl"] {
+            std::fs::write(parts.join(f), "x").unwrap();
+        }
+        std::fs::write(dir.join("Movie.mp4.part"), "x").unwrap();
+        // Another download's pieces in the same parts folder stay.
+        std::fs::write(parts.join("Other.f137.mp4.part"), "x").unwrap();
+        assert!(has_ytdlp_partials(&dest));
+        remove_ytdlp_partials(&dest);
+        assert!(!has_ytdlp_partials(&dest));
+        assert!(parts.join("Other.f137.mp4.part").exists());
+        // Once the other one is gone too, the hidden folder goes with it.
+        std::fs::remove_file(parts.join("Other.f137.mp4.part")).unwrap();
+        remove_ytdlp_partials(&dest);
+        assert!(!parts.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stream_made_from_one_file_names_that_file() {
+        assert_eq!(
+            vod_file_url("https://stream.sunplex.net/Movies/S/Spider.Man.mp4/index.m3u8?t=1").as_deref(),
+            Some("https://stream.sunplex.net/Movies/S/Spider.Man.mp4?t=1")
+        );
+        assert_eq!(vod_file_url("https://cdn.example/video/master.m3u8"), None);
+        assert_eq!(vod_file_url("https://cdn.example/a.mp4/seg-1.ts"), None);
+    }
 
     #[test]
     fn a_refused_youtube_probe_still_knows_size_and_ranges() {
