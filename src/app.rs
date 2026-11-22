@@ -4942,7 +4942,7 @@ impl CraftApp {
                 let mut last = -1i32;
                 let zip = crate::selfupdate::download(&client, &asset, move |f| {
                     let pct = (f * 100.0) as i32;
-                    if pct != last && pct % 5 == 0 {
+                    if pct != last {
                         last = pct;
                         let _ = txp.send(SelfUpdMsg::Status(format!("Downloading update… {pct}%")));
                     }
@@ -8743,6 +8743,9 @@ impl eframe::App for CraftApp {
 
         crate::crash::step("checking downloads");
         crate::crash::RUNNING.store(self.tasks.len(), std::sync::atomic::Ordering::Relaxed);
+        if self.selfupd_rx.is_some() || self.update_busy {
+            self.publish_update_state();
+        }
         self.poll_tasks();
         self.poll_verify_jobs();
         crate::crash::step("saving progress");

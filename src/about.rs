@@ -147,6 +147,9 @@ struct AboutApp {
     placed: bool,
     /// A button was pressed: show it at once, before the main window answers.
     pending: Option<(&'static str, Instant)>,
+    /// The progress bar as drawn: it glides to the real value instead of
+    /// jumping from one reading to the next.
+    shown_frac: f32,
     /// The height last asked of the window.
     win_h: f32,
 }
@@ -186,6 +189,7 @@ pub fn run() -> eframe::Result<()> {
         auto: crate::model::ui_pref_bool("update_auto", true),
         placed: false,
         pending: None,
+        shown_frac: 0.0,
         win_h: AH,
     };
     let mut viewport = egui::ViewportBuilder::default()
@@ -216,7 +220,11 @@ impl eframe::App for AboutApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.last_read.elapsed() >= Duration::from_millis(400) {
+        // While something moves (an update downloading, a check), the state
+        // is read often and the window draws smoothly; otherwise at ease.
+        let busy = matches!(self.state.phase.as_str(), "installing" | "checking") || self.pending.is_some();
+        let every = if busy { Duration::from_millis(100) } else { Duration::from_millis(400) };
+        if self.last_read.elapsed() >= every {
             self.last_read = Instant::now();
             let s = read_state();
             // The main window has answered the button: its state wins again.
@@ -257,7 +265,12 @@ impl eframe::App for AboutApp {
                 self.helpers_rx = None;
             }
         }
-        ctx.request_repaint_after(Duration::from_millis(200));
+        if busy {
+            // The spinning ring at the screen's rate (5 frames a second made it stutter).
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
         if !self.placed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if crate::model::center_window(ctx, egui::vec2(AW, AH)) {
@@ -401,13 +414,21 @@ impl AboutApp {
             "installing" => {
                 let frac = percent(&self.state.status);
                 p.stext(egui::pos2(ix, card.min.y + 26.0), egui::Align2::LEFT_CENTER, format!("Updating to {next}"), semi(15.0), t.txt);
+                let installing = self.state.status.contains("Installing") || self.state.status.contains("Checked");
+                let target = if installing { 1.0 } else { frac.unwrap_or(0.0) };
+                // Glide toward the real value (never past it, never back).
+                let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.1);
+                if target < self.shown_frac - 0.2 {
+                    self.shown_frac = target;
+                } else {
+                    self.shown_frac += (target - self.shown_frac).max(0.0) * (1.0 - (-dt * 12.0).exp());
+                }
                 if let Some(f) = frac {
                     p.stext(egui::pos2(card.max.x - 18.0, card.min.y + 26.0), egui::Align2::RIGHT_CENTER, format!("{}%", (f * 100.0).round()), reg(12.5), t.dim);
                 }
                 let track = egui::Rect::from_min_size(egui::pos2(ix, card.min.y + 48.0), egui::vec2(card.width() - 36.0, 8.0));
                 p.rect_filled(track, 4.0, t.bg);
-                let installing = self.state.status.contains("Installing") || self.state.status.contains("Checked");
-                let f = if installing { 1.0 } else { frac.unwrap_or(0.02) };
+                let f = self.shown_frac;
                 p.rect_filled(egui::Rect::from_min_size(track.min, egui::vec2(track.width() * f.max(0.02), 8.0)), 4.0, t.primary);
                 let steps = [
                     ("Download", installing),
