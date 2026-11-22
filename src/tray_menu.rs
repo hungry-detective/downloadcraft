@@ -52,7 +52,7 @@ fn is_dark() -> bool {
 }
 
 /// Windows' own "app mode" (Settings → Personalisation → Colours).
-fn windows_apps_dark() -> bool {
+pub(crate) fn windows_apps_dark() -> bool {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
     let key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0".encode_utf16().collect();
     let val: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();

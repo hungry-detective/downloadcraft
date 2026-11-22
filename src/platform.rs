@@ -849,9 +849,12 @@ pub fn guard_borderless() {
         return;
     }
     // These windows keep Windows' own title bar and frame: leave them whole
-    // (taking their caption off left them without a title bar).
+    // (taking their caption off left them without a title bar), but draw
+    // that frame dark when the app is dark (issue #29: Settings sometimes
+    // opened with a light frame and a white border).
     const FRAMED: [&str; 5] = ["--settings", "--links", "--basket", "--mini", "--torrent-files"];
     if std::env::args().any(|a| FRAMED.contains(&a.as_str())) {
+        keep_frames_dark();
         return;
     }
     unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
@@ -872,7 +875,11 @@ pub fn guard_borderless() {
         // Only the app's own windows: resizable or with a system menu,
         // never popups (menus, tooltips) or child windows.
         let frame = WS_CAPTION | WS_THICKFRAME;
-        if style & (WS_POPUP | WS_CHILD) != 0 || style & WS_SYSMENU == 0 || style & frame == 0 {
+        if style & (WS_POPUP | WS_CHILD) != 0 || style & WS_SYSMENU == 0 {
+            return 1;
+        }
+        hook_frame_off(hwnd);
+        if style & frame == 0 {
             return 1;
         }
         SetWindowLongW(hwnd, GWL_STYLE, (style & !frame) as i32);
@@ -886,6 +893,122 @@ pub fn guard_borderless() {
             // and adjusts this process's own top-level windows.
             unsafe { EnumWindows(Some(each), 0) };
             // Quick while windows are first appearing, then at ease.
+            let wait = if start.elapsed().as_secs() < 5 { 20 } else { 250 };
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+        }
+    });
+}
+
+#[cfg(windows)]
+static FRAME_HOOKS: std::sync::Mutex<Vec<(usize, isize)>> = std::sync::Mutex::new(Vec::new());
+
+/// Keep Windows' frame off a borderless window at the source: winit puts
+/// the caption and resizing frame back whenever the window's state changes
+/// (a file dialog disables it, another program takes the focus), and the
+/// watcher above only took them off again up to 250 ms later. Meanwhile
+/// Windows drew its own title bar over the app's (issue #29: while Add a
+/// theme file, Add torrent or Batch had a dialog open, and a flicker on
+/// Open folder). The window's procedure now strips them from every style
+/// change before it happens, so the frame never shows.
+#[cfg(windows)]
+unsafe fn hook_frame_off(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        if msg == WM_STYLECHANGING && wp as i32 == GWL_STYLE {
+            let ss = lp as *mut STYLESTRUCT;
+            if !ss.is_null() && (*ss).styleNew & (WS_POPUP | WS_CHILD) == 0 {
+                (*ss).styleNew &= !(WS_CAPTION | WS_THICKFRAME);
+            }
+        }
+        let old = FRAME_HOOKS
+            .lock()
+            .ok()
+            .and_then(|h| h.iter().find(|(w, _)| *w == hwnd as usize).map(|(_, p)| *p))
+            .unwrap_or(0);
+        if msg == WM_NCDESTROY {
+            if let Ok(mut h) = FRAME_HOOKS.lock() {
+                h.retain(|(w, _)| *w != hwnd as usize);
+            }
+        }
+        if old == 0 {
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        }
+        // SAFETY: `old` is the window's previous procedure.
+        CallWindowProcW(Some(std::mem::transmute::<isize, unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>(old)), hwnd, msg, wp, lp)
+    }
+    let Ok(mut hooks) = FRAME_HOOKS.lock() else { return };
+    if hooks.iter().any(|(w, _)| *w == hwnd as usize) {
+        return;
+    }
+    let old = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+    if old == 0 || old == proc as usize as isize {
+        return;
+    }
+    // Recorded before the swap, so the first message already finds it.
+    hooks.push((hwnd as usize, old));
+    drop(hooks);
+    if SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as usize as isize) == 0 {
+        if let Ok(mut h) = FRAME_HOOKS.lock() {
+            h.retain(|(w, _)| *w != hwnd as usize);
+        }
+    }
+}
+
+/// Windows' own frame on the app's framed windows (Settings, Download all
+/// links…) follows the app's theme: dark when the app is dark. Set on each
+/// window as it appears, and again when the theme changes.
+#[cfg(windows)]
+fn keep_frames_dark() {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(hwnd: HWND, attr: u32, value: *const core::ffi::c_void, size: u32) -> i32;
+    }
+    static SET: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
+    static WANT_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+    unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid != std::process::id() || IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if style & (WS_POPUP | WS_CHILD) != 0 || style & WS_CAPTION != WS_CAPTION {
+            return 1;
+        }
+        let dark = WANT_DARK.load(std::sync::atomic::Ordering::Relaxed);
+        let Ok(mut set) = SET.lock() else { return 1 };
+        if set.iter().any(|(w, d)| *w == hwnd as usize && *d == dark) {
+            return 1;
+        }
+        set.retain(|(w, _)| *w != hwnd as usize);
+        set.push((hwnd as usize, dark));
+        drop(set);
+        let on: u32 = dark as u32;
+        // 20 since Windows 10 20H1; 19 before it.
+        let attr = if windows_build() >= 18985 { 20 } else { 19 };
+        DwmSetWindowAttribute(hwnd, attr, &on as *const u32 as *const _, 4);
+        // Redraw the frame now, not at the next activation.
+        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        1
+    }
+    let _ = std::thread::Builder::new().name("frame colour".into()).spawn(|| {
+        let start = std::time::Instant::now();
+        let mut theme_at = std::time::Instant::now() - std::time::Duration::from_secs(10);
+        loop {
+            if theme_at.elapsed() >= std::time::Duration::from_secs(2) {
+                theme_at = std::time::Instant::now();
+                let dark = match crate::app::stored_theme().as_str() {
+                    "light" => false,
+                    "dark" | "amoled" => true,
+                    _ => crate::tray_menu::windows_apps_dark(),
+                };
+                WANT_DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
+            }
+            // SAFETY: enumeration of this process's own windows.
+            unsafe { EnumWindows(Some(each), 0) };
             let wait = if start.elapsed().as_secs() < 5 { 20 } else { 250 };
             std::thread::sleep(std::time::Duration::from_millis(wait));
         }
