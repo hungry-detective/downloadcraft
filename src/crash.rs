@@ -144,36 +144,154 @@ pub fn record(info: &std::panic::PanicHookInfo<'_>) {
         .take(12)
         .map(str::to_string)
         .collect();
-    let report = format!(
-        "Download Craft {version}\n\
-         System: {system}\n\
-         Part: {role}\n\
-         Look: {look}\n\
-         Error: {message}\n\
-         Where: {at} (thread {thread})\n\
-         Time: {time}\n\
-         \n\
-         Named stack frames:\n{frames}\n\
-         \n\
-         Recent activity (newest download log, sites only):\n{activity}\n",
-        version = crate::model::APP_VERSION,
-        system = system(),
-        role = role(),
-        look = look(),
-        message = redact(&message),
-        time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %z"),
-        frames = if frames.is_empty() { "(none in this build)".to_string() } else { frames.join("\n") },
-        activity = {
-            let a = recent_activity();
-            if a.is_empty() { "(none)".to_string() } else { a }
-        },
-    );
+    let frames = if frames.is_empty() { "(none in this build)".to_string() } else { frames.join("\n") };
+    let report = compose("crash", &redact(&message), &format!("{at} (thread {thread})"), "Named stack frames", &frames);
     let name = format!("crash-{}.txt", chrono::Local::now().format("%Y%m%d-%H%M%S"));
     let _ = std::fs::write(dir.join(&name), &report);
     let _ = std::fs::write(dir.join("pending.txt"), name);
     if let Some(d) = crate::model::config_dir() {
         let _ = std::fs::write(d.join("crash.log"), &report);
     }
+}
+
+/// A report's text: the same fields for a crash and a freeze.
+fn compose(kind: &str, message: &str, at: &str, extra_head: &str, extra: &str) -> String {
+    format!(
+        "Download Craft {version}\n\
+         Kind: {kind}\n\
+         System: {system}\n\
+         Part: {role}\n\
+         Look: {look}\n\
+         Error: {message}\n\
+         Where: {at}\n\
+         Time: {time}\n\
+         \n\
+         {extra_head}:\n{extra}\n\
+         \n\
+         Recent activity (newest download log, sites only):\n{activity}\n",
+        version = crate::model::APP_VERSION,
+        system = system(),
+        role = role(),
+        look = look(),
+        time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %z"),
+        activity = {
+            let a = recent_activity();
+            if a.is_empty() { "(none)".to_string() } else { a }
+        },
+    )
+}
+
+/// What the window is doing, set as it goes, so a freeze's report can say
+/// which part of a frame it was stuck in.
+static STEP: std::sync::Mutex<&'static str> = std::sync::Mutex::new("starting");
+
+/// How many downloads run (for a freeze's report).
+pub static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Name the part of the window's work that runs next (cheap: one lock).
+pub fn step(what: &'static str) {
+    if let Ok(mut s) = STEP.lock() {
+        *s = what;
+    }
+}
+
+/// A window that has not answered Windows for this long is a freeze
+/// (Windows itself shows "Not responding" after 5 s).
+pub const FREEZE_AFTER: Duration = Duration::from_secs(15);
+
+/// Freeze reports: a watcher thread asks Windows whether this process's
+/// visible windows still answer (`IsHungAppWindow`: no messages handled
+/// for 5 s; a window closed to the tray is parked visible, so it is watched
+/// too). One that
+/// stays silent past [`FREEZE_AFTER`] gets a report like a crash's, naming
+/// the part of the frame it is stuck in. If the window comes back, the
+/// report window opens at once; if the app has to be ended, it opens at the
+/// next start. A sleep of the computer is not a freeze.
+#[cfg(windows)]
+pub fn watch_for_freezes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible};
+    static HUNG: AtomicBool = AtomicBool::new(false);
+    static FOUND: AtomicBool = AtomicBool::new(false);
+    unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        // Only the app's visible windows: hidden helper windows (the
+        // graphics device's, the input method's) never handle messages and
+        // always look "not responding". A window parked in the tray stays
+        // visible (off-screen), so it is still watched.
+        if pid != std::process::id() || IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        FOUND.store(true, Ordering::Relaxed);
+        if IsHungAppWindow(hwnd) != 0 {
+            HUNG.store(true, Ordering::Relaxed);
+            return 0;
+        }
+        1
+    }
+    let _ = std::thread::Builder::new().name("freeze watchdog".into()).spawn(|| {
+        let tick = Duration::from_secs(1);
+        let mut hung_since: Option<std::time::Instant> = None;
+        let mut reported: Option<PathBuf> = None;
+        let mut last = std::time::Instant::now();
+        loop {
+            std::thread::sleep(tick);
+            // The computer slept: the window could not answer meanwhile.
+            let gap = last.elapsed();
+            last = std::time::Instant::now();
+            if gap > tick * 5 {
+                hung_since = None;
+                continue;
+            }
+            HUNG.store(false, Ordering::Relaxed);
+            FOUND.store(false, Ordering::Relaxed);
+            // SAFETY: a plain enumeration with a callback that only reads.
+            unsafe { EnumWindows(Some(each), 0) };
+            let hung = FOUND.load(Ordering::Relaxed) && HUNG.load(Ordering::Relaxed);
+            if hung {
+                // Windows says so after 5 s of silence.
+                let since = *hung_since.get_or_insert_with(|| std::time::Instant::now() - Duration::from_secs(5));
+                if reported.is_none() && since.elapsed() >= FREEZE_AFTER {
+                    reported = record_freeze(since.elapsed());
+                }
+            } else if let Some(since) = hung_since.take() {
+                if let Some(path) = reported.take() {
+                    // It came back: say for how long, and offer it now.
+                    let secs = since.elapsed().as_secs();
+                    if let Ok(mut text) = std::fs::read_to_string(&path) {
+                        text = text.replacen("\nWhere: ", &format!("\nAnswered again after: {secs} s\nWhere: "), 1);
+                        let _ = std::fs::write(&path, text);
+                    }
+                    offer_if_pending();
+                }
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn watch_for_freezes() {}
+
+/// Write a freeze's report (pending, like a crash's).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn record_freeze(for_how_long: Duration) -> Option<PathBuf> {
+    let dir = reports_dir()?;
+    let _ = std::fs::create_dir_all(&dir);
+    let step = STEP.lock().map(|s| *s).unwrap_or("unknown");
+    let report = compose(
+        "freeze",
+        &format!("The window stopped responding for more than {} s", for_how_long.as_secs()),
+        &format!("main window, while {step}"),
+        "What was running",
+        &format!("{} download(s)", RUNNING.load(std::sync::atomic::Ordering::Relaxed)),
+    );
+    let name = format!("freeze-{}.txt", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    let path = dir.join(&name);
+    std::fs::write(&path, &report).ok()?;
+    let _ = std::fs::write(dir.join("pending.txt"), name);
+    Some(path)
 }
 
 /// At start: a crash is waiting to be reported, so open the report window.
@@ -208,7 +326,8 @@ pub(crate) fn issue_url(report: &str) -> String {
         let at = cut.rfind(' ').unwrap_or(cut.len());
         format!("{}…", cut[..at].trim_end_matches([',', ';', ':', ' ']))
     };
-    let title = format!("Crash in {}: {}", crate::model::APP_VERSION, if short.is_empty() { "unexpected error".into() } else { short });
+    let what = if field("Kind") == "freeze" { "Freeze" } else { "Crash" };
+    let title = format!("{what} in {}: {}", crate::model::APP_VERSION, if short.is_empty() { "unexpected error".into() } else { short });
     let mut details = report.to_string();
     // GitHub refuses very long new-issue links.
     if details.chars().count() > 5200 {
@@ -227,7 +346,8 @@ pub(crate) fn issue_url(report: &str) -> String {
             })
             .collect()
     };
-    format!("{REPO}/issues/new?title={}&body={}&labels=crash", enc(&title), enc(&body))
+    let label = if what == "Freeze" { "freeze" } else { "crash" };
+    format!("{REPO}/issues/new?title={}&body={}&labels={label}", enc(&title), enc(&body))
 }
 
 struct CrashApp {
@@ -235,6 +355,8 @@ struct CrashApp {
     report: String,
     error: String,
     part: String,
+    /// The window froze (rather than crashed).
+    freeze: bool,
     details: bool,
     placed: bool,
     height: f32,
@@ -263,7 +385,8 @@ pub fn run() -> eframe::Result<()> {
         .or_else(|| report.lines().skip_while(|l| !l.starts_with("panic:")).nth(1).map(str::to_string))
         .unwrap_or_default();
     let part = field("Part").unwrap_or_else(|| "Download Craft".into());
-    let app = CrashApp { name, report, error, part, details: false, placed: false, height: H_SHORT };
+    let freeze = field("Kind").as_deref() == Some("freeze");
+    let app = CrashApp { name, report, error, part, freeze, details: false, placed: false, height: H_SHORT };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Download Craft — problem report")
         .with_app_id(crate::platform::app_id())
@@ -361,7 +484,7 @@ impl CrashApp {
         p.circle_filled(mark, 20.0, warn.gamma_multiply(0.18));
         p.stext(mark, egui::Align2::CENTER_CENTER, "!", semi(22.0), warn);
         let tx = x0 + 56.0;
-        p.stext(egui::pos2(tx, y + 4.0), egui::Align2::LEFT_TOP, "Download Craft ran into a problem last time", semi(15.5), t.txt);
+        p.stext(egui::pos2(tx, y + 4.0), egui::Align2::LEFT_TOP, if self.freeze { "Download Craft stopped responding" } else { "Download Craft ran into a problem last time" }, semi(15.5), t.txt);
         let what = format!("In the {}", self.part);
         p.stext(egui::pos2(tx, y + 26.0), egui::Align2::LEFT_TOP, &what, reg(12.5), t.dim);
         y += 58.0;

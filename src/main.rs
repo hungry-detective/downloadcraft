@@ -7,6 +7,7 @@ mod aes128;
 mod archive;
 mod app;
 mod basket;
+mod cnl;
 mod cli;
 mod crash;
 mod complete;
@@ -248,6 +249,14 @@ fn main() -> eframe::Result<()> {
     std::thread::spawn(crate::native_host::refresh_site_rules);
     // The last run crashed: offer to report it (once per crash).
     std::thread::spawn(crate::crash::offer_if_pending);
+    // A window that stops answering gets a report too.
+    crate::crash::watch_for_freezes();
+    // Click'n'Load: link sites hand their packages to the app.
+    if crate::cnl::enabled() {
+        if let Err(e) = crate::cnl::start() {
+            eprintln!("Click'n'Load is off: {e}");
+        }
+    }
     let run = |options: eframe::NativeOptions| {
         let rt = rt.clone();
         eframe::run_native(

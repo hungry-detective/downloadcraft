@@ -964,6 +964,7 @@ struct RefreshDlg {
 /// Checkbox identity for manual routing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CheckId {
+    SchedWake,
     CatFold,
     Tray,
     Unlimited,
@@ -2654,6 +2655,14 @@ pub struct CraftApp {
     scheduler_enabled: bool,
     scheduler_time: String,
     scheduler_started: bool,
+    /// Wake the computer from sleep a minute before the scheduled start.
+    scheduler_wake: bool,
+    /// The day (YYYY-MM-DD) the scheduler last started the queue.
+    scheduler_day: String,
+    /// The wake timer is set for this moment (unix seconds).
+    sched_armed_for: Option<i64>,
+    /// The computer is asked to stay awake (downloads are running).
+    awake_on: bool,
     clipboard_rx: std::sync::mpsc::Receiver<String>,
     /// A download link found on the clipboard that is not in the list yet.
     /// It is not shown as a banner (that pushed the list down); instead the
@@ -2949,9 +2958,14 @@ impl CraftApp {
             // fragile-CDN detector still collapses those hosts to one stream.
             connections_default: 12,
             speed_limit_kbps: 0,
-            scheduler_enabled: false,
-            scheduler_time: "02:00".to_string(),
+            // Kept across starts, so a schedule for tonight survives a restart.
+            scheduler_enabled: crate::model::ui_pref_bool("scheduler_enabled", false),
+            scheduler_time: crate::model::ui_pref_str("scheduler_time", "02:00"),
             scheduler_started: false,
+            scheduler_wake: crate::model::ui_pref_bool("scheduler_wake", false),
+            scheduler_day: String::new(),
+            sched_armed_for: None,
+            awake_on: false,
             clipboard_rx: rx,
             clipboard_url: None,
             browser_msg: String::new(),
@@ -3006,7 +3020,7 @@ impl CraftApp {
             antivirus_cmd: String::new(),
             finish_action: "nothing".to_string(),
             extract_auto: false,
-            extract_types: "zip rar 7z".to_string(),
+            extract_types: "zip rar 7z tar".to_string(),
             extract_into_folder: true,
             extract_delete: false,
             category_folders: true,
@@ -3289,6 +3303,11 @@ impl CraftApp {
                 "remove" => self.remove(id),
                 // Download it again from the start (the row's Redownload).
                 "redownload" => self.redownload(id),
+                // Tests only: hold the window for 20 s (a freeze report).
+                "hang" if std::env::var_os("DOWNLOADCRAFT_TEST_HANG").is_some() => {
+                    crate::crash::step("a test hang");
+                    std::thread::sleep(std::time::Duration::from_secs(20));
+                }
                 // A torrent's new choice of files: start it again with it.
                 "restart" => {
                     if self.tasks.contains_key(&id) {
@@ -7340,7 +7359,7 @@ impl CraftApp {
             return;
         };
         if !manual {
-            let wanted = self.extract_types.split_whitespace().any(|k| k.eq_ignore_ascii_case(vol.kind.label()));
+            let wanted = self.extract_types.split_whitespace().any(|k| k.eq_ignore_ascii_case(vol.kind.key()));
             if !self.extract_auto || !wanted {
                 return;
             }
@@ -7368,8 +7387,18 @@ impl CraftApp {
         self.push_log(format!("Extracting {}…", vol.first));
         std::thread::spawn(move || {
             let shown = vol.first.clone();
-            let line = match crate::archive::extract(&first, &dest) {
-                Ok(out) => {
+            // Settings → Archives → Archive passwords: tried in order after
+            // no password; the one that opens it moves to the top.
+            let passwords = archive_passwords();
+            let line = match crate::archive::extract_with(&first, &dest, &passwords) {
+                Ok((out, used)) => {
+                    if let Some(pw) = used {
+                        let mut list = passwords.clone();
+                        list.retain(|p| p.trim() != pw);
+                        list.insert(0, pw);
+                        crate::model::ui_pref_set_str("archive_passwords", &list.join("
+"));
+                    }
                     let mut line = format!("Extracted {} file(s) from {shown} to {}", out.files, out.dest.display());
                     if out.skipped > 0 {
                         line += &format!(" — {} already there, kept", out.skipped);
@@ -7476,14 +7505,55 @@ impl CraftApp {
     }
 
     fn check_scheduler(&mut self) {
-        if !self.scheduler_enabled || self.scheduler_started {
+        // While anything downloads, the computer does not fall asleep (the
+        // display may still turn off): a queue that woke it, or a long night
+        // download, runs to the end.
+        let busy = !self.tasks.is_empty();
+        if busy != self.awake_on {
+            crate::platform::keep_system_awake(busy);
+            self.awake_on = busy;
+        }
+        if !self.scheduler_enabled {
+            if self.sched_armed_for.take().is_some() {
+                crate::platform::cancel_wake_timer();
+            }
             return;
         }
-        let now = chrono::Local::now().format("%H:%M").to_string();
-        if now == self.scheduler_time.trim() {
+        let Some((h, m)) = parse_hhmm(&self.scheduler_time) else { return };
+        let now = chrono::Local::now();
+        let today = now.format("%Y-%m-%d").to_string();
+        let Some(at) = now
+            .date_naive()
+            .and_hms_opt(h, m, 0)
+            .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+        else {
+            return;
+        };
+        // A new day: the scheduler may start the queue again.
+        if self.scheduler_started && !self.scheduler_day.is_empty() && self.scheduler_day != today {
+            self.scheduler_started = false;
+        }
+        // Started at its time, or up to 10 minutes after (the computer may
+        // be waking up, or the app was busy that minute), once a day.
+        if !self.scheduler_started && now >= at && now < at + chrono::Duration::minutes(10) && self.scheduler_day != today {
             self.scheduler_started = true;
+            self.scheduler_day = today;
             self.start_queue();
             self.push_log("Scheduler: queue started.");
+        }
+        // Wake the computer a minute before the next start.
+        if self.scheduler_wake {
+            let next = if now < at { at } else { at + chrono::Duration::days(1) };
+            let wake = (next - chrono::Duration::minutes(1)).timestamp();
+            if self.sched_armed_for != Some(wake) {
+                match crate::platform::arm_wake_timer(wake) {
+                    Ok(()) => self.push_log(format!("Scheduler: the computer wakes at {} to start the queue.", (next - chrono::Duration::minutes(1)).format("%H:%M"))),
+                    Err(e) => self.push_log(format!("Scheduler: could not set the wake-up ({e}).")),
+                }
+                self.sched_armed_for = Some(wake);
+            }
+        } else if self.sched_armed_for.take().is_some() {
+            crate::platform::cancel_wake_timer();
         }
     }
 
@@ -8346,6 +8416,36 @@ fn notify(title: &str, body: &str) {
         .show();
 }
 
+/// "23:30" -> (23, 30); anything else -> None.
+fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.trim().split_once(':')?;
+    let (h, m) = (h.trim().parse::<u32>().ok()?, m.trim().parse::<u32>().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+
+/// The archive passwords saved in Settings, one per line, in trying order.
+/// Add passwords (a Click'n'Load package's) to the saved archive
+/// passwords, first in line; ones already saved move up.
+pub(crate) fn remember_archive_passwords(new: &[String]) {
+    let new: Vec<String> = new.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+    if new.is_empty() {
+        return;
+    }
+    let mut all = new.clone();
+    all.extend(archive_passwords().into_iter().filter(|p| !new.contains(p)));
+    all.truncate(200);
+    crate::model::ui_pref_set_str("archive_passwords", &all.join("\n"));
+}
+
+pub(crate) fn archive_passwords() -> Vec<String> {
+    crate::model::ui_pref_str("archive_passwords", "")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// A single YouTube video (not a playlist or channel page).
 fn is_youtube_video_link(url: &str) -> bool {
     let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
@@ -8623,6 +8723,7 @@ impl eframe::App for CraftApp {
         }
         // Manual pointer routing: snapshot input, then match layout rects
         // recorded below (process_hits runs after all layout, topmost first).
+        crate::crash::step("drawing the window");
         self.man.begin(ctx);
         // Interface size: text, icons and spacing grow together, so nothing
         // laid out by hand drifts from its hit area.
@@ -8640,8 +8741,11 @@ impl eframe::App for CraftApp {
             }
         }
 
+        crate::crash::step("checking downloads");
+        crate::crash::RUNNING.store(self.tasks.len(), std::sync::atomic::Ordering::Relaxed);
         self.poll_tasks();
         self.poll_verify_jobs();
+        crate::crash::step("saving progress");
         self.write_progress_snapshot();
         self.check_scheduler();
         // A Download window's "Download" starts at once: its start request
@@ -8658,9 +8762,11 @@ impl eframe::App for CraftApp {
             for note in crate::native_host::take_extension_notes() {
                 self.push_log(format!("Browser extension: {note}"));
             }
+            crate::crash::step("reading the download list from disk");
             self.watch_ui_state();
             self.merge_queue_from_disk();
             self.check_wake();
+            crate::crash::step("handling requests from other windows");
             self.check_cmd();
             self.publish_update_state();
             self.refresh_speed_limit();
@@ -11131,8 +11237,19 @@ impl eframe::App for CraftApp {
                         self.scheduler_enabled,
                     );
                     self.hits.push((HitKind::Check(CheckId::SchedOn), r));
+                    let before = self.scheduler_time.clone();
                     let r = mtext(ui, "sched_time", &mut self.scheduler_time, "HH:MM", 90.0, false);
                     self.hits.push((HitKind::Field("sched_time"), r));
+                    if self.scheduler_time != before && parse_hhmm(&self.scheduler_time).is_some() {
+                        crate::model::ui_pref_set_str("scheduler_time", self.scheduler_time.trim());
+                    }
+                    let r = mcheck(
+                        ui,
+                        &self.man,
+                        "Wake the computer from sleep to start it",
+                        self.scheduler_wake,
+                    );
+                    self.hits.push((HitKind::Check(CheckId::SchedWake), r));
                     if !sched_fired {
                         ui.small("Waiting for scheduled time…");
                     } else {
@@ -13596,7 +13713,12 @@ impl CraftApp {
                                     if self.speed_limit_kbps == 0 { 1024 } else { 0 }
                             }
                             CheckId::SchedOn => {
-                                self.scheduler_enabled = !self.scheduler_enabled
+                                self.scheduler_enabled = !self.scheduler_enabled;
+                                crate::model::ui_pref_set_bool("scheduler_enabled", self.scheduler_enabled);
+                            }
+                            CheckId::SchedWake => {
+                                self.scheduler_wake = !self.scheduler_wake;
+                                crate::model::ui_pref_set_bool("scheduler_wake", self.scheduler_wake);
                             }
                             CheckId::AddOverwrite => {
                                 self.add_overwrite = !self.add_overwrite

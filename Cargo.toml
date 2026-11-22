@@ -68,7 +68,10 @@ rustybuzz = "0.20.1"
 unicode-segmentation = "1.13.3"
 flate2 = "1"
 # Self-update: unpack the portable release zip.
-zip = { version = "2", default-features = false, features = ["deflate", "deflate64"] }
+zip = { version = "2", default-features = false, features = ["deflate", "deflate64", "aes-crypto"] }
+# .tar, .tar.gz and .tar.xz archives (xz in pure Rust).
+tar = "0.4"
+lzma-rs = "0.3"
 # Extract finished archives: 7z in pure Rust; RAR through the UnRAR reader
 # (extraction only; see NOTICE.md for its licence).
 sevenz-rust2 = { version = "0.24", default-features = false, features = ["aes256", "bzip2", "ppmd"] }
@@ -80,7 +83,7 @@ tray-icon = "0.20"
 # The fallback renderer for PCs whose OpenGL driver cannot open the window
 # (old Intel GPUs on Windows 11): Direct3D 12, or Windows' WARP rasterizer.
 eframe = { version = "0.32", features = ["wgpu"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Registry", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_Graphics_Gdi", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_Debug", "Win32_Security_Cryptography", "Win32_Networking_WinHttp", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Registry", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_Graphics_Gdi", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_Power"] }
 
 [target.'cfg(unix)'.dependencies]
 shlex = "2"

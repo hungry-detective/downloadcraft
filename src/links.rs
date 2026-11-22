@@ -1118,6 +1118,13 @@ pub fn run() -> eframe::Result<()> {
         }
     };
     let prefs = crate::confirm::load_prefs();
+    // A package (Click'n'Load): its archives' passwords are kept for
+    // extracting, and its files go in a folder named after it.
+    crate::app::remember_archive_passwords(&batch.passwords);
+    let package = engine::sanitize_filename(batch.package.trim());
+    let package_dir = (!package.is_empty()).then(|| {
+        std::path::PathBuf::from(&prefs.save_dir).join(&package).to_string_lossy().to_string()
+    });
     let rows = batch
         .links
         .into_iter()
@@ -1142,7 +1149,7 @@ pub fn run() -> eframe::Result<()> {
     );
     let mut app = LinksApp {
         page_url: batch.page_url,
-        title: batch.title,
+        title: if package.is_empty() { batch.title } else { format!("Package: {package}") },
         cookie: batch.cookie,
         rows,
         filter: String::new(),
@@ -1150,8 +1157,8 @@ pub fn run() -> eframe::Result<()> {
         hide_pages: true,
         sort: None,
         anchor: None,
-        by_category: true,
-        one_dir: prefs.save_dir.clone(),
+        by_category: package_dir.is_none(),
+        one_dir: package_dir.unwrap_or_else(|| prefs.save_dir.clone()),
         cols: load_cols(),
         prefs,
         probe_rx: None,

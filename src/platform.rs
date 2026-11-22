@@ -177,6 +177,10 @@ pub fn executable_file(path: &Path) -> bool {
 }
 
 pub fn helper_dir() -> Option<PathBuf> {
+    // Portable: the helpers travel with the program too.
+    if let Some(d) = crate::model::portable_data_dir() {
+        return Some(d.join("bin"));
+    }
     dirs::data_local_dir().map(|d| d.join(crate::model::APP_SLUG).join("bin"))
 }
 
@@ -890,6 +894,63 @@ pub fn guard_borderless() {
 
 #[cfg(not(windows))]
 pub fn guard_borderless() {}
+
+/// Wake the computer from sleep at `unix_secs` (the scheduler's start).
+/// Windows: a resume wake timer, kept for the life of the app. Elsewhere
+/// waking needs root (rtcwake, pmset): not done.
+#[cfg(windows)]
+pub fn arm_wake_timer(unix_secs: i64) -> Result<(), String> {
+    use windows_sys::Win32::System::Threading::{CreateWaitableTimerW, SetWaitableTimer};
+    static TIMER: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    // SAFETY: a plain manual-reset timer, created once and kept open.
+    let h = *TIMER.get_or_init(|| unsafe { CreateWaitableTimerW(std::ptr::null(), 1, std::ptr::null()) } as usize);
+    if h == 0 {
+        return Err("no timer".into());
+    }
+    // Absolute times are 100 ns intervals since 1601-01-01 (UTC).
+    let due: i64 = (unix_secs + 11_644_473_600) * 10_000_000;
+    // SAFETY: valid handle; `due` outlives the call; no completion routine.
+    let ok = unsafe { SetWaitableTimer(h as _, &due, 0, None, std::ptr::null(), 1) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    WAKE_TIMER.store(h, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+#[cfg(windows)]
+static WAKE_TIMER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Stop the wake-up set by [`arm_wake_timer`].
+#[cfg(windows)]
+pub fn cancel_wake_timer() {
+    use windows_sys::Win32::System::Threading::CancelWaitableTimer;
+    let h = WAKE_TIMER.load(std::sync::atomic::Ordering::SeqCst);
+    if h != 0 {
+        // SAFETY: the timer handle created above.
+        unsafe { CancelWaitableTimer(h as _) };
+    }
+}
+
+#[cfg(not(windows))]
+pub fn arm_wake_timer(_unix_secs: i64) -> Result<(), String> {
+    Err("waking the computer is only available on Windows".into())
+}
+
+#[cfg(not(windows))]
+pub fn cancel_wake_timer() {}
+
+/// Keep the computer from going to sleep while `on` (the display may still
+/// turn off). Called from the window's thread.
+#[cfg(windows)]
+pub fn keep_system_awake(on: bool) {
+    use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED};
+    // SAFETY: a plain request about this thread.
+    unsafe { SetThreadExecutionState(if on { ES_CONTINUOUS | ES_SYSTEM_REQUIRED } else { ES_CONTINUOUS }) };
+}
+
+#[cfg(not(windows))]
+pub fn keep_system_awake(_on: bool) {}
 
 /// Move the window under the mouse (a press on a custom title bar).
 ///

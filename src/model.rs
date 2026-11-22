@@ -462,6 +462,7 @@ pub fn base64_encode(data: &[u8]) -> String {
 
 impl DownloadItem {
     pub fn new(id: u64, url: String, filename: String, save_dir: String, connections: usize) -> Self {
+        let filename = fit_name_to_folder(&save_dir, &filename);
         Self {
             id,
             url,
@@ -553,11 +554,11 @@ pub fn category_of(filename: &str) -> &'static str {    let ext = filename
         .to_ascii_lowercase();
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" => "Image",
-        "mp3" | "wav" | "flac" | "ogg" | "m4a" => "Music",
-        "mp4" | "mkv" | "avi" | "mov" | "webm" | "ts" | "m4s" => "Video",
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" | "opus" | "aac" | "wma" | "weba" | "oga" | "aiff" | "alac" | "ape" | "mka" => "Music",
+        "mp4" | "mkv" | "avi" | "mov" | "webm" | "ts" | "m4s" | "m4v" | "flv" | "wmv" | "3gp" | "mpg" | "mpeg" => "Video",
         "pdf" | "doc" | "docx" | "txt" | "epub" => "Document",
-        "zip" | "rar" | "7z" | "tar" | "gz" => "Compressed",
-        "exe" | "msi" => "Apps",
+        "zip" | "rar" | "7z" | "tar" | "gz" | "tgz" | "xz" | "txz" | "bz2" | "zst" => "Compressed",
+        "exe" | "msi" | "msix" | "appx" | "apk" | "dmg" | "deb" | "rpm" | "appimage" => "Apps",
         _ => "Other",
     }
 }
@@ -901,7 +902,87 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
     if let Some(d) = std::env::var_os("DOWNLOAD_CRAFT_DATA").filter(|v| !v.is_empty()) {
         return Some(std::path::PathBuf::from(d));
     }
+    // Portable (a USB stick): everything in `data` next to the program.
+    if let Some(d) = portable_data_dir() {
+        return Some(d);
+    }
+    installed_config_dir()
+}
+
+/// Where an installed copy keeps its settings (AppData).
+pub fn installed_config_dir() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|p| p.join(APP_SLUG))
+}
+
+/// The folder the program itself is in.
+fn program_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe().ok()?.parent().map(std::path::Path::to_path_buf)
+}
+
+/// The marker that makes a copy portable.
+pub const PORTABLE_MARKER: &str = "portable.txt";
+
+/// Portable mode: a `portable.txt` next to the program keeps settings, the
+/// download list and the helpers in a `data` folder beside it (a copy on a
+/// USB stick carries its own, and leaves nothing on the computer's disk).
+/// Checked once per process.
+pub fn portable_data_dir() -> Option<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = program_dir()?;
+        dir.join(PORTABLE_MARKER).is_file().then(|| dir.join("data"))
+    })
+    .clone()
+}
+
+pub fn is_portable() -> bool {
+    portable_data_dir().is_some()
+}
+
+/// Turn portable mode on (copy the settings and list next to the program
+/// and leave the marker) or off (copy them back, remove the marker). Takes
+/// effect when Download Craft next starts. Returns what was done.
+pub fn set_portable(on: bool) -> Result<String, String> {
+    let dir = program_dir().ok_or("the program's folder is unknown")?;
+    let marker = dir.join(PORTABLE_MARKER);
+    let data = dir.join("data");
+    let installed = installed_config_dir().ok_or("no settings folder on this computer")?;
+    if on {
+        std::fs::create_dir_all(&data).map_err(|e| format!("the program's folder cannot be written ({e}); copy Download Craft to a folder or stick you can write to first"))?;
+        copy_tree(&installed, &data, false);
+        std::fs::write(
+            &marker,
+            "Download Craft keeps its settings, download list and helpers in the \"data\" folder next to this file.\r\nDelete this file to use the copy in AppData again.\r\n",
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(format!("Portable: settings and the download list are copied to {}. Restart Download Craft to use them.", data.display()))
+    } else {
+        if data.is_dir() {
+            copy_tree(&data, &installed, true);
+        }
+        std::fs::remove_file(&marker).map_err(|e| e.to_string())?;
+        Ok(format!("Settings and the download list are back in {}. Restart Download Craft to use them.", installed.display()))
+    }
+}
+
+/// Copy a settings folder's files into another (window slots and locks
+/// stay behind). `replace`: newer files overwrite the other side's.
+fn copy_tree(from: &std::path::Path, to: &std::path::Path, replace: bool) {
+    let Ok(rd) = std::fs::read_dir(from) else { return };
+    let _ = std::fs::create_dir_all(to);
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        if n == "win" || n.ends_with(".lock") {
+            continue;
+        }
+        let (src, dst) = (e.path(), to.join(&name));
+        if src.is_dir() {
+            copy_tree(&src, &dst, replace);
+        } else if replace || !dst.exists() {
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
 }
 
 /// Default destination when the OS has no configured Downloads directory.
@@ -1788,6 +1869,7 @@ fn dest_free_of_queue(items: &[DownloadItem], dest: &std::path::Path) -> std::pa
 /// place — new URL/meta, progress reset — and its id is returned, so a
 /// re-click never creates a colliding duplicate.
 pub fn append_to_queue(item: &mut DownloadItem) -> AppendResult {
+    item.filename = fit_name_to_folder(&item.save_dir, &item.filename);
     let _guard = fs_lock("queue");
     if !_guard.owned() { return AppendResult::Error("Queue is busy; retry shortly".into()); }
     let path = match config_dir() {
@@ -1795,6 +1877,49 @@ pub fn append_to_queue(item: &mut DownloadItem) -> AppendResult {
         None => return AppendResult::Error("no config directory".to_string()),
     };
     append_to_queue_at(&path, item)
+}
+
+/// Room kept for the files a download writes beside its name while it
+/// runs: `<name>.dcwork\part-NN`, or yt-dlp's
+/// `.download_craft_parts\<name>.f137.mp4.part`.
+const PATH_SPARE: usize = 40;
+
+/// Windows refuses a path past 260 characters (MAX_PATH) unless long paths
+/// are turned on: a long video title in a deep folder failed to save. The
+/// name is shortened to fit (extension and a closing " [1080p]" tag kept),
+/// down to 24 characters; elsewhere it is left alone.
+pub fn fit_name_to_folder(dir: &str, name: &str) -> String {
+    if !cfg!(windows) {
+        return name.to_string();
+    }
+    let dir_len = dir.trim_end_matches(['\\', '/']).encode_utf16().count() + 1;
+    let room = 259usize.saturating_sub(dir_len + PATH_SPARE);
+    let len = name.encode_utf16().count();
+    if len <= room {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(d) if d > 0 && name.len() - d <= 12 => name.split_at(d),
+        _ => (name, ""),
+    };
+    let (stem, tag) = match stem.rfind(" [") {
+        Some(i) if stem.ends_with(']') && stem.len() - i <= 24 => stem.split_at(i),
+        _ => (stem, ""),
+    };
+    let keep = room.max(24).saturating_sub(ext.encode_utf16().count() + tag.encode_utf16().count());
+    let mut used = 0;
+    let cut: String = stem
+        .chars()
+        .take_while(|c| {
+            used += c.len_utf16();
+            used <= keep
+        })
+        .collect();
+    let cut = cut.trim_end();
+    if cut.is_empty() {
+        return name.to_string();
+    }
+    format!("{cut}{tag}{ext}")
 }
 
 /// Add a download that already finished elsewhere (the browser extension's
@@ -2075,6 +2200,21 @@ mod mime_ext_tests {
         assert_eq!(with_mime_ext("v1.2 release notes", "application/pdf"), "v1.2 release notes.pdf");
         assert_eq!(with_mime_ext("blob", "application/octet-stream"), "blob");
         assert_eq!(with_mime_ext("", "image/png"), "");
+    }
+}
+
+#[cfg(test)]
+mod path_fit_tests {
+    #[test]
+    #[cfg(windows)]
+    fn a_long_title_fits_under_max_path() {
+        let dir = format!("C:\\Users\\someone\\{}", "Deep Folder\\".repeat(8));
+        let name = format!("{} [1080p].mp4", "A very long video title ".repeat(12));
+        let fit = super::fit_name_to_folder(&dir, &name);
+        let full = std::path::Path::new(&dir).join(&fit);
+        assert!(full.to_string_lossy().len() + super::PATH_SPARE <= 259, "{fit}");
+        assert!(fit.ends_with(" [1080p].mp4"), "{fit}");
+        assert_eq!(super::fit_name_to_folder("C:\\Downloads", "short.zip"), "short.zip");
     }
 }
 

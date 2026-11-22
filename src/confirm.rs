@@ -741,6 +741,30 @@ impl ConfirmApp {
         }
     }
 
+    /// The name the file will really get when one of its name is already
+    /// in the folder (checked when the name or folder changes, not every
+    /// frame).
+    fn name_taken_as(&self) -> Option<String> {
+        thread_local! {
+            static LAST: std::cell::RefCell<(String, Option<String>)> = const { std::cell::RefCell::new((String::new(), None)) };
+        }
+        let name = engine::sanitize_filename(self.filename.trim());
+        if self.filename.trim().is_empty() {
+            return None;
+        }
+        let dest = std::path::Path::new(&self.effective_dir()).join(&name);
+        let key = dest.to_string_lossy().to_string();
+        LAST.with(|l| {
+            let mut l = l.borrow_mut();
+            if l.0 != key {
+                let free = crate::model::conflict_free_dest(&dest);
+                l.1 = (free != dest).then(|| free.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                l.0 = key;
+            }
+            l.1.clone()
+        })
+    }
+
     /// The row this dialog describes (name, folder, links and session).
     fn build_item(&self) -> DownloadItem {
         let filename = if self.filename.trim().is_empty() { filename_from_url(&self.url) } else { self.filename.clone() };
@@ -1699,6 +1723,18 @@ impl eframe::App for ConfirmApp {
                 "Filename",
                 false,
             );
+            // A file of this name is already in the folder: say so (it is
+            // saved as "name (1)", never over the old one) instead of
+            // renaming without a word.
+            if let Some(taken_as) = self.name_taken_as() {
+                let mark = egui::Rect::from_center_size(egui::pos2(file_box.max.x - 26.0, file_box.center().y), egui::Vec2::splat(18.0));
+                let warn = egui::Color32::from_rgb(0xE0, 0x9A, 0x2B);
+                p.circle_filled(mark.center(), 8.0, warn.gamma_multiply(0.18));
+                p.text(mark.center(), egui::Align2::CENTER_CENTER, "!", crate::fonts::semi(12.0), warn);
+                ui.interact(mark, egui::Id::new("popup-name-taken"), egui::Sense::hover()).on_hover_text(format!(
+                    "A file with this name is already in this folder. It will be saved as \"{taken_as}\" and the old one is kept. Change the name to choose another."
+                ));
+            }
             let r_b = ui
                 .interact(refr_btn, egui::Id::new("popup-refresh"), egui::Sense::click())
                 .on_hover_text("Check the size and file name again");

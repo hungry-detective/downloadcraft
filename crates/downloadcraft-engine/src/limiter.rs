@@ -89,8 +89,68 @@ impl RateLimiter {
                 0.0
             }
         };
-        if wait_secs > 0.0 {
-            tokio::time::sleep(std::time::Duration::from_secs_f64(wait_secs)).await;
+        if wait_secs <= 0.0 {
+            return;
         }
+        // Wait in short steps: a limit raised (or lifted) meanwhile takes
+        // effect at once. At 1 KB/s one 64 KB chunk owed a minute's sleep,
+        // and Unlimited only reached the download after it.
+        let step = std::time::Duration::from_millis(250);
+        let mut limit = limit;
+        let mut left = std::time::Duration::from_secs_f64(wait_secs);
+        while !left.is_zero() {
+            let nap = left.min(step);
+            tokio::time::sleep(nap).await;
+            left -= nap;
+            let now_limit = self.effective_limit();
+            if now_limit == limit {
+                continue;
+            }
+            let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let (ref mut tokens, ref mut last) = *g;
+            if now_limit == 0 {
+                // Unlimited: what was owed is forgiven.
+                *tokens = 0.0;
+                *last = std::time::Instant::now();
+                return;
+            }
+            // What is still owed, paid at the new rate.
+            let owed = left.as_secs_f64() * limit as f64;
+            *tokens = tokens.max(-owed);
+            left = std::time::Duration::from_secs_f64(owed / now_limit as f64);
+            limit = now_limit;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lifting_the_limit_ends_a_long_wait_at_once() {
+        let global = Arc::new(AtomicU64::new(1024));
+        let lim = Arc::new(RateLimiter::new(0).with_global(Some(global.clone())));
+        // 64 KB at 1 KB/s owes about a minute.
+        let l2 = lim.clone();
+        let t = std::time::Instant::now();
+        let wait = tokio::spawn(async move { l2.consume(64 * 1024).await });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        global.store(u64::MAX, Ordering::SeqCst);
+        wait.await.unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    #[tokio::test]
+    async fn raising_the_limit_shortens_the_wait() {
+        let global = Arc::new(AtomicU64::new(1024));
+        let lim = Arc::new(RateLimiter::new(0).with_global(Some(global.clone())));
+        let l2 = lim.clone();
+        let t = std::time::Instant::now();
+        let wait = tokio::spawn(async move { l2.consume(64 * 1024).await });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        global.store(1024 * 1024, Ordering::SeqCst);
+        wait.await.unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
     }
 }

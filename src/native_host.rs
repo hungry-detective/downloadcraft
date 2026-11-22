@@ -124,6 +124,12 @@ pub struct LinksBatch {
     #[serde(default)]
     pub cookie: String,
     pub links: Vec<PageLink>,
+    /// Click'n'Load: the package's name (its links go in a folder of that
+    /// name) and the passwords of its archives.
+    #[serde(default)]
+    pub package: String,
+    #[serde(default)]
+    pub passwords: Vec<String>,
 }
 
 /// Validate a page's links and keep the downloadable ones (http/https,
@@ -145,6 +151,8 @@ pub fn links_batch(page_url: &str, title: &str, cookie: &str, links: &[PageLink]
         title: title.chars().filter(|c| !c.is_control()).take(200).collect(),
         cookie: cookie.to_string(),
         links: kept,
+        package: String::new(),
+        passwords: Vec::new(),
     }
 }
 
@@ -160,14 +168,18 @@ fn spawn_links(msg: &Incoming) -> Result<(), String> {
 /// The "pick links" window for any list of links (download all links, batch
 /// patterns, dropped lists).
 pub fn open_links_window(page: &str, title: &str, cookie: &str, links: &[PageLink]) -> Result<(), String> {
-    let batch = links_batch(page, title, cookie, links);
+    open_links_batch(&links_batch(page, title, cookie, links))
+}
+
+/// The "pick links" window for a checked batch (a package, too).
+pub fn open_links_batch(batch: &LinksBatch) -> Result<(), String> {
     if batch.links.is_empty() {
         return Err("no downloadable links on this page".into());
     }
     let dir = crate::model::config_dir().ok_or_else(|| "no config dir".to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("links_{}.json", chrono::Local::now().timestamp_millis()));
-    let json = serde_json::to_string(&batch).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string(batch).map_err(|e| e.to_string())?;
     crate::model::atomic_write(&path, json.as_bytes()).map_err(|e| e.to_string())?;
     let exe = crate::platform::launch_path().map_err(|e| e.to_string())?;
     let mut cmd = std::process::Command::new(exe);

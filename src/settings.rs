@@ -131,6 +131,8 @@ struct Settings {
     extract_types: String,
     extract_into_folder: bool,
     extract_delete: bool,
+    /// Archive passwords, one per line, tried in order.
+    archive_passwords: String,
     /// Pop the standalone "Download complete" dialog when a transfer ends.
     show_complete: bool,
     /// Pop a standalone IDM-style progress window when a download starts.
@@ -255,6 +257,7 @@ impl Default for Settings {
             extract_types: "zip rar 7z".to_string(),
             extract_into_folder: true,
             extract_delete: false,
+            archive_passwords: String::new(),
             show_complete: true,
             progress_windows: true,
             double_click_opens: false,
@@ -369,6 +372,9 @@ fn load() -> Settings {
     }
     if let Some(b) = g("extract_into_folder").and_then(|x| x.as_bool()) {
         s.extract_into_folder = b;
+    }
+    if let Some(v) = g("archive_passwords").and_then(|x| x.as_str()) {
+        s.archive_passwords = v.to_string();
     }
     if let Some(b) = g("extract_delete").and_then(|x| x.as_bool()) {
         s.extract_delete = b;
@@ -646,6 +652,7 @@ fn save(s: &Settings) -> bool {
     set(obj, "extract_types", s.extract_types.clone().into());
     set(obj, "extract_into_folder", s.extract_into_folder.into());
     set(obj, "extract_delete", s.extract_delete.into());
+    set(obj, "archive_passwords", s.archive_passwords.trim().into());
     set(obj, "ffmpeg_custom_path", s.ffmpeg_custom_path.clone().into());
     set(obj, "show_complete", s.show_complete.into());
     set(obj, "progress_windows", s.progress_windows.into());
@@ -722,6 +729,8 @@ struct SettingsApp {
     /// General, a page opened over it (look, helpers, updates, remote).
     idm_page: usize,
     idm_sub: Option<usize>,
+    /// What turning portable mode on or off did (shown under the switch).
+    portable_note: Option<String>,
     idm: IdmState,
     /// "Find a setting": what is typed, and whether the index of every
     /// page's settings has to be built (on the next frame).
@@ -908,6 +917,7 @@ pub fn run() -> eframe::Result<()> {
         .filter(|p| *p < PANES.len())
         .unwrap_or(0);
     let app = SettingsApp {
+        portable_note: None,
         pane,
         idm_page: std::env::var("DOWNLOAD_CRAFT_OPTIONS_PAGE").ok().and_then(|v| v.parse().ok()).filter(|p: &usize| *p < 9).unwrap_or(0),
         idm_sub: None,
@@ -4815,6 +4825,32 @@ impl SettingsApp {
             self.s.system_title_bar = os_caption;
         }
 
+        // ---- Portable (a USB stick) ----
+        {
+            let was = crate::model::is_portable() || self.portable_note.as_deref().is_some_and(|n| n.starts_with("Portable:"));
+            let mut portable = was;
+            let mut open_portable = true;
+            card(ui, "Portable", None, &mut open_portable, |ui| {
+                switch_row(
+                    ui,
+                    "portable",
+                    &mut portable,
+                    "Keep everything next to the program",
+                    "Settings, the download list and the helpers live in a data folder beside download_craft.exe, so a copy on a USB stick carries its own and leaves nothing on the computer.",
+                );
+                if let Some(note) = &self.portable_note {
+                    ui.add_space(4.0);
+                    hint(ui, note);
+                }
+            });
+            if portable != was {
+                self.portable_note = Some(match crate::model::set_portable(portable) {
+                    Ok(done) => done,
+                    Err(e) => format!("Could not change it: {e}"),
+                });
+            }
+        }
+
         // ---- Clipboard (issue #24: off for those who keep secrets there) ----
         {
             let mut watch = self.s.watch_clipboard;
@@ -5192,12 +5228,12 @@ impl SettingsApp {
                 ui.add_space(6.0);
                 let mut c = field_row(ui, "extract_types", "Archive types", None, None);
                 c.horizontal(|ui| {
-                    for (kind, key) in [("ZIP", "zip"), ("RAR", "rar"), ("7z", "7z")] {
+                    for (kind, key) in [("ZIP", "zip"), ("RAR", "rar"), ("7z", "7z"), ("TAR", "tar")] {
                         let had = s.extract_types.split_whitespace().any(|k| k.eq_ignore_ascii_case(key));
                         let mut on = had;
                         checkbox(ui, &mut on, kind, 14.0, 11.5, true);
                         if on != had {
-                            let kinds: Vec<&str> = ["zip", "rar", "7z"]
+                            let kinds: Vec<&str> = ["zip", "rar", "7z", "tar"]
                                 .into_iter()
                                 .filter(|k| {
                                     if *k == key {
@@ -5223,6 +5259,15 @@ impl SettingsApp {
                     &mut s.extract_delete,
                     "Delete the archive afterwards",
                     "Only when every file came out; an archive with files that were already there is kept.",
+                );
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new("Archive passwords").font(reg(11.5)).color(tok().text));
+                ui.add_space(4.0);
+                c_multi(ui, "archive_passwords", &mut s.archive_passwords, 3);
+                ui.add_space(4.0);
+                hint(
+                    ui,
+                    "One per line. A protected archive is tried with each in turn; the one that opens it moves to the top. They stay on this computer.",
                 );
             }
         });
@@ -6002,6 +6047,17 @@ impl SettingsApp {
                 "Take over browser downloads",
                 "The browser's download is paused, handed to the app, and resumed in the browser if the app cannot take it.",
             );
+            ui.add_space(6.0);
+            let mut cnl = crate::model::ui_pref_bool("click_n_load", true);
+            if switch_row(
+                ui,
+                "cap_cnl",
+                &mut cnl,
+                "Click'n'Load",
+                "Link sites with a Click'n'Load button hand their whole package to Download Craft (port 9666, this computer only). The links open for you to check; archive passwords are saved. Takes effect at the next start.",
+            ) {
+                crate::model::ui_pref_set_bool("click_n_load", cnl);
+            }
             ui.add_space(6.0);
             let mut c = field_row(ui, "cap_types", "File types", None, Some("Empty = every download. Example: zip rar 7z exe msi iso mp4 mkv mp3 pdf"));
             let w = c.available_width();

@@ -1,4 +1,5 @@
-//! Extract finished archives: ZIP, RAR (including multi-part sets) and 7z.
+//! Extract finished archives: ZIP, RAR (including multi-part sets), 7z and
+//! tar (plain, .tar.gz / .tgz, .tar.xz / .txz).
 //!
 //! Extraction only ever writes inside the folder it was given:
 //!
@@ -9,7 +10,9 @@
 //!   plain reason, so a "zip bomb" cannot fill the disk;
 //! * nothing that comes out is ever run.
 //!
-//! Password-protected archives are reported as such and left alone.
+//! A password-protected archive is tried without a password, then with each
+//! saved password (Settings, Archive passwords); the one that opens it is
+//! reported so it can move to the top. None fitting: reported as protected.
 
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -24,14 +27,19 @@ pub enum Kind {
     Zip,
     Rar,
     SevenZ,
+    Tar,
+    TarGz,
+    TarXz,
 }
 
 impl Kind {
-    pub fn label(self) -> &'static str {
+    /// The word Settings uses for this kind's "extract it" switch.
+    pub fn key(self) -> &'static str {
         match self {
-            Kind::Zip => "ZIP",
-            Kind::Rar => "RAR",
+            Kind::Zip => "zip",
+            Kind::Rar => "rar",
             Kind::SevenZ => "7z",
+            Kind::Tar | Kind::TarGz | Kind::TarXz => "tar",
         }
     }
 }
@@ -62,7 +70,13 @@ pub fn volume_of(name: &str) -> Option<Volume> {
     let lower = name.to_ascii_lowercase();
     let (stem, ext) = lower.rsplit_once('.')?;
     let orig_stem = &name[..stem.len()];
+    let single = |kind| Some(Volume { kind, first: name.to_string(), set: None });
     match ext {
+        "tar" => single(Kind::Tar),
+        "tgz" => single(Kind::TarGz),
+        "txz" => single(Kind::TarXz),
+        "gz" if stem.ends_with(".tar") => single(Kind::TarGz),
+        "xz" if stem.ends_with(".tar") => single(Kind::TarXz),
         "zip" => Some(Volume { kind: Kind::Zip, first: name.to_string(), set: None }),
         "7z" => Some(Volume { kind: Kind::SevenZ, first: name.to_string(), set: None }),
         "rar" => match split_part(orig_stem) {
@@ -103,6 +117,10 @@ pub fn destination(archive: &Path, into_folder: bool) -> PathBuf {
     }
     let file = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut stem = file.rsplit_once('.').map(|(s, _)| s.to_string()).unwrap_or(file.clone());
+    // "name.tar.gz" -> "name".
+    if stem.to_ascii_lowercase().ends_with(".tar") {
+        stem.truncate(stem.len() - 4);
+    }
     if let Some((base, _)) = split_part(&stem) {
         stem = base.to_string();
     }
@@ -161,7 +179,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Password => write!(f, "it is password-protected (extract it yourself with the password)"),
+            Error::Password => write!(f, "it is password-protected and none of the saved passwords opens it (Settings, Archives, Archive passwords)"),
             Error::Limit(s) => write!(f, "{s}"),
             Error::Broken(s) => write!(f, "the archive could not be read ({s})"),
             Error::Io(s) => write!(f, "{s}"),
@@ -196,6 +214,8 @@ impl Outcome {
 struct Budget {
     out: Outcome,
     entries: usize,
+    /// Files this attempt wrote, removed again when its password was wrong.
+    written: Vec<PathBuf>,
 }
 
 impl Budget {
@@ -256,6 +276,7 @@ impl Budget {
             Ok(n) => {
                 self.out.bytes += n;
                 self.out.files += 1;
+                self.written.push(path.to_path_buf());
                 Ok(())
             }
             Err(e) => {
@@ -266,36 +287,67 @@ impl Budget {
     }
 }
 
-/// Extract `archive` into `dest` (created when missing).
+/// Extract `archive` into `dest` (created when missing), without a password.
 pub fn extract(archive: &Path, dest: &Path) -> Result<Outcome, Error> {
+    extract_with(archive, dest, &[]).map(|(out, _)| out)
+}
+
+/// Extract `archive` into `dest`, trying no password first and then each of
+/// `passwords` in order. Returns what came out and the password that fitted
+/// (`None`: none was needed).
+pub fn extract_with(archive: &Path, dest: &Path, passwords: &[String]) -> Result<(Outcome, Option<String>), Error> {
     let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let vol = volume_of(&name).ok_or_else(|| Error::Broken("not a ZIP, RAR or 7z file".into()))?;
+    let vol = volume_of(&name).ok_or_else(|| Error::Broken("not a ZIP, RAR, 7z or tar file".into()))?;
     let start = archive.with_file_name(&vol.first);
     if !start.is_file() {
         return Err(Error::Io(format!("{} is missing", vol.first)));
     }
     std::fs::create_dir_all(dest)?;
-    let mut b = Budget { out: Outcome { dest: dest.to_path_buf(), ..Outcome::default() }, entries: 0 };
-    match vol.kind {
-        Kind::Zip => zip_extract(&start, &mut b)?,
-        Kind::SevenZ => sevenz_extract(&start, &mut b)?,
-        Kind::Rar => rar_extract(&start, &mut b)?,
+    let tries = std::iter::once(None).chain(
+        passwords.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).map(Some),
+    );
+    for pw in tries {
+        let mut b = Budget { out: Outcome { dest: dest.to_path_buf(), ..Outcome::default() }, entries: 0, written: Vec::new() };
+        let res = match vol.kind {
+            Kind::Zip => zip_extract(&start, &mut b, pw),
+            Kind::SevenZ => sevenz_extract(&start, &mut b, pw),
+            Kind::Rar => rar_extract(&start, &mut b, pw),
+            // A tar has no password: one try.
+            Kind::Tar | Kind::TarGz | Kind::TarXz => return tar_extract(&start, vol.kind, &mut b).map(|()| (b.out, None)),
+        };
+        match res {
+            Ok(()) => return Ok((b.out, pw.map(str::to_string))),
+            Err(Error::Password) => {
+                // A wrong password may have let the unencrypted entries out:
+                // they go, or the next try would find them "already there".
+                for f in b.written.iter().rev() {
+                    let _ = std::fs::remove_file(f);
+                }
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
     }
-    Ok(b.out)
+    Err(Error::Password)
 }
 
-fn zip_extract(path: &Path, b: &mut Budget) -> Result<(), Error> {
+fn zip_extract(path: &Path, b: &mut Budget, pw: Option<&str>) -> Result<(), Error> {
     let file = std::fs::File::open(path)?;
     let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(|e| Error::Broken(e.to_string()))?;
     for i in 0..zip.len() {
-        let mut entry = match zip.by_index(i) {
+        let opened = match pw {
+            Some(p) => zip.by_index_decrypt(i, p.as_bytes()),
+            None => zip.by_index(i),
+        };
+        let mut entry = match opened {
             Ok(e) => e,
+            Err(zip::result::ZipError::InvalidPassword) => return Err(Error::Password),
             Err(zip::result::ZipError::UnsupportedArchive(m)) if m.contains("ncrypt") || m.contains("assword") => {
                 return Err(Error::Password)
             }
             Err(e) => return Err(Error::Broken(e.to_string())),
         };
-        if entry.encrypted() {
+        if entry.encrypted() && pw.is_none() {
             return Err(Error::Password);
         }
         let name = entry.name().to_string();
@@ -316,13 +368,14 @@ fn zip_extract(path: &Path, b: &mut Budget) -> Result<(), Error> {
     Ok(())
 }
 
-fn sevenz_extract(path: &Path, b: &mut Budget) -> Result<(), Error> {
+fn sevenz_extract(path: &Path, b: &mut Budget, pw: Option<&str>) -> Result<(), Error> {
     use sevenz_rust2::{ArchiveReader, Error as SzError, Password};
     let map = |e: SzError| match e {
         SzError::PasswordRequired | SzError::MaybeBadPassword(_) => Error::Password,
         e => Error::Broken(e.to_string()),
     };
-    let mut reader = ArchiveReader::open(path, Password::empty()).map_err(map)?;
+    let password = pw.map(Password::from).unwrap_or_else(Password::empty);
+    let mut reader = ArchiveReader::open(path, password).map_err(map)?;
     let total: u64 = reader.archive().files.iter().map(|f| f.size).sum();
     b.declared(total)?;
     let mut failure: Option<Error> = None;
@@ -360,7 +413,7 @@ fn sevenz_extract(path: &Path, b: &mut Budget) -> Result<(), Error> {
     res.map_err(map)
 }
 
-fn rar_extract(path: &Path, b: &mut Budget) -> Result<(), Error> {
+fn rar_extract(path: &Path, b: &mut Budget, pw: Option<&str>) -> Result<(), Error> {
     let broken = |e: unrar::error::UnrarError| {
         if matches!(e.code, unrar::error::Code::MissingPassword | unrar::error::Code::BadPassword) {
             Error::Password
@@ -368,13 +421,17 @@ fn rar_extract(path: &Path, b: &mut Budget) -> Result<(), Error> {
             Error::Broken(e.to_string())
         }
     };
-    let mut arc = unrar::Archive::new(path).open_for_processing().map_err(broken)?;
-    if arc.has_encrypted_headers() {
+    let opened = match pw {
+        Some(p) => unrar::Archive::with_password(path, p).open_for_processing(),
+        None => unrar::Archive::new(path).open_for_processing(),
+    };
+    let mut arc = opened.map_err(broken)?;
+    if arc.has_encrypted_headers() && pw.is_none() {
         return Err(Error::Password);
     }
     while let Some(header) = arc.read_header().map_err(broken)? {
         let entry = header.entry();
-        if entry.is_encrypted() {
+        if entry.is_encrypted() && pw.is_none() {
             return Err(Error::Password);
         }
         let name = entry.filename.to_string_lossy().into_owned();
@@ -405,6 +462,61 @@ fn rar_extract(path: &Path, b: &mut Budget) -> Result<(), Error> {
     Ok(())
 }
 
+/// A tar, plain or compressed. Only files and folders come out: links (a
+/// way to write outside the folder) are refused and counted.
+fn tar_extract(path: &Path, kind: Kind, b: &mut Budget) -> Result<(), Error> {
+    let file = std::io::BufReader::new(std::fs::File::open(path)?);
+    // .xz has no streaming reader here: it is unpacked to a hidden file next
+    // to the output first, read as a tar, then removed.
+    let mut unpacked: Option<PathBuf> = None;
+    let reader: Box<dyn Read> = match kind {
+        Kind::TarGz => Box::new(flate2::read::GzDecoder::new(file)),
+        Kind::TarXz => {
+            let tmp = b.out.dest.join(".download_craft_untar.tmp");
+            let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            let mut input = file;
+            lzma_rs::xz_decompress(&mut input, &mut out).map_err(|e| Error::Broken(e.to_string()))?;
+            out.flush()?;
+            drop(out);
+            unpacked = Some(tmp.clone());
+            Box::new(std::io::BufReader::new(std::fs::File::open(&tmp)?))
+        }
+        _ => Box::new(file),
+    };
+    let res = (|| -> Result<(), Error> {
+        let mut tar = tar::Archive::new(reader);
+        for entry in tar.entries().map_err(|e| Error::Broken(e.to_string()))? {
+            let mut entry = entry.map_err(|e| Error::Broken(e.to_string()))?;
+            let name = entry.path().map_err(|e| Error::Broken(e.to_string()))?.to_string_lossy().into_owned();
+            match entry.header().entry_type() {
+                tar::EntryType::Directory => {
+                    b.entry()?;
+                    match safe_join(&b.out.dest, &name) {
+                        Some(dir) => std::fs::create_dir_all(dir)?,
+                        None => b.out.refused += 1,
+                    }
+                }
+                tar::EntryType::Regular | tar::EntryType::Continuous => {
+                    b.declared(entry.header().size().unwrap_or(0))?;
+                    if let Some(target) = b.target(&name)? {
+                        b.write(&target, &mut entry)?;
+                    }
+                }
+                // Links, devices, metadata records: never written.
+                _ => {
+                    b.entry()?;
+                    b.out.refused += 1;
+                }
+            }
+        }
+        Ok(())
+    })();
+    if let Some(tmp) = unpacked {
+        let _ = std::fs::remove_file(tmp);
+    }
+    res
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,7 +534,12 @@ mod tests {
         assert_eq!(volume_of("x.part2.rar").unwrap().first, "x.part1.rar");
         assert!(in_set("big.set.part1.rar", "big.set.part"));
         assert!(!in_set("other.part1.rar", "big.set.part"));
-        for n in ["a.tar", "a.zipx", "a", "notes.r", "a.rev"] {
+        assert_eq!(volume_of("a.tar").unwrap().kind, Kind::Tar);
+        assert_eq!(volume_of("A.TAR.GZ").unwrap().kind, Kind::TarGz);
+        assert_eq!(volume_of("a.tgz").unwrap().kind, Kind::TarGz);
+        assert_eq!(volume_of("a.tar.xz").unwrap().kind, Kind::TarXz);
+        assert_eq!(destination(Path::new("/d/Pack.tar.gz"), true).file_name().unwrap(), "Pack");
+        for n in ["a.zipx", "a", "notes.r", "a.rev", "a.gz", "a.xz"] {
             assert_eq!(volume_of(n), None, "{n}");
         }
     }
@@ -490,6 +607,51 @@ mod tests {
         assert_eq!(out.files, 2);
         assert_eq!(std::fs::read(d.join("out").join("a.txt")).unwrap(), b"alpha");
         assert_eq!(std::fs::read(d.join("out").join("inner").join("b.txt")).unwrap().len(), 70_000);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn tar_gz_extracts_and_refuses_links() {
+        let d = tmp("targz");
+        let archive = d.join("Pack.tar.gz");
+        {
+            let gz = flate2::write::GzEncoder::new(std::fs::File::create(&archive).unwrap(), flate2::Compression::fast());
+            let mut t = tar::Builder::new(gz);
+            let data = b"hello tar";
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            t.append_data(&mut h, "inner/hello.txt", &data[..]).unwrap();
+            let mut l = tar::Header::new_gnu();
+            l.set_entry_type(tar::EntryType::Symlink);
+            l.set_size(0);
+            l.set_cksum();
+            t.append_link(&mut l, "escape", "../../outside").unwrap();
+            t.into_inner().unwrap().finish().unwrap();
+        }
+        let out = extract(&archive, &d.join("o")).unwrap();
+        assert_eq!((out.files, out.refused), (1, 1), "{out:?}");
+        assert_eq!(std::fs::read(d.join("o").join("inner").join("hello.txt")).unwrap(), b"hello tar");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn saved_passwords_open_a_protected_zip() {
+        let d = tmp("zippw");
+        let z = d.join("Secret.zip");
+        {
+            let mut w = zip::ZipWriter::new(std::fs::File::create(&z).unwrap());
+            let opts = zip::write::SimpleFileOptions::default().with_aes_encryption(zip::AesMode::Aes256, "letmein");
+            w.start_file("note.txt", opts).unwrap();
+            w.write_all(b"secret").unwrap();
+            w.finish().unwrap();
+        }
+        assert!(matches!(extract(&z, &d.join("a")), Err(Error::Password)));
+        let list = vec!["wrong".to_string(), "letmein".to_string()];
+        let (out, used) = extract_with(&z, &d.join("b"), &list).unwrap();
+        assert_eq!((out.files, used.as_deref()), (1, Some("letmein")));
+        assert_eq!(std::fs::read(d.join("b").join("note.txt")).unwrap(), b"secret");
         let _ = std::fs::remove_dir_all(&d);
     }
 
