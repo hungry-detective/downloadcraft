@@ -7563,8 +7563,15 @@ async fn ytdlp_direct(
         cmd.arg("--impersonate").arg("chrome");
     }
     cmd.arg(url).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    // Its own process group / job, like the download itself: stopping the
+    // download stops yt-dlp and everything it started (JS runtime, merger).
+    #[cfg(unix)]
+    cmd.process_group(0);
     shared.set_phase("Getting info");
-    let out = tokio::time::timeout(std::time::Duration::from_secs(90), cmd.output())
+    let child = cmd.spawn().map_err(|e| anyhow!("yt-dlp launch: {e}"))?;
+    let _tree = crate::platform::HelperProcessTree::attach(&child)
+        .map_err(|e| anyhow!("Could not supervise media helper processes: {e}"))?;
+    let out = tokio::time::timeout(std::time::Duration::from_secs(90), child.wait_with_output())
         .await
         .map_err(|_| anyhow!("finding the file took too long"))??;
     if shared.cancelled.load(Ordering::SeqCst) {

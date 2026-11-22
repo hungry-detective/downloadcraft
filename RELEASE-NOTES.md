@@ -1,4 +1,4 @@
-# Download Craft 0.11.7
+# Download Craft 0.11.8
 
 ## What's new
 
@@ -28,21 +28,24 @@
   left (yt-dlp's unfinished files included) before starting, so it no
   longer continues the old one or saves the new file as "name (1)".
 - **Remove + delete file** also removes yt-dlp's hidden parts folder.
+- **Stopping a video download stops yt-dlp completely**: while yt-dlp was
+  still looking the file up, Stop left a program it had started running on
+  macOS and Linux.
 
 ## Install
 
-**Windows 10/11.** Run `DownloadCraft-0.11.7-windows-x64-setup.exe` (installs
+**Windows 10/11.** Run `DownloadCraft-0.11.8-windows-x64-setup.exe` (installs
 for your user, no administrator rights), or extract
-`DownloadCraft-0.11.7-windows-x64-portable.zip` and run `download_craft.exe`.
+`DownloadCraft-0.11.8-windows-x64-portable.zip` and run `download_craft.exe`.
 
-**macOS 12+.** Unzip `DownloadCraft-0.11.7-macos-Universal.zip` and move
+**macOS 12+.** Unzip `DownloadCraft-0.11.8-macos-Universal.zip` and move
 `Download Craft.app` into Applications. This build is not notarized: right-click
 → Open the first time.
 
 **Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.7_amd64.deb`; Fedora: install
-`downloadcraft-0.11.7-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.7-x86_64.AppImage`.
+`downloadcraft_0.11.8_amd64.deb`; Fedora: install
+`downloadcraft-0.11.8-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.8-x86_64.AppImage`.
 
 **Browser extensions.** Firefox: install
 [Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
@@ -51,7 +54,7 @@ or load `DownloadCraft-Firefox-0.11.1.xpi` from
 Chrome ZIP and load the extracted folder in `chrome://extensions`.
 
 **Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.7`, then
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.8`, then
 `docker logs` for the address and pairing code. Or run `download_craft --server`.
 
 Settings and queued downloads carry over between versions. Settings → Plugins
