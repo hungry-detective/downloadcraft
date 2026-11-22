@@ -4203,6 +4203,9 @@ fn code_chip(ui: &mut Ui, s: &str) {
 
 /// `.btn` with a leading Material icon. Sizes are measured with the resting
 /// colour (identical metrics), so hover changes ink only, never layout.
+/// The extension on addons.mozilla.org.
+const FIREFOX_ADDON_URL: &str = "https://addons.mozilla.org/firefox/addon/download-craft/";
+
 fn btn_icon(ui: &mut Ui, glyph: &str, label: &str, primary: bool) -> Response {
     let t = tok();
     let fg0 = if primary { Color32::WHITE } else { t.text2 };
@@ -6159,7 +6162,7 @@ impl SettingsApp {
                         wrapped(
                             ui,
                             if firefox {
-                                "about:debugging → This Firefox → Load Temporary Add-on, then pick manifest.json in this folder (or install the .xpi)."
+                                "Install it from Firefox Add-ons (it stays installed and updates itself). Without internet: about:debugging → This Firefox → Load Temporary Add-on, then pick manifest.json in the extension folder."
                             } else {
                                 "chrome://extensions → turn on Developer mode → Load unpacked, then pick this folder. The same folder works in Edge, Brave and Opera."
                             },
@@ -6179,7 +6182,12 @@ impl SettingsApp {
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-                            if btn_icon(ui, "\u{e2c7}", "Open extension folder", true).clicked() {
+                            // Online first: the store copy stays installed and
+                            // updates itself (a folder one is temporary).
+                            if firefox && btn_icon(ui, "\u{e89e}", "Get it from Firefox Add-ons", true).clicked() {
+                                crate::platform::open_url(FIREFOX_ADDON_URL);
+                            }
+                            if btn_icon(ui, "\u{e2c7}", "Open extension folder", !firefox).clicked() {
                                 open_folder = true;
                             }
                             if !firefox && btn_icon(ui, "\u{e14d}", "Copy extension ID", false).clicked() {

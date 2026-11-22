@@ -1,4 +1,55 @@
-# Download Craft 0.11.10
+# Download Craft 0.11.11
+
+## What's new
+
+- **Everyone hears of a new version**: when a release comes out, a desktop
+  notification says so once (clicking it opens About & Updates), besides
+  the chip in the title bar. The app looks at start and every six hours.
+- **Updates download faster**: the update now comes over 16 connections
+  (GitHub limits each one), about twice as fast, with the same checksum
+  check; the progress moves smoothly.
+- **Firefox extension from Firefox Add-ons**: Settings → Browser
+  Integration → Firefox and the Get ready window now have a button to
+  install it from addons.mozilla.org, where it stays installed and updates
+  itself. The folder for an offline install is still there.
+
+## Fixes
+
+- **Videos from a stream keep their name**: a video the extension found as
+  a stream (HLS) was saved as "index.m3u8". It is now named after the page
+  (for example "Spider-Man: Brand New Day.mp4"), and the app itself never
+  names a stream "index.m3u8" (browser extension 0.11.2).
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.11.11-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.11.11-windows-x64-portable.zip` and run `download_craft.exe`.
+
+**macOS 12+.** Unzip `DownloadCraft-0.11.11-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.11.11_amd64.deb`; Fedora: install
+`downloadcraft-0.11.11-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.11-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.11.2.xpi` from
+`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
+Chrome ZIP and load the extracted folder in `chrome://extensions`.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.11`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+
+# Earlier: Download Craft 0.11.10
 
 ## Fixes
 
@@ -9,34 +60,6 @@
 - **Windows 10: Settings opens with a dark frame** when the app is dark
   (it sometimes came up with a light frame and a white border), and the
   frame follows a theme change.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.11.10-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.11.10-windows-x64-portable.zip` and run `download_craft.exe`.
-
-**macOS 12+.** Unzip `DownloadCraft-0.11.10-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.10_amd64.deb`; Fedora: install
-`downloadcraft-0.11.10-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.10-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.11.1.xpi` from
-`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
-Chrome ZIP and load the extracted folder in `chrome://extensions`.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.10`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
 
 
 # Earlier: Download Craft 0.11.9
@@ -76,38 +99,3 @@ provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
   "(1)".
 - **Files go to the right folder**: .opus, .aac, .wma, .m4v, .flv, .xz,
   .apk and others were sorted into "Other".
-
-
-# Earlier: Download Craft 0.11.8
-
-## What's new
-
-- **yt-dlp at full speed**: yt-dlp fetched a video file over one connection.
-  Now it only finds the file, and the app downloads it over every
-  connection, with resume (a 184 MB 1080p video in about 15 seconds). When
-  a site refuses the app, yt-dlp downloads it itself as before.
-- **Streams made from one file download the file**: a player stream such
-  as `movie.mp4/index.m3u8` is fetched as the movie file itself, over every
-  connection, with resume, and without a folder of pieces.
-- **Pick a quality for a YouTube link in Add URL**: the size box shows the
-  quality; click it for Best, 4K to 360p, MP3 or M4A, and the size follows.
-  The video's name and size come straight from YouTube.
-- **Browser extension 0.11.1**: videos in the extension's list are named by
-  their real title, as the button on the player names them.
-
-## Fixes
-
-- **Windows 10: windows no longer get stuck**: the main window and the
-  progress windows sometimes stopped following drags and resizes until the
-  app restarted (#28). Moving and resizing now go straight through Windows.
-- **Video downloads resume after Cancel**: a YouTube or Facebook video kept
-  its parts in a work folder that the resume check did not look at, so
-  Resume after Cancel or a restart started again from 0. A download that
-  yt-dlp began also continues in yt-dlp.
-- **Redownload starts again**: it now removes everything the old download
-  left (yt-dlp's unfinished files included) before starting, so it no
-  longer continues the old one or saves the new file as "name (1)".
-- **Remove + delete file** also removes yt-dlp's hidden parts folder.
-- **Stopping a video download stops yt-dlp completely**: while yt-dlp was
-  still looking the file up, Stop left a program it had started running on
-  macOS and Linux.

@@ -528,7 +528,9 @@ function collectItems(peek, pageUrl) {
         label: isStream ? (n.master ? "Best quality" : "Stream") : isSub ? "Subtitles" : `${tag}${n.pairUrl ? " + audio" : ""}`,
         size: n.size || 0, url: n.url, pairUrl: n.pairUrl || undefined,
         browser: browserJob(n.url, isStream ? streamName : (name || ""), { mime: n.mime || "", pairUrl: n.pairUrl || undefined }),
-        msg: { type: "download", url: n.url, filename: name, pageUrl: pageUrl || undefined, pairUrl: n.pairUrl || undefined, pairMime: n.pairMime || undefined, dur: n.dur || undefined },
+        // A stream is saved as one video named after the page (it was
+        // sent without a name, so the app called it "index.m3u8").
+        msg: { type: "download", url: n.url, filename: isStream ? streamName : name, pageUrl: pageUrl || undefined, pairUrl: n.pairUrl || undefined, pairMime: n.pairMime || undefined, dur: n.dur || undefined },
       }],
     });
   }

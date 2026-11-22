@@ -693,6 +693,43 @@ pub fn filename_from_url(raw: &str) -> String {
     filename_from_url_plain(raw)
 }
 
+/// A stream's playlist (`…/movie.mp4/index.m3u8`, `…/Film/master.m3u8`,
+/// `…/manifest.mpd`) is saved as one video: named after the file or folder
+/// it belongs to, as `.mp4`, never "index.m3u8".
+fn stream_name(segs: &[&str]) -> Option<String> {
+    let last = segs.last()?.split('?').next()?;
+    let low = last.to_ascii_lowercase();
+    let dot = low.rfind('.')?;
+    if !matches!(&low[dot..], ".m3u8" | ".m3u" | ".mpd") {
+        return None;
+    }
+    let stem = &last[..dot];
+    let generic = |s: &str| {
+        let s = s.to_ascii_lowercase();
+        s.is_empty()
+            || ["index", "master", "playlist", "manifest", "prog_index", "chunklist", "media", "main", "stream", "video", "hls", "dash", "mono", "output", "out"]
+                .iter()
+                .any(|g| s == *g || (s.starts_with(g) && s[g.len()..].bytes().all(|b| b.is_ascii_digit() || b == b'_' || b == b'-')))
+            // A quality folder ("720p", "v1080", "1080"), an id or a hash.
+            || s.trim_start_matches(['v', 'h']).trim_end_matches('p').bytes().all(|b| b.is_ascii_digit())
+            || (s.len() >= 24 && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+    };
+    if !generic(stem) {
+        return Some(format!("{}.mp4", percent_decode(stem)));
+    }
+    for seg in segs[..segs.len() - 1].iter().rev() {
+        let name = percent_decode(seg);
+        let lower = name.to_ascii_lowercase();
+        if [".mp4", ".mkv", ".m4v", ".mov", ".webm"].iter().any(|e| lower.ends_with(e)) {
+            return Some(name);
+        }
+        if !generic(&name) {
+            return Some(format!("{name}.mp4"));
+        }
+    }
+    Some("video.mp4".to_string())
+}
+
 fn filename_from_url_plain(raw: &str) -> String {
     const PLACEHOLDERS: &[&str] = &[
         "videoplayback", "watch", "play", "player", "download", "media",
@@ -702,6 +739,9 @@ fn filename_from_url_plain(raw: &str) -> String {
     if let Ok(u) = url::Url::parse(raw) {
         if let Some(segs) = u.path_segments() {
             let all: Vec<&str> = segs.filter(|s| !s.is_empty()).collect();
+            if let Some(n) = stream_name(&all) {
+                return n;
+            }
             for seg in all.iter().rev() {
                 let clean = seg.split('?').next().unwrap_or(seg);
                 let low = clean.to_ascii_lowercase();
@@ -2200,6 +2240,21 @@ mod mime_ext_tests {
         assert_eq!(with_mime_ext("v1.2 release notes", "application/pdf"), "v1.2 release notes.pdf");
         assert_eq!(with_mime_ext("blob", "application/octet-stream"), "blob");
         assert_eq!(with_mime_ext("", "image/png"), "");
+    }
+}
+
+#[cfg(test)]
+mod stream_name_tests {
+    use super::filename_from_url;
+    #[test]
+    fn a_stream_is_named_after_its_video_not_index_m3u8() {
+        assert_eq!(filename_from_url("https://cdn.example/movies/spider-man-brand-new-day.mp4/index.m3u8"), "spider-man-brand-new-day.mp4");
+        assert_eq!(filename_from_url("https://cdn.example/hls/My%20Film/720p/index.m3u8?token=1"), "My Film.mp4");
+        assert_eq!(filename_from_url("https://cdn.example/a/trailer.m3u8"), "trailer.mp4");
+        assert_eq!(filename_from_url("https://cdn.example/9f8e7d6c5b4a39281706f5e4d3c2b1a0/master.m3u8"), "video.mp4");
+        assert_eq!(filename_from_url("https://cdn.example/show/ep1/manifest.mpd"), "ep1.mp4");
+        // Ordinary files are untouched.
+        assert_eq!(filename_from_url("https://cdn.example/files/setup.exe"), "setup.exe");
     }
 }
 

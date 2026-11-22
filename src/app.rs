@@ -8408,6 +8408,42 @@ fn notify_failed(id: u64, name: &str, reason: &str, page: &str) {
     notify("Download Craft — download failed", &body);
 }
 
+/// "Download Craft X is out": a desktop notification that opens About &
+/// Updates (where it installs with one click) when clicked.
+fn notify_update(version: &str) {
+    let title = crate::i18n::t("A new version of Download Craft is ready");
+    let body = format!("{version} — {}", crate::i18n::t("open About & Updates to install it. Your settings and downloads are kept."));
+    let open_about = || {
+        if let Ok(exe) = crate::platform::launch_path() {
+            let mut cmd = std::process::Command::new(exe);
+            cmd.arg("--about");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0000_0008);
+            }
+            let _ = cmd.spawn();
+        }
+    };
+    #[cfg(windows)]
+    {
+        use tauri_winrt_notification::Toast;
+        let toast = Toast::new(Toast::POWERSHELL_APP_ID)
+            .title(title)
+            .text1(&body)
+            .add_button(crate::i18n::t("Update"), "about")
+            .on_activated(move |_| {
+                open_about();
+                Ok(())
+            });
+        if toast.show().is_ok() {
+            return;
+        }
+    }
+    let _ = open_about;
+    notify(title, &body);
+}
+
 /// Best-effort desktop toast (ignored when unsupported).
 fn notify(title: &str, body: &str) {
     let _ = notify_rust::Notification::new()
@@ -8839,7 +8875,22 @@ impl eframe::App for CraftApp {
                     self.update_asset = asset;
                     self.update_found = found;
                     if m.starts_with("Update available") {
-                        self.push_log(m);
+                        self.push_log(m.clone());
+                    }
+                    // Everyone hears of a new release, once per version: the
+                    // title bar's chip alone went unnoticed (above all with
+                    // the window in the tray).
+                    if found {
+                        let tag = m
+                            .strip_prefix("Update available: ")
+                            .and_then(|r| r.split_whitespace().next())
+                            .unwrap_or("")
+                            .trim_start_matches('v')
+                            .to_string();
+                        if !tag.is_empty() && crate::model::ui_pref_str("update_notified", "") != tag {
+                            crate::model::ui_pref_set_str("update_notified", &tag);
+                            notify_update(&tag);
+                        }
                     }
                     // A portable copy updates itself: download, check, replace
                     // every file in its folder, then restart into the new

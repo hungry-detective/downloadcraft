@@ -456,11 +456,15 @@ impl SetupApp {
                 let by = card.max.y - 40.0;
                 let b1 = egui::Rect::from_min_size(egui::pos2(tx, by), egui::vec2(140.0, 30.0));
                 let b2 = egui::Rect::from_min_size(egui::pos2(tx + 148.0, by), egui::vec2(110.0, 30.0));
-                for (r, label, k) in [(b1, "Open folder", 0u8), (b2, "Copy path", 1u8)] {
+                // Firefox installs from its store (it stays and updates itself).
+                let b3 = egui::Rect::from_min_size(egui::pos2(tx + 266.0, by), egui::vec2(150.0, 30.0));
+                for (r, label, k) in [(b1, "Open folder", 0u8), (b2, "Copy path", 1u8), (b3, "Firefox Add-ons", 2u8)] {
                     let resp = ui.interact(r, egui::Id::new(("setup-ext", k)), egui::Sense::click());
                     btn_flat(&p, r, resp.hovered(), label);
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        if let Some(f) = &folder {
+                        if k == 2 {
+                            crate::platform::open_url("https://addons.mozilla.org/firefox/addon/download-craft/");
+                        } else if let Some(f) = &folder {
                             if k == 0 {
                                 crate::app::open_path(f, false);
                             } else {

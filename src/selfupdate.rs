@@ -65,6 +65,15 @@ pub async fn download(client: &reqwest::Client, asset: &Asset, mut progress: imp
     std::fs::create_dir_all(&dir)?;
     let name = if asset.name.is_empty() { "update.zip".to_string() } else { crate::engine::sanitize_filename(&asset.name) };
     let path = dir.join(name);
+    // Several connections at once: GitHub's download servers cap each one,
+    // and one connection made an update take minutes on a fast line.
+    match download_parallel(client, asset, &path, &mut progress).await {
+        Ok(got) => return verify(&path, got, asset),
+        Err(e) => {
+            eprintln!("update: parallel download failed ({e}); one connection");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
     let resp = client.get(&asset.url).send().await.context("downloading the update")?;
     if !resp.status().is_success() {
         return Err(anyhow!("the update download failed (HTTP {})", resp.status()));
@@ -93,6 +102,134 @@ pub async fn download(client: &reqwest::Client, asset: &Asset, mut progress: imp
         }
     }
     Ok(path)
+}
+
+/// Connections used for the update download.
+const UPDATE_CONNECTIONS: u64 = 16;
+
+/// The update in `UPDATE_CONNECTIONS` byte ranges written at their place in
+/// the file. Fails (for the one-connection way) when the server does not
+/// serve ranges or the size is unknown.
+async fn download_parallel(client: &reqwest::Client, asset: &Asset, path: &Path, progress: &mut impl FnMut(f32)) -> Result<u64> {
+    use futures_util::StreamExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    // The first byte: proves ranges work, names the size and the final
+    // address (GitHub redirects to its download server).
+    let probe = client.get(&asset.url).header("Range", "bytes=0-0").send().await?;
+    if probe.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Err(anyhow!("no ranges (HTTP {})", probe.status()));
+    }
+    let total = probe
+        .headers()
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit('/').next())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .ok_or_else(|| anyhow!("no size"))?;
+    if asset.size > 0 && total != asset.size {
+        return Err(anyhow!("size {total} is not the release's {}", asset.size));
+    }
+    let url = probe.url().to_string();
+    drop(probe);
+    let file = Arc::new(std::fs::File::create(path)?);
+    file.set_len(total)?;
+    let got = Arc::new(AtomicU64::new(0));
+    let part = total.div_ceil(UPDATE_CONNECTIONS).max(1);
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut start = 0u64;
+    while start < total {
+        let end = (start + part).min(total) - 1;
+        let (client, url, file, got) = (client.clone(), url.clone(), file.clone(), got.clone());
+        tasks.spawn(async move {
+            let mut at = start;
+            let mut tries = 0;
+            // A dropped connection carries on from where it stopped.
+            while at <= end {
+                let r = async {
+                    let resp = client.get(&url).header("Range", format!("bytes={at}-{end}")).send().await?;
+                    if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                        return Err(anyhow!("HTTP {}", resp.status()));
+                    }
+                    let mut body = resp.bytes_stream();
+                    while let Some(chunk) = body.next().await {
+                        let chunk = chunk?;
+                        let n = (chunk.len() as u64).min(end + 1 - at) as usize;
+                        write_at(&file, &chunk[..n], at)?;
+                        at += n as u64;
+                        got.fetch_add(n as u64, Ordering::Relaxed);
+                        if at > end {
+                            break;
+                        }
+                    }
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await;
+                if let Err(e) = r {
+                    tries += 1;
+                    if tries > 5 {
+                        return Err(e);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * tries)).await;
+                } else if at <= end {
+                    tries += 1;
+                    if tries > 5 {
+                        return Err(anyhow!("the connection kept ending early"));
+                    }
+                }
+            }
+            Ok(())
+        });
+        start = end + 1;
+    }
+    // Progress while the parts arrive.
+    loop {
+        tokio::select! {
+            r = tasks.join_next() => match r {
+                None => break,
+                Some(Ok(Ok(()))) => {}
+                Some(Ok(Err(e))) => return Err(e),
+                Some(Err(e)) => return Err(anyhow!("{e}")),
+            },
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+        }
+        progress((got.load(Ordering::Relaxed) as f32 / total as f32).min(1.0));
+    }
+    progress(1.0);
+    Ok(got.load(Ordering::Relaxed))
+}
+
+fn write_at(f: &std::fs::File, mut buf: &[u8], mut off: u64) -> std::io::Result<()> {
+    while !buf.is_empty() {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::write_at(f, buf, off)?;
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_write(f, buf, off)?;
+        if n == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "wrote 0 bytes"));
+        }
+        buf = &buf[n..];
+        off += n as u64;
+    }
+    Ok(())
+}
+
+/// Size and checksum of a downloaded update, against the release's.
+fn verify(path: &Path, got: u64, asset: &Asset) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    if asset.size > 0 && got != asset.size {
+        return Err(anyhow!("the update is {got} bytes, the release says {}", asset.size));
+    }
+    if let Some(want) = &asset.sha256 {
+        let mut hasher = Sha256::new();
+        let mut f = std::fs::File::open(path)?;
+        std::io::copy(&mut f, &mut hasher)?;
+        let have = format!("{:x}", hasher.finalize());
+        if !have.eq_ignore_ascii_case(want) {
+            return Err(anyhow!("the update's checksum does not match the release (got {have}, expected {want})"));
+        }
+    }
+    Ok(path.to_path_buf())
 }
 
 /// Unpack the zip next to it and return the folder that holds the program.
@@ -350,6 +487,43 @@ pub fn pick_asset(v: &serde_json::Value) -> Option<Asset> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// A real release from GitHub, the new way and the one-connection way
+    /// (network; run with `cargo test -- --ignored real_update_download`).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn real_update_download_is_checked_and_faster() {
+        let asset = Asset {
+            url: "https://github.com/hungry-detective/downloadcraft/releases/download/v0.11.10/DownloadCraft-0.11.10-windows-x64-portable.zip".into(),
+            name: "DownloadCraft-0.11.10-windows-x64-portable.zip".into(),
+            sha256: Some("f0eba31c8a705b88abac4d9328c0b6b9d0b1816b3953fc17944f606c789906a9".into()),
+            size: 17166130,
+        };
+        let client = reqwest::Client::builder().user_agent("download_craft-test").build().unwrap();
+        let mut last = 0.0f32;
+        let mut steps = 0;
+        let t = std::time::Instant::now();
+        let path = download(&client, &asset, |f| {
+            assert!(f >= last, "progress went back");
+            last = f;
+            steps += 1;
+        })
+        .await
+        .unwrap();
+        let parallel = t.elapsed();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), asset.size);
+        assert!((last - 1.0).abs() < 1e-6 && steps > 3, "{last} {steps}");
+        // The old way: one connection.
+        let t = std::time::Instant::now();
+        let resp = client.get(&asset.url).send().await.unwrap();
+        let body = resp.bytes().await.unwrap();
+        let single = t.elapsed();
+        assert_eq!(body.len() as u64, asset.size);
+        eprintln!("parallel: {parallel:?}, one connection: {single:?}, progress steps {steps}");
+        // A wrong checksum is refused.
+        let bad = Asset { sha256: Some("00".repeat(32)), ..asset };
+        assert!(download(&client, &bad, |_| {}).await.is_err());
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("dc-selfupdate-{}-{name}", std::process::id()));
