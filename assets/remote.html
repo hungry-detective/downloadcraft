@@ -175,6 +175,18 @@ $("pauseAll").onclick = async () => { try { await api("/api/control", { action: 
 for (const b of $("tabs").querySelectorAll("button")) {
   b.onclick = () => { filter = b.dataset.f; for (const x of $("tabs").children) x.classList.toggle("on", x === b); render(); };
 }
+// Sent here with a link (…/?url=<link>, or ?text= from a share menu): add it
+// at once when this phone is paired, else keep it in the box for after.
+(async () => {
+  const q = new URLSearchParams(location.search);
+  const shared = (q.get("url") || q.get("text") || "").trim();
+  if (!shared) return;
+  history.replaceState(null, "", location.pathname);
+  $("url").value = shared;
+  if (!token) { $("pairMsg").textContent = "Pair this phone first; the link waits in the box."; return; }
+  try { await api("/api/add", { url: shared }); $("url").value = ""; $("addMsg").textContent = "Sent to Download Craft."; refresh(); }
+  catch (e) { $("addMsg").textContent = e.message; }
+})();
 show(); refresh(); setInterval(refresh, 2000);
 </script>
 </body>

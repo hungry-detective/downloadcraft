@@ -129,7 +129,6 @@ fn add_key(state: &mut [u8; 16], rk: &[u8]) {
     }
 }
 
-#[cfg(test)]
 fn sub(state: &mut [u8; 16]) {
     for b in state.iter_mut() {
         *b = SBOX[*b as usize];
@@ -143,7 +142,6 @@ fn inv_sub(state: &mut [u8; 16]) {
 }
 
 /// ShiftRows left (encrypt): row r rotates left by r.
-#[cfg(test)]
 fn shift(state: &mut [u8; 16]) {
     let s = *state;
     for r in 0..4 {
@@ -163,7 +161,6 @@ fn inv_shift(state: &mut [u8; 16]) {
     }
 }
 
-#[cfg(test)]
 fn mix_col(s: &mut [u8; 4]) {
     let (a0, a1, a2, a3) = (s[0], s[1], s[2], s[3]);
     s[0] = gmul(a0, 2) ^ gmul(a1, 3) ^ a2 ^ a3;
@@ -180,7 +177,6 @@ fn inv_mix_col(s: &mut [u8; 4]) {
     s[3] = gmul(a0, 0x0b) ^ gmul(a1, 0x0d) ^ gmul(a2, 0x09) ^ gmul(a3, 0x0e);
 }
 
-#[cfg(test)]
 fn mix(state: &mut [u8; 16]) {
     for c in 0..4 {
         let mut col = [state[c * 4], state[c * 4 + 1], state[c * 4 + 2], state[c * 4 + 3]];
@@ -197,8 +193,7 @@ fn inv_mix(state: &mut [u8; 16]) {
     }
 }
 
-/// One AES-128 block encrypt (test fixtures only).
-#[cfg(test)]
+/// One AES-128 block encrypt (CTR mode's key stream: Mega files).
 pub fn encrypt_block(key: &[u8; 16], block: &[u8; 16]) -> [u8; 16] {
     let w = expand(key);
     let mut s = *block;

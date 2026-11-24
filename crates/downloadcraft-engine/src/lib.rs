@@ -121,7 +121,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            connections: 8,
+            connections: 16,
             min_split: 1024 * 1024,
             max_request: None,
             stall_timeout: Duration::from_secs(30),
@@ -313,6 +313,10 @@ pub enum Event {
     Retry { worker: usize, error: String },
     /// Fewer connections from now on.
     ConnectionsReduced { to: usize, reason: String },
+    /// Trying more connections (kept while they raise the speed).
+    ConnectionsAdded { to: usize },
+    /// More connections stopped helping: this many stay.
+    ConnectionsSettled { at: usize },
     /// A very slow connection was reopened.
     SlowRestart { worker: usize },
     /// The link expired and was replaced.
@@ -335,6 +339,8 @@ impl std::fmt::Display for Event {
             Event::RangesUnsupported => write!(f, "server ignores ranges: one connection, no resume"),
             Event::Retry { worker, error } => write!(f, "connection {worker}: {error} â€” retrying"),
             Event::ConnectionsReduced { to, reason } => write!(f, "using {to} connection(s): {reason}"),
+            Event::ConnectionsAdded { to } => write!(f, "trying {to} connections"),
+            Event::ConnectionsSettled { at } => write!(f, "{at} connections: more did not raise the speed"),
             Event::SlowRestart { worker } => write!(f, "connection {worker} was very slow â€” reopened"),
             Event::UrlRefreshed { url } => write!(f, "link refreshed: {url}"),
             Event::Restarted { reason } => write!(f, "starting over: {reason}"),

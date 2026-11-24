@@ -844,19 +844,16 @@ pub fn frame_unsupported() -> bool {
 pub fn guard_borderless() {
     use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    use std::sync::atomic::Ordering;
     let forced = std::env::var_os("DOWNLOADCRAFT_BORDERLESS_GUARD").is_some_and(|v| v != "0");
     if (windows_build() >= 22000 && !forced) || system_title_bar() {
         return;
     }
     // These windows keep Windows' own title bar and frame: leave them whole
-    // (taking their caption off left them without a title bar), but draw
-    // that frame dark when the app is dark (issue #29: Settings sometimes
-    // opened with a light frame and a white border).
-    const FRAMED: [&str; 5] = ["--settings", "--links", "--basket", "--mini", "--torrent-files"];
-    if std::env::args().any(|a| FRAMED.contains(&a.as_str())) {
-        keep_frames_dark();
-        return;
-    }
+    // (taking their caption off left them without a title bar), but keep
+    // that frame themed and in the app's colours (issue #29).
+    const FRAMED: [&str; 7] = ["--settings", "--links", "--basket", "--mini", "--torrent-files", "--history", "--subs"];
+    FRAMED_PROCESS.store(std::env::args().any(|a| FRAMED.contains(&a.as_str())), Ordering::SeqCst);
     unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
@@ -872,14 +869,19 @@ pub fn guard_borderless() {
             return 1;
         }
         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        // Only the app's own windows: resizable or with a system menu,
-        // never popups (menus, tooltips) or child windows.
-        let frame = WS_CAPTION | WS_THICKFRAME;
+        // Only the app's own windows: with a system menu, never popups
+        // (menus, tooltips) or child windows.
         if style & (WS_POPUP | WS_CHILD) != 0 || style & WS_SYSMENU == 0 {
             return 1;
         }
+        let framed = FRAMED_PROCESS.load(Ordering::SeqCst);
+        if framed && style & WS_CAPTION != WS_CAPTION {
+            return 1;
+        }
         hook_frame_off(hwnd);
-        if style & frame == 0 {
+        keep_theme(hwnd);
+        let frame = WS_CAPTION | WS_THICKFRAME;
+        if framed || style & frame == 0 {
             return 1;
         }
         SetWindowLongW(hwnd, GWL_STYLE, (style & !frame) as i32);
@@ -888,7 +890,12 @@ pub fn guard_borderless() {
     }
     let _ = std::thread::Builder::new().name("borderless".into()).spawn(|| {
         let start = std::time::Instant::now();
+        let mut theme_at = std::time::Instant::now() - std::time::Duration::from_secs(10);
         loop {
+            if theme_at.elapsed() >= std::time::Duration::from_secs(2) {
+                theme_at = std::time::Instant::now();
+                WANT_DARK.store(app_is_dark(), Ordering::SeqCst);
+            }
             // SAFETY: a plain enumeration with a callback that only reads
             // and adjusts this process's own top-level windows.
             unsafe { EnumWindows(Some(each), 0) };
@@ -899,27 +906,62 @@ pub fn guard_borderless() {
     });
 }
 
+/// This process shows a window that keeps Windows' frame (Settings…).
+#[cfg(windows)]
+static FRAMED_PROCESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The app is dark (its theme, or Windows' app mode for "system").
+#[cfg(windows)]
+static WANT_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[cfg(windows)]
+fn app_is_dark() -> bool {
+    match crate::app::stored_theme().as_str() {
+        "light" => false,
+        "dark" | "amoled" => true,
+        _ => crate::tray_menu::windows_apps_dark(),
+    }
+}
+
 #[cfg(windows)]
 static FRAME_HOOKS: std::sync::Mutex<Vec<(usize, isize)>> = std::sync::Mutex::new(Vec::new());
 
-/// Keep Windows' frame off a borderless window at the source: winit puts
-/// the caption and resizing frame back whenever the window's state changes
-/// (a file dialog disables it, another program takes the focus), and the
-/// watcher above only took them off again up to 250 ms later. Meanwhile
-/// Windows drew its own title bar over the app's (issue #29: while Add a
-/// theme file, Add torrent or Batch had a dialog open, and a flicker on
-/// Open folder). The window's procedure now strips them from every style
-/// change before it happens, so the frame never shows.
+/// The app's window procedure in front of winit's, on Windows 10:
+///
+/// - Borderless windows: winit puts the caption and resizing frame back
+///   whenever the window's state changes (a file dialog disables it,
+///   another program takes the focus); they are stripped from every style
+///   change before it happens.
+/// - Borderless windows: when the window gains or loses the focus, winit
+///   hands `WM_NCACTIVATE` to Windows, which repainted a title bar over the
+///   app (issue #29, while Add torrent, Batch or Add a theme file had a
+///   dialog open, and a flicker on Open folder). It is passed on with
+///   `lParam = -1`, Windows' "do not repaint the frame".
+/// - All windows: after a Windows setting changes (light/dark app mode),
+///   winit picks the visual style again, so the app's is put back.
 #[cfg(windows)]
 unsafe fn hook_frame_off(hwnd: windows_sys::Win32::Foundation::HWND) {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-        if msg == WM_STYLECHANGING && wp as i32 == GWL_STYLE {
+        let borderless = !FRAMED_PROCESS.load(std::sync::atomic::Ordering::Relaxed);
+        let mut lp = lp;
+        if borderless && msg == WM_STYLECHANGING && wp as i32 == GWL_STYLE {
             let ss = lp as *mut STYLESTRUCT;
             if !ss.is_null() && (*ss).styleNew & (WS_POPUP | WS_CHILD) == 0 {
                 (*ss).styleNew &= !(WS_CAPTION | WS_THICKFRAME);
             }
+        }
+        if borderless && msg == WM_NCACTIVATE {
+            lp = -1;
+        }
+        // Windows paints its "Basic" title bar itself when the compositor
+        // does not draw the frame (a borderless window): on these messages
+        // and the two undocumented ones Windows 10 sends to draw the caption
+        // and the frame (WM_NCUAHDRAWCAPTION, WM_NCUAHDRAWFRAME). A
+        // borderless window has no frame to paint.
+        if borderless && matches!(msg, WM_NCPAINT | 0x00AE | 0x00AF) {
+            return 0;
         }
         let old = FRAME_HOOKS
             .lock()
@@ -930,12 +972,37 @@ unsafe fn hook_frame_off(hwnd: windows_sys::Win32::Foundation::HWND) {
             if let Ok(mut h) = FRAME_HOOKS.lock() {
                 h.retain(|(w, _)| *w != hwnd as usize);
             }
+            if let Ok(mut t) = THEMED.lock() {
+                t.retain(|(w, _)| *w != hwnd as usize);
+            }
         }
         if old == 0 {
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
-        // SAFETY: `old` is the window's previous procedure.
-        CallWindowProcW(Some(std::mem::transmute::<isize, unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>(old)), hwnd, msg, wp, lp)
+        let call = |lp: LPARAM| {
+            // SAFETY: `old` is the window's previous procedure.
+            CallWindowProcW(Some(std::mem::transmute::<isize, unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>(old)), hwnd, msg, wp, lp)
+        };
+        // Setting the title or the icon makes Windows repaint the caption
+        // at once (a Basic title bar over the app): it is done with the
+        // window marked hidden for that moment, which skips the painting.
+        if borderless && (msg == WM_SETTEXT || msg == WM_SETICON) {
+            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            if style & WS_VISIBLE != 0 {
+                SetWindowLongW(hwnd, GWL_STYLE, (style & !WS_VISIBLE) as i32);
+                let r = call(lp);
+                SetWindowLongW(hwnd, GWL_STYLE, style as i32);
+                return r;
+            }
+        }
+        let r = call(lp);
+        if msg == WM_SETTINGCHANGE {
+            if let Ok(mut t) = THEMED.lock() {
+                t.retain(|(w, _)| *w != hwnd as usize);
+            }
+            keep_theme(hwnd);
+        }
+        r
     }
     let Ok(mut hooks) = FRAME_HOOKS.lock() else { return };
     if hooks.iter().any(|(w, _)| *w == hwnd as usize) {
@@ -955,64 +1022,63 @@ unsafe fn hook_frame_off(hwnd: windows_sys::Win32::Foundation::HWND) {
     }
 }
 
-/// Windows' own frame on the app's framed windows (Settings, Download all
-/// links…) follows the app's theme: dark when the app is dark. Set on each
-/// window as it appears, and again when the theme changes.
+/// Windows whose visual style was set, and for which colour.
 #[cfg(windows)]
-fn keep_frames_dark() {
-    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+static THEMED: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
+
+/// The window is drawn with visual styles (not Windows' classic look).
+#[cfg(windows)]
+unsafe fn has_visual_style(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::UI::Controls::{CloseThemeData, OpenThemeData};
+    let class: Vec<u16> = "WINDOW\0".encode_utf16().collect();
+    let t = OpenThemeData(hwnd, class.as_ptr());
+    if t == 0 {
+        return false;
+    }
+    CloseThemeData(t);
+    true
+}
+
+/// Keep a window themed and in the app's colours. When Windows' app mode is
+/// light, winit gives its windows an empty visual style name, which is
+/// Windows' classic look: Settings got a grey classic frame with boxed
+/// buttons, and a borderless window's classic title bar was painted over
+/// the app (issue #29). The window gets Windows' own style back ("Explorer",
+/// "DarkMode_Explorer" when the app is dark) and a matching dark or light
+/// frame, set once per colour and again whenever it lost its style.
+#[cfg(windows)]
+unsafe fn keep_theme(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::Controls::SetWindowTheme;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     #[link(name = "dwmapi")]
     extern "system" {
         fn DwmSetWindowAttribute(hwnd: HWND, attr: u32, value: *const core::ffi::c_void, size: u32) -> i32;
     }
-    static SET: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
-    static WANT_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-    unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid != std::process::id() || IsWindowVisible(hwnd) == 0 {
-            return 1;
-        }
-        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        if style & (WS_POPUP | WS_CHILD) != 0 || style & WS_CAPTION != WS_CAPTION {
-            return 1;
-        }
-        let dark = WANT_DARK.load(std::sync::atomic::Ordering::Relaxed);
-        let Ok(mut set) = SET.lock() else { return 1 };
-        if set.iter().any(|(w, d)| *w == hwnd as usize && *d == dark) {
-            return 1;
-        }
-        set.retain(|(w, _)| *w != hwnd as usize);
-        set.push((hwnd as usize, dark));
-        drop(set);
-        let on: u32 = dark as u32;
-        // 20 since Windows 10 20H1; 19 before it.
-        let attr = if windows_build() >= 18985 { 20 } else { 19 };
-        DwmSetWindowAttribute(hwnd, attr, &on as *const u32 as *const _, 4);
-        // Redraw the frame now, not at the next activation.
-        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-        1
+    let dark = WANT_DARK.load(std::sync::atomic::Ordering::SeqCst);
+    let current = THEMED.lock().ok().and_then(|t| t.iter().find(|(w, _)| *w == hwnd as usize).map(|(_, d)| *d));
+    if current == Some(dark) && has_visual_style(hwnd) {
+        return;
     }
-    let _ = std::thread::Builder::new().name("frame colour".into()).spawn(|| {
-        let start = std::time::Instant::now();
-        let mut theme_at = std::time::Instant::now() - std::time::Duration::from_secs(10);
-        loop {
-            if theme_at.elapsed() >= std::time::Duration::from_secs(2) {
-                theme_at = std::time::Instant::now();
-                let dark = match crate::app::stored_theme().as_str() {
-                    "light" => false,
-                    "dark" | "amoled" => true,
-                    _ => crate::tray_menu::windows_apps_dark(),
-                };
-                WANT_DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
-            }
-            // SAFETY: enumeration of this process's own windows.
-            unsafe { EnumWindows(Some(each), 0) };
-            let wait = if start.elapsed().as_secs() < 5 { 20 } else { 250 };
-            std::thread::sleep(std::time::Duration::from_millis(wait));
-        }
-    });
+    if let Ok(mut t) = THEMED.lock() {
+        t.retain(|(w, _)| *w != hwnd as usize);
+        t.push((hwnd as usize, dark));
+    }
+    let name: Vec<u16> = if dark { "DarkMode_Explorer\0" } else { "Explorer\0" }.encode_utf16().collect();
+    SetWindowTheme(hwnd, name.as_ptr(), std::ptr::null());
+    let on: u32 = dark as u32;
+    // 20 since Windows 10 20H1; 19 before it.
+    let attr = if windows_build() >= 18985 { 20 } else { 19 };
+    DwmSetWindowAttribute(hwnd, attr, &on as *const u32 as *const _, 4);
+    // Windows with Windows' frame (Settings…): the compositor always draws
+    // it (DWMWA_NCRENDERING_POLICY = DWMNCRP_ENABLED), never the Basic
+    // frame Windows 10 fell back to (issue #29).
+    if FRAMED_PROCESS.load(std::sync::atomic::Ordering::SeqCst) {
+        let enabled: u32 = 2;
+        DwmSetWindowAttribute(hwnd, 2, &enabled as *const u32 as *const _, 4);
+    }
+    // Redraw the frame now, not at the next activation.
+    SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
 #[cfg(not(windows))]

@@ -692,6 +692,71 @@ pub fn own_reader_allowed(opts: &EngineOpts) -> bool {
     crate::engine::youtube_own_reader_allowed(opts)
 }
 
+/// A video's title and the picture sizes it is offered in (the shorter
+/// side: 2160, 1440, 1080…), from the watch page and the player's answer,
+/// without unlocking any stream: quick, and it works when unlocking does
+/// not. For the Add dialog's name and its quality list (which offered 4K for
+/// a 1080p video).
+pub async fn video_facts(client: &reqwest::Client, page_url: &str) -> Result<(String, Vec<u64>)> {
+    let id = crate::engine::youtube_id(page_url).ok_or_else(|| anyhow!("not a YouTube video link"))?;
+    let watch = format!("https://www.youtube.com/watch?v={id}&bpctr=9999999999&has_verified=1");
+    let page = client
+        .get(&watch)
+        .header(reqwest::header::USER_AGENT, PAGE_AGENT)
+        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+        .header(reqwest::header::COOKIE, "PREF=hl=en&tz=UTC; SOCS=CAI")
+        .send()
+        .await?;
+    let html = text_capped(page, "the watch page").await?;
+    let facts = page_facts(&html);
+    let body = json!({
+        "context": {"client": {
+            "clientName": TV_CLIENT_NAME, "clientVersion": TV_CLIENT_VERSION,
+            "deviceMake": "Samsung", "deviceModel": "UKS9800", "userAgent": TV_AGENT,
+            "osName": "Tizen", "osVersion": "2.4.0",
+            "hl": "en", "timeZone": "UTC", "utcOffsetMinutes": 0,
+        }},
+        "videoId": id,
+        "playbackContext": {"contentPlaybackContext": {
+            "html5Preference": "HTML5_PREF_WANTS",
+            "signatureTimestamp": facts.sts,
+        }},
+        "contentCheckOk": true,
+        "racyCheckOk": true,
+    });
+    let mut ask = client
+        .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+        .header(reqwest::header::USER_AGENT, TV_AGENT)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("X-Youtube-Client-Name", TV_CLIENT_ID)
+        .header("X-Youtube-Client-Version", TV_CLIENT_VERSION)
+        .header(reqwest::header::ORIGIN, "https://www.youtube.com");
+    if let Some(v) = &facts.visitor {
+        ask = ask.header("X-Goog-Visitor-Id", v);
+    }
+    let player: Value = match ask.body(body.to_string()).send().await {
+        Ok(answer) => serde_json::from_str(&text_capped(answer, "the player API").await.unwrap_or_default()).unwrap_or(Value::Null),
+        Err(_) => Value::Null,
+    };
+    let title = video_title(&player, &facts, &id);
+    Ok((title, sides_of(&player)))
+}
+
+/// The picture sizes in a player answer, biggest first, without repeats.
+fn sides_of(player: &Value) -> Vec<u64> {
+    let mut sides: Vec<u64> = ["/streamingData/adaptiveFormats", "/streamingData/formats"]
+        .iter()
+        .filter_map(|at| player.pointer(at).and_then(Value::as_array))
+        .flatten()
+        .filter_map(Format::of)
+        .filter(|f| f.video && f.height > 0 && !f.secondary)
+        .map(|f| f.side())
+        .collect();
+    sides.sort_unstable_by(|a, b| b.cmp(a));
+    sides.dedup();
+    sides
+}
+
 async fn read(client: &reqwest::Client, opts: &EngineOpts, id: &str) -> Result<(ResolvedMedia, u64)> {
     let watch = format!("https://www.youtube.com/watch?v={id}&bpctr=9999999999&has_verified=1");
     // The consent answer some countries' pages ask for first.
@@ -839,6 +904,17 @@ fn sts_in_player(js: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real video's title and sizes (network; `cargo test -- --ignored live_video_facts`).
+    #[tokio::test]
+    #[ignore]
+    async fn live_video_facts() {
+        let client = reqwest::Client::builder().build().unwrap();
+        let (title, sides) = video_facts(&client, "https://youtu.be/OmQl-_Et78w").await.unwrap();
+        eprintln!("title {title:?} sides {sides:?}");
+        assert!(!title.is_empty() && !title.starts_with("youtube_"));
+        assert!(!sides.is_empty());
+    }
 
     /// Live check: `DC_PEEK_URL=<watch url> cargo test peek_live -- --ignored --nocapture`.
     #[test]

@@ -2792,7 +2792,16 @@ pub struct CraftApp {
     probe_size: Option<u64>,
     probe_name: Option<String>,
     probe_done_for: String,
-    probe_rx: Option<std::sync::mpsc::Receiver<(Option<u64>, Option<String>)>>,
+    probe_rx: Option<std::sync::mpsc::Receiver<(Option<u64>, Option<String>, Vec<u64>, bool)>>,
+    /// A YouTube link's picture sizes (2160, 1080…): the quality list offers
+    /// only these. Empty = not known (every quality is offered).
+    add_yt_sides: Vec<u64>,
+    /// A file host's folder being listed (its outcome, for the log).
+    host_folder_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// YouTube subscriptions: when they were last looked at, and the look
+    /// in progress (its notes).
+    subs_checked_at: Option<Instant>,
+    subs_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     add_adv: bool,
     /// The Add dialog's quality list (YouTube links) is open.
     add_quality_open: bool,
@@ -2956,7 +2965,7 @@ impl CraftApp {
             // 12 parallel ranges per file out of the box: the modern
             // equivalent of IDM's 8 against today's fatter pipes, while the
             // fragile-CDN detector still collapses those hosts to one stream.
-            connections_default: 12,
+            connections_default: 16,
             speed_limit_kbps: 0,
             // Kept across starts, so a schedule for tonight survives a restart.
             scheduler_enabled: crate::model::ui_pref_bool("scheduler_enabled", false),
@@ -3054,6 +3063,11 @@ impl CraftApp {
             probe_name: None,
             probe_done_for: String::new(),
             probe_rx: None,
+            add_yt_sides: Vec::new(),
+            host_folder_rx: None,
+            // The first look a minute after start (not while it opens).
+            subs_checked_at: Some(Instant::now() - crate::subs::EVERY + std::time::Duration::from_secs(60)),
+            subs_rx: None,
             add_adv: false,
             add_quality_open: false,
             add_checksum: String::new(),
@@ -3856,6 +3870,8 @@ impl CraftApp {
             8 => self.show_queues = true,
             9 => Self::open_settings_window(),
             10 => crate::about::spawn(),
+            30 => crate::history::spawn(),
+            31 => crate::subs::spawn(),
             25 => crate::setup::spawn(false),
             11 => self.import_list(),
             12 => self.export_list(),
@@ -3933,7 +3949,12 @@ impl CraftApp {
                 ("Remove selected".into(), 6),
                 ("Clear finished".into(), 7),
             ],
-            2 => vec![("Open Queues".into(), 8), ("Settings".into(), 9)],
+            2 => vec![
+                ("Open Queues".into(), 8),
+                ("Download history".into(), 30),
+                ("YouTube subscriptions".into(), 31),
+                ("Settings".into(), 9),
+            ],
             3 => vec![
                 ("Mode".into(), 0),
                 ("System".into(), 19),
@@ -4587,6 +4608,35 @@ impl CraftApp {
         }
     }
 
+    /// YouTube subscriptions: look for new videos every six hours (the
+    /// first time a minute after start), queue them, and say so.
+    fn check_subscriptions(&mut self) {
+        if let Some(notes) = self.subs_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.subs_rx = None;
+            if !notes.is_empty() {
+                let text = notes.join("
+");
+                for n in &notes {
+                    self.push_log(format!("Subscriptions: {n}"));
+                }
+                notify("New videos from your subscriptions", &text);
+            }
+        }
+        if self.subs_rx.is_some() || self.subs_checked_at.is_some_and(|t| t.elapsed() < crate::subs::EVERY) {
+            return;
+        }
+        self.subs_checked_at = Some(Instant::now());
+        if crate::subs::load().is_empty() {
+            return;
+        }
+        let opts = EngineOpts { proxy_url: self.proxy_url.clone(), user_agent: self.user_agent.clone(), ..Default::default() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.rt.spawn(async move {
+            let _ = tx.send(crate::subs::check_all(&opts).await);
+        });
+        self.subs_rx = Some(rx);
+    }
+
     /// Probe a URL for size + server filename (used by the Add dialog).
     fn start_probe(&mut self, url: String) {
         if !is_download_url(&url) {
@@ -4594,6 +4644,7 @@ impl CraftApp {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         self.probe_rx = Some(rx);
+        self.add_yt_sides.clear();
         self.probing = true;
         self.probe_size = None;
         self.probe_name = None;
@@ -4619,10 +4670,33 @@ impl CraftApp {
                         total = None;
                     }
                     // A YouTube video: the watch page's own length is never
-                    // the video's. The app's own reader names the size of
-                    // the chosen quality and the title.
+                    // the video's. Its title and qualities come first (no
+                    // stream to unlock: quick and dependable), then the
+                    // app's own reader names the size of the chosen quality.
+                    let mut sides = Vec::new();
                     if is_youtube_video_link(&url) {
                         total = None;
+                        if let Ok(Ok((title, s))) = tokio::time::timeout(
+                            std::time::Duration::from_secs(20),
+                            crate::youtube::video_facts(&client, &url),
+                        )
+                        .await
+                        {
+                            sides = s.clone();
+                            // "- YouTube": the page of a video that is not there.
+                            let placeholder = title.trim().trim_start_matches('-').trim().eq_ignore_ascii_case("youtube");
+                            if !title.trim().is_empty() && !title.starts_with("youtube_") && !placeholder {
+                                let ext = match opts.quality_pref.to_ascii_lowercase().as_str() {
+                                    "mp3" => "mp3",
+                                    "m4a" => "m4a",
+                                    _ => "mp4",
+                                };
+                                disp = Some(crate::engine::sanitize_filename(&format!("{}.{ext}", title.trim())));
+                            }
+                            // The name and qualities show now; the size of
+                            // the chosen quality follows when it is known.
+                            let _ = tx.send((None, disp.clone(), s, false));
+                        }
                         if crate::youtube::own_reader_allowed(&opts) {
                             if let Ok((size, title)) = crate::youtube::peek(&client, &opts, &url).await {
                                 total = size;
@@ -4675,9 +4749,9 @@ impl CraftApp {
                             }
                         }
                     }
-                    (total, disp)
+                    (total, disp, sides, true)
                 }
-                Err(_) => (None, None),
+                Err(_) => (None, None, Vec::new(), true),
             };
             let _ = tx.send(out);
         });
@@ -7194,6 +7268,8 @@ impl CraftApp {
                         }
                         msg = Some(format!("Finished: {}", d.filename));
                         finished_info = Some((d.filename.clone(), d.dest_path()));
+                        // Kept in the history, also after the row is removed.
+                        crate::history::record(&d.url, &d.dest_path(), d.total_bytes.unwrap_or(d.downloaded_bytes));
                     } else {
                         let reason = task
                             .shared
@@ -8504,6 +8580,16 @@ const YT_QUALITIES: [(&str, &str); 9] = [
     ("m4a", "Audio (M4A)"),
 ];
 
+/// A quality of `YT_QUALITIES` the video has: Best and the sound always;
+/// a size only when the video is offered in it (all of them while the
+/// sizes are not known yet).
+fn yt_quality_offered(key: &str, sides: &[u64]) -> bool {
+    match key.trim_end_matches('p').parse::<u64>() {
+        Ok(h) if key.ends_with('p') => sides.is_empty() || sides.contains(&h),
+        _ => true,
+    }
+}
+
 /// A paused HTTP download whose unfinished data is no longer on disk.
 fn resume_file_missing(d: &DownloadItem) -> bool {
     if d.downloaded_bytes == 0 || crate::torrent::is_torrent(&d.url) {
@@ -8777,6 +8863,10 @@ impl eframe::App for CraftApp {
             }
         }
 
+        if let Some(m) = self.host_folder_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.host_folder_rx = None;
+            self.push_log(m);
+        }
         crate::crash::step("checking downloads");
         crate::crash::RUNNING.store(self.tasks.len(), std::sync::atomic::Ordering::Relaxed);
         if self.selfupd_rx.is_some() || self.update_busy {
@@ -8826,6 +8916,7 @@ impl eframe::App for CraftApp {
                 self.start_update_check();
             }
             self.poll_self_update();
+            self.check_subscriptions();
             // Missing helpers are fetched in the background right after the
             // first start, so a new user's first video download just works.
             if !self.helpers_started {
@@ -10325,9 +10416,14 @@ impl eframe::App for CraftApp {
             }
         }
         // ================= dialogs =================
-        if !self.show_add && self.add_pre.is_some() {
-            // Cancelled (or closed): its background download goes with it.
+        if !self.show_add && (self.add_pre.is_some() || !self.add_file_auto.is_empty()) {
+            // Cancelled (or closed): its background download goes with it,
+            // and so does a name the dialog chose itself (left behind, it
+            // looked typed and was never replaced by the next link's).
             self.stop_add_prestart(None);
+            if self.add_file == self.add_file_auto {
+                self.add_file.clear();
+            }
             self.add_file_auto.clear();
         }
         if self.show_add {
@@ -10351,26 +10447,39 @@ impl eframe::App for CraftApp {
                 && self.add_url.trim() != self.probe_done_for
                 && !self.probing
             {
+                // The old link's own file name counts as chosen by the
+                // dialog too (a pasted-over link left "EQaa…" as the name).
+                let old_auto = (!self.probe_done_for.is_empty()).then(|| filename_from_url(&self.probe_done_for));
                 self.probe_done_for = self.add_url.trim().to_string();
                 // A new link: the old one's background download goes, and a
                 // name the dialog chose itself follows the link.
                 self.stop_add_prestart(None);
-                if self.add_file.trim().is_empty() || self.add_file == self.add_file_auto {
+                if self.add_file.trim().is_empty()
+                    || self.add_file == self.add_file_auto
+                    || old_auto.as_deref() == Some(self.add_file.as_str())
+                {
                     self.add_file = filename_from_url(self.add_url.trim());
                     self.add_file_auto = self.add_file.clone();
                 }
                 self.start_probe(self.add_url.trim().to_string());
             }
             // collect probe result
-            let mut got_probe = None;
+            let mut got: Vec<(Option<u64>, Option<String>, Vec<u64>, bool)> = Vec::new();
             if let Some(rx) = self.probe_rx.as_ref() {
                 while let Ok(r) = rx.try_recv() {
-                    got_probe = Some(r);
+                    got.push(r);
                 }
             }
-            if let Some((sz, nm)) = got_probe {
-                self.probing = false;
-                self.probe_size = sz;
+            for (sz, nm, sides, last) in got {
+                // An early message (a YouTube video's title and qualities)
+                // leaves the size still being measured.
+                if last {
+                    self.probing = false;
+                    self.probe_size = sz;
+                }
+                if !sides.is_empty() {
+                    self.add_yt_sides = sides;
+                }
                 if let Some(n) = nm {
                     self.probe_name = Some(n.clone());
                     if self.add_file.trim().is_empty() || self.add_file == self.add_file_auto {
@@ -10382,7 +10491,9 @@ impl eframe::App for CraftApp {
                         self.add_file_auto = self.add_file.clone();
                     }
                 }
-                self.maybe_add_prestart();
+                if last {
+                    self.maybe_add_prestart();
+                }
             }
             let psize = self.probe_size;
             let pbusy = self.probing;
@@ -10514,15 +10625,21 @@ impl eframe::App for CraftApp {
                     // size chip: grid mark, size, and a tick once the probe is in
                     let chip = at(DM_X + DM_PATH_W + 8.0, DM_ROW2, DM_SIZE_W, DM_BOX_H);
                     dm_box(&p, chip);
-                    dm_icon(
-                        &p,
-                        egui::Rect::from_center_size(
-                            egui::pos2(chip.min.x + 21.0, chip.center().y),
-                            egui::Vec2::splat(16.0),
-                        ),
-                        DmIcon::Grid,
-                        DM_ACC(),
-                        0.0,
+                    // What is being downloaded, with the left panel's own
+                    // icons in the text colour (light on dark, dark on
+                    // light): a video, music (a YouTube link as MP3/M4A
+                    // too), an archive, a program, a picture, a document.
+                    let kind = if is_youtube_video_link(self.add_url.trim()) {
+                        if matches!(self.add_quality.trim().to_ascii_lowercase().as_str(), "mp3" | "m4a") { "Music" } else { "Video" }
+                    } else {
+                        category_of(self.add_file.trim())
+                    };
+                    p.stext(
+                        egui::pos2(chip.min.x + 21.0, chip.center().y),
+                        egui::Align2::CENTER_CENTER,
+                        file_icon(kind),
+                        crate::fonts::icon(17.0),
+                        pl().dm_txt,
                     );
                     let known = !pbusy && psize.filter(|s| *s > 0).is_some();
                     let yt = is_youtube_video_link(self.add_url.trim());
@@ -10561,6 +10678,10 @@ impl eframe::App for CraftApp {
                                 egui::Frame::popup(ui.style()).fill(pl().dm_card).show(ui, |ui| {
                                     ui.set_min_width(chip.width());
                                     for (k, l) in YT_QUALITIES {
+                                        // Only the sizes this video has.
+                                        if !yt_quality_offered(k, &self.add_yt_sides) {
+                                            continue;
+                                        }
                                         let on = k.eq_ignore_ascii_case(self.add_quality.trim());
                                         if ui.selectable_label(on, l).clicked() {
                                             pick = Some(k.to_string());
@@ -12457,6 +12578,39 @@ impl CraftApp {
         if !is_download_url(self.add_url.trim()) {
             self.show_add = true;
             self.push_log("Add download: invalid URL (need http/https).");
+            return;
+        }
+        // A folder on Google Drive, Pixeldrain or Mediafire: its files open
+        // in Download all links to pick from (src/hosts.rs).
+        if crate::hosts::is_folder(self.add_url.trim()) {
+            let url = self.add_url.trim().to_string();
+            let opts = EngineOpts { proxy_url: self.proxy_url.clone(), user_agent: self.user_agent.clone(), ..Default::default() };
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.rt.spawn(async move {
+                let msg = match opts.build_client() {
+                    Ok(client) => match crate::hosts::list(&client, &url).await {
+                        Ok(files) if !files.is_empty() => {
+                            let n = files.len();
+                            let links: Vec<crate::native_host::PageLink> = files
+                                .into_iter()
+                                .map(|(u, name)| crate::native_host::PageLink { url: u, text: name })
+                                .collect();
+                            match tokio::task::spawn_blocking(move || crate::native_host::open_links_window(&url, "Folder", "", &links)).await {
+                                Ok(Ok(())) => format!("Folder: {n} files - pick them in the window that opened."),
+                                Ok(Err(e)) => format!("Folder: {e}"),
+                                Err(e) => format!("Folder: {e}"),
+                            }
+                        }
+                        Ok(_) => "Folder: it has no files.".to_string(),
+                        Err(e) => format!("Folder: {e:#}"),
+                    },
+                    Err(e) => format!("Folder: {e:#}"),
+                };
+                let _ = tx.send(msg);
+            });
+            self.host_folder_rx = Some(rx);
+            self.show_add = false;
+            self.push_log("Listing the folder… a window opens to pick the files.");
             return;
         }
         // A YouTube playlist or channel: list its videos to pick from.

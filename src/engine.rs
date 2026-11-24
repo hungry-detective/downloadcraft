@@ -1582,6 +1582,26 @@ pub async fn probe(
     opts: &EngineOpts,
     url: &str,
 ) -> (Option<u64>, bool, Option<String>, Option<String>) {
+    // Mediafire, Pixeldrain, Mega: the site names the file (and Mega its
+    // size; its address serves encrypted bytes of the same length).
+    if crate::hosts::is_file_page(url) {
+        return match crate::hosts::resolve(client, url).await {
+            Ok(r) if r.mega_key.is_some() => (r.size, true, None, r.name),
+            Ok(r) => {
+                let (total, ranges, ctype, disp) = Box::pin(probe_inner(client, opts, &r.url)).await;
+                (total.or(r.size), ranges, ctype, r.name.or(disp))
+            }
+            Err(_) => (None, false, None, None),
+        };
+    }
+    probe_inner(client, opts, url).await
+}
+
+async fn probe_inner(
+    client: &reqwest::Client,
+    opts: &EngineOpts,
+    url: &str,
+) -> (Option<u64>, bool, Option<String>, Option<String>) {
     let dbg = std::env::var("DOWNLOAD_CRAFT_DEBUG").is_ok();
     // A torrent's size and name come from its metadata (src/torrent.rs),
     // not from an HTTP probe of a magnet link.
@@ -1876,6 +1896,8 @@ pub fn title_filename(title: &str, captured: Option<&std::path::Path>) -> String
 
 /// Make a server/title string safe as a Windows filename.
 pub fn sanitize_filename(s: &str) -> String {
+    // "Title: Subtitle" reads as "Title - Subtitle" (no colons in names).
+    let s = s.replace(" : ", " - ").replace(": ", " - ");
     let mut out: String = s
         .chars()
         .map(|c| {
@@ -4928,6 +4950,26 @@ async fn download_inner(
             let _job = claim_dest_job(&dest).ok_or_else(|| anyhow!("this destination is already downloading elsewhere"))?;
             return post_download(&url, &dest, connections, &opts, &shared).await;
         }
+    }
+    // Mediafire, Pixeldrain, Mega: the link is a page; download the file
+    // behind it (src/hosts.rs). Mega's arrives encrypted and is decrypted
+    // once it is all here.
+    if crate::hosts::is_file_page(&url) {
+        let client = opts.build_client()?;
+        let r = crate::hosts::resolve(&client, &url).await?;
+        job_log(&opts.log_key, format!("file host: {} -> {}", url, crate::crash::redact(&r.url)));
+        if let Some(k) = r.mega_key {
+            let log = opts.log_key.clone();
+            Box::pin(download(r.url, dest.clone(), connections, opts, shared)).await?;
+            let d = dest.clone();
+            tokio::task::spawn_blocking(move || crate::hosts::mega_decrypt_file(&d, &k))
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+                .map_err(|e| anyhow!("decrypting the Mega file: {e:#}"))?;
+            job_log(&log, "Mega: decrypted");
+            return Ok(());
+        }
+        url = r.url;
     }
     // Google Drive / Docs: the share link is a page; download what it serves.
     if crate::gdrive::is_drive_url(&url) {

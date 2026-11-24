@@ -211,7 +211,8 @@ function fmtSize(n) {
 }
 const fmtDur = (s) => (R ? R.fmtDur(s) : "");
 const safeName = (s, ext = ".mp4") => {
-  const base = String(s || "video").replace(/[<>:"/\\|?*]/g, "_").trim().slice(0, 120) || "video";
+  // "Title: Subtitle" reads as "Title - Subtitle" (no colons in file names).
+  const base = String(s || "video").replace(/\s*:\s+/g, " - ").replace(/[<>:"/\\|?*]/g, "_").trim().slice(0, 120) || "video";
   return base.toLowerCase().endsWith(ext) ? base : base + ext;
 };
 // `v.title` comes from content.js, which already prefers authoritative
@@ -468,6 +469,15 @@ function facebookItem(e, pageUrl) {
   return { key: `fb:${e.id}`, kind: "videos", title: e.title || "Facebook video", thumb: e.thumb, dur, tag: "FACEBOOK", link: pageUrl, page: pageUrl, options: opts };
 }
 
+// A link text that names nothing: "Download", "Download now", "Click here",
+// "Direct link", a number or a size.
+function linkTextIsWeak(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (t.length < 3) return true;
+  if (/^[\d\s.,:|()-]*(kb|mb|gb|tb)?$/i.test(t)) return true;
+  return /^(download( (now|here|file|link|movie|video|it))?|click here|here|link|direct( download)?( link)?|mirror( \d+)?|server( \d+)?|get( it)?|watch( now)?|play( now)?|open|save|stream)[\s!.:]*$/i.test(t);
+}
+
 // Everything the page offers, as cards: [{kind: "videos"|"streams"|"other", ...}].
 function collectItems(peek, pageUrl) {
   const items = [];
@@ -536,10 +546,17 @@ function collectItems(peek, pageUrl) {
   }
   for (const l of (peek.links || [])) {
     if (!/^https?:\/\//i.test(l.url)) continue; // defense-in-depth: never offer odd schemes
+    // A file link whose text names nothing ("Download", "Click here") is
+    // shown under the page's title, with the page's picture when it is a
+    // video or sound file (a movie page's 3 GB MP4 showed as "Download").
+    const tag = tagOf(l.url, "");
+    const media = /^(MP4|MKV|WEBM|MOV|AVI|M4V|TS|FLV|WMV|MP3|M4A|FLAC|OGG|WAV|OPUS|AAC)$/i.test(tag);
+    const weak = linkTextIsWeak(l.text);
     items.push({
       key: `link:${l.url}`,
       kind: "other",
-      title: l.text || l.url, thumb: l.thumb, tag: tagOf(l.url, ""), link: l.url, page: pageUrl,
+      title: weak && pageTitle ? pageTitle : (l.text || l.url),
+      thumb: l.thumb || (media ? peek.thumb : undefined), tag, link: l.url, page: pageUrl,
       options: [{ label: "File", url: l.url, browser: browserJob(l.url, ""), msg: { type: "download", url: l.url, pageUrl: pageUrl || undefined } }],
     });
   }

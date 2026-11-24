@@ -42,6 +42,19 @@ pub fn magnet_name(url: &str) -> Option<String> {
 
 static SESSION: tokio::sync::OnceCell<Arc<Session>> = tokio::sync::OnceCell::const_new();
 
+/// Long-running public trackers, asked for every public torrent besides its
+/// own (UDP first: one round trip; HTTPS ones last).
+pub const PUBLIC_TRACKERS: &[&str] = &[
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.dler.org:6969/announce",
+    "udp://explodie.org:6969/announce",
+    "https://tracker.tamersunion.org:443/announce",
+];
+
 /// The app's one BitTorrent session (listening for peers, with DHT), made on
 /// first use. Its own state (the DHT's peers) lives in the settings folder.
 async fn session() -> Result<Arc<Session>> {
@@ -64,9 +77,17 @@ async fn session() -> Result<Arc<Session>> {
                 listen.ipv4_only = true;
             }
             let device = (!crate::netlock::chosen().is_empty() && cfg!(not(windows))).then(crate::netlock::chosen);
+            // Peers can reach us too (the router opens the port by UPnP):
+            // more peers, sooner. Not when locked to an adapter (a VPN) or
+            // on a fixed server port (Docker maps that one itself).
+            listen.enable_upnp_port_forwarding = bind.is_none() && port == 0;
             let opts = SessionOptions {
                 bind_device_name: device,
                 listen: Some(listen),
+                // Public torrents also ask well-known public trackers: a
+                // magnet whose own trackers are dead or missing found no
+                // peers for minutes (private torrents keep only their own).
+                trackers: PUBLIC_TRACKERS.iter().filter_map(|t| url::Url::parse(t).ok()).collect(),
                 fastresume: false,
                 persistence: None,
                 client_name_and_version: Some(format!("DownloadCraft {}", crate::model::APP_VERSION)),

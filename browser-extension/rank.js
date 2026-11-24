@@ -815,7 +815,81 @@
     }
   }
 
-  const DCRank = { mp4Info, fbVideos, fbPathOf, countVideos, socialSite, socialPostUrl, pickHeight, attachmentDownload, videoDismissKey, directDownloadLink, addDirectExtensions, hideDownloadUI, playerEvidence, playlistReferences, samePlayer, completePlaylist, isVimeoAdaptive, isVimeoFragment, vimeoVideoPage, isPlaylistUrl, isSegmentUrl, canonicalUrl, kindOf, scoreMedia, classifyResponse, sniffBytes, forwardHeaders, extOf, dispositionFilename, collapseDupes, fmtDur, panelTokens, dcThemeMode, dcSetTheme, paintDcPanel };
+  // ---- Series episodes: "Show S01E02 - Episode name" ----
+  // Embed players (VidSrc, 2Embed, VidFast, MultiEmbed…) name the season and
+  // episode in their own address; pages show "Season 1 • Episode 2 • Name".
+
+  // Season and episode in an address: /tv/tt4574334/1/2, ?s=1&e=2,
+  // season=1&episode=2, …-s01e02….
+  function episodeFromUrl(u) {
+    const s = String(u || "");
+    let m = s.match(/[?&/](?:s|season|sea)=(\d{1,2})\b[^#]*?[?&/](?:e|episode|ep)=(\d{1,4})\b/i);
+    if (m) return { s: +m[1], e: +m[2] };
+    m = s.match(/\/(?:tv|series|show|shows|episode|episodes|embedtv|tv-show|tvshow)\/(?:[^/?#]+\/)*?(?:tt\d+|\d+)[/-](\d{1,2})[/-](\d{1,4})(?=$|[/?#&])/i);
+    if (m) return { s: +m[1], e: +m[2] };
+    // An IMDb id then season-episode: /embed/tt4574334/1-2/.
+    m = s.match(/\/tt\d{5,}\/(\d{1,2})[-/](\d{1,4})(?=$|[/?#&])/i);
+    if (m) return { s: +m[1], e: +m[2] };
+    m = s.match(/[^a-z]s(\d{1,2})[ ._-]?e(\d{1,4})(?![0-9])/i);
+    if (m) return { s: +m[1], e: +m[2] };
+    return null;
+  }
+
+  // Season, episode and the episode's name in a page's text.
+  function episodeFromText(text) {
+    const t = String(text || "").slice(0, 40000);
+    const sep = "[•·|:\\-–—,]";
+    // On one line only ("S5\nE1 · …" in a season/episode menu is not S5E1).
+    const res = [
+      new RegExp(`Season[ \\t]*(\\d{1,2})[ \\t]*${sep}?[ \\t]*Episode[ \\t]*(\\d{1,4})(?:[ \\t]*${sep}[ \\t]*([^\\n•·|]{2,90}))?`, "i"),
+      new RegExp(`\\bS(\\d{1,2})[ \\t]*${sep}?[ \\t]*E(\\d{1,4})\\b(?:[ \\t]*${sep}[ \\t]*([^\\n•·|]{2,90}))?`, "i"),
+    ];
+    for (const re of res) {
+      const m = t.match(re);
+      if (m) return { s: +m[1], e: +m[2], name: (m[3] || "").trim() };
+    }
+    return null;
+  }
+
+  // An episode's own line in a player's episode list ("E2 · Chapter Two…",
+  // "Episode 2: …"), when the list gives it.
+  function episodeNameIn(text, e) {
+    const t = String(text || "").slice(0, 60000);
+    const re = new RegExp(`(?:^|\\n)[ \\t]*(?:E|Ep\\.?|Episode)[ \\t]*0*${e}[ \\t]*[•·:\\-–—.][ \\t]*([^\\n]{2,90})`, "i");
+    const m = t.match(re);
+    return m ? m[1].trim() : "";
+  }
+
+  // "Stranger Things (TV Series 2016–2025) ⭐ 8.6" -> "Stranger Things".
+  function showName(title) {
+    return String(title || "")
+      .replace(/\s*[⭐★]\s*\d+(?:\.\d+)?(?:\/10)?/g, "")
+      .replace(/\s*\((?:TV (?:Mini[- ])?Series|TV Show|Series|Web Series)[^)]*\)\s*/i, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // The name for a series episode, or the title as it was. `urls` are the
+  // page's and its players' addresses (the player's own wins: it is what
+  // plays), `text` the page's visible text.
+  function episodeTitle(title, urls, text) {
+    const base = String(title || "").trim();
+    if (!base || /\bS\d{1,2}\s*E\d{1,4}\b/i.test(base)) return base;
+    let ep = null;
+    for (const u of urls || []) { ep = episodeFromUrl(u); if (ep) break; }
+    const said = episodeFromText(text);
+    if (!ep && said) ep = { s: said.s, e: said.e };
+    if (!ep) return base;
+    const pad = (n) => String(n).padStart(2, "0");
+    // The name: from "Season 1 • Episode 2 • Name" when it is this
+    // episode, else from the episode list's own line ("E2 · Name").
+    const raw = said && said.s === ep.s && said.e === ep.e && said.name ? said.name : episodeNameIn(text, ep.e);
+    const name = raw.replace(/\s+(?:Watch|Play|Download)(?:\s+now)?\s*$/i, "").trim();
+    const clean = name && !/^(?:episode\s*)?\d+$/i.test(name) ? ` - ${name}` : "";
+    return `${showName(base)} S${pad(ep.s)}E${pad(ep.e)}${clean}`;
+  }
+
+  const DCRank = { episodeFromUrl, episodeFromText, episodeTitle, showName, mp4Info, fbVideos, fbPathOf, countVideos, socialSite, socialPostUrl, pickHeight, attachmentDownload, videoDismissKey, directDownloadLink, addDirectExtensions, hideDownloadUI, playerEvidence, playlistReferences, samePlayer, completePlaylist, isVimeoAdaptive, isVimeoFragment, vimeoVideoPage, isPlaylistUrl, isSegmentUrl, canonicalUrl, kindOf, scoreMedia, classifyResponse, sniffBytes, forwardHeaders, extOf, dispositionFilename, collapseDupes, fmtDur, panelTokens, dcThemeMode, dcSetTheme, paintDcPanel };
   g.DCRank = DCRank;
   if (typeof module !== "undefined" && module.exports) module.exports = DCRank;
 })(typeof globalThis !== "undefined" ? globalThis : this);

@@ -27,6 +27,8 @@ struct Behaviour {
     slow_first: u64,
     /// Bytes/s for every connection (0 = full speed).
     rate: u64,
+    /// Bytes/s for the whole server, shared by every connection (0 = none).
+    total_rate: u64,
     /// More concurrent connections than this get 429.
     max_conns: usize,
     /// More concurrent connections than this get 403 (per-IP limit).
@@ -61,6 +63,8 @@ struct Server {
     signature: AtomicU64,
     sig_served: AtomicU64,
     requests: Mutex<Vec<String>>,
+    /// The whole server's bytes so far and since when (`total_rate`).
+    shared: Mutex<(u64, Option<Instant>)>,
 }
 
 impl Server {
@@ -78,6 +82,7 @@ impl Server {
             served: AtomicU64::new(0),
             signature: AtomicU64::new(1),
             sig_served: AtomicU64::new(0),
+            shared: Mutex::new((0, None)),
             requests: Mutex::new(Vec::new()),
         });
         let srv = s.clone();
@@ -232,6 +237,19 @@ impl Server {
                 if path.starts_with("/signed/") {
                     self.sig_served.fetch_add(n as u64, Ordering::SeqCst);
                 }
+                if b.total_rate > 0 {
+                    // One rate for the whole server: each chunk waits its
+                    // turn in the shared schedule.
+                    let wait = {
+                        let mut g = self.shared.lock().unwrap();
+                        let since = *g.1.get_or_insert_with(Instant::now);
+                        g.0 += n as u64;
+                        g.0 as f64 / b.total_rate as f64 - since.elapsed().as_secs_f64()
+                    };
+                    if wait > 0.0 {
+                        tokio::time::sleep(Duration::from_secs_f64(wait)).await;
+                    }
+                }
                 if rate > 0 {
                     let ahead = sent as f64 / rate as f64 - t0.elapsed().as_secs_f64();
                     if ahead > 0.0 {
@@ -293,6 +311,42 @@ async fn parallel_download_is_byte_exact() {
     assert!(out.peak_connections >= 2, "peak {}", out.peak_connections);
     assert!(!downloadcraft_engine::data_path(&dest).exists());
     assert!(!downloadcraft_engine::journal_path(&dest).exists());
+}
+
+/// Each connection capped (a server that limits per connection): more
+/// connections are faster, so the download grows past the 8 it opens with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_grow_while_they_raise_the_speed() {
+    let size = 96 * MIB;
+    let srv = Server::start(Behaviour { size, rate: 2 * MIB as u64, ..Default::default() }).await;
+    let dest = tmp("grow");
+    let job = Job::new(srv.url("/f"), &dest).size_hint(Some(size as u64), true);
+    let (log, ev) = recorder();
+    let cfg = Config { connections: 16, min_split: MIB as u64, ..quick() };
+    let out = get(&Downloader::new(reqwest::Client::new()).config(cfg).on_event(ev), job).await.unwrap();
+    assert_eq!(std::fs::metadata(&dest).unwrap().len(), size as u64);
+    let peak = srv.peak.load(Ordering::SeqCst);
+    assert!(peak > 8, "grew past 8 at once: server saw {peak}, log {:?}", log.lock().unwrap());
+    assert!(out.peak_connections <= 16, "never past the number set: {}", out.peak_connections);
+}
+
+/// One rate shared by the whole server: more connections are no faster, so
+/// after one step that did not help it stays put.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_stop_growing_when_they_do_not_help() {
+    let size = 192 * MIB;
+    let srv = Server::start(Behaviour { size, total_rate: 24 * MIB as u64, ..Default::default() }).await;
+    let dest = tmp("nogrow");
+    let job = Job::new(srv.url("/f"), &dest).size_hint(Some(size as u64), true);
+    let (log, ev) = recorder();
+    let cfg = Config { connections: 16, min_split: MIB as u64, ..quick() };
+    get(&Downloader::new(reqwest::Client::new()).config(cfg).on_event(ev), job).await.unwrap();
+    assert_eq!(std::fs::metadata(&dest).unwrap().len(), size as u64);
+    let peak = srv.peak.load(Ordering::SeqCst);
+    let log = log.lock().unwrap();
+    // 8, one step of 2, and a finishing connection overlapping its next one.
+    assert!(peak <= 12, "one step at most: server saw {peak}, log {log:?}");
+    assert!(!log.iter().any(|e| e.contains("ConnectionsAdded { to: 12")), "no second step: {log:?}");
 }
 
 #[tokio::test]

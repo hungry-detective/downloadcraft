@@ -8,6 +8,9 @@ mod archive;
 mod app;
 mod basket;
 mod cnl;
+mod history;
+mod subs;
+mod hosts;
 mod cli;
 mod crash;
 mod complete;
@@ -152,6 +155,12 @@ fn main() -> eframe::Result<()> {
     }
     if args.iter().any(|a| a == "--about") {
         return window_result(about::run());
+    }
+    if args.iter().any(|a| a == "--history") {
+        return window_result(history::run());
+    }
+    if args.iter().any(|a| a == "--subs") {
+        return window_result(subs::run());
     }
     if args.iter().any(|a| a == "--setup") {
         return window_result(setup::run());

@@ -140,6 +140,34 @@ struct PairReq {
     name: String,
 }
 
+/// A key for a phone's Share-menu shortcut (iPhone Shortcuts, Android's
+/// HTTP Shortcuts): paired like a device, shown once. Returns the key.
+pub fn new_shortcut_key(name: &str) -> String {
+    use rand::Rng;
+    let token: String = (0..32).map(|_| format!("{:02x}", rand::rng().random::<u8>())).collect();
+    let mut file = load();
+    file.devices.push(Device {
+        name: name.to_string(),
+        token_sha: sha_hex(&token),
+        added: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+    });
+    save(&file);
+    token
+}
+
+/// The link in what a phone shared: the link itself, or "Title https://…"
+/// (Android shares a page's title with its address).
+pub fn shared_link(text: &str) -> Option<String> {
+    let t = text.trim();
+    if crate::model::is_download_url(t) {
+        return Some(t.to_string());
+    }
+    t.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| matches!(c, '"' | '\'' | '(' | ')' | '<' | '>' | ',')))
+        .find(|w| crate::model::is_download_url(w))
+        .map(str::to_string)
+}
+
 async fn pair(State(st): State<Arc<Shared>>, Json(req): Json<PairReq>) -> Response {
     {
         let mut f = st.fails.lock().unwrap_or_else(|e| e.into_inner());
@@ -229,10 +257,10 @@ async fn add(headers: HeaderMap, Json(req): Json<AddReq>) -> Response {
     if !authorized(&headers) {
         return deny();
     }
-    let url = req.url.trim().to_string();
-    if !crate::model::is_download_url(&url) {
+    // A phone's Share menu sends the page's title with its address.
+    let Some(url) = shared_link(&req.url) else {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "not a download link or magnet" }))).into_response();
-    }
+    };
     let prefs = crate::confirm::load_prefs();
     let name = crate::model::filename_from_url(&url);
     let mut item = DownloadItem::new(0, url, crate::engine::sanitize_filename(&name), prefs.save_dir.clone(), prefs.connections);
@@ -403,6 +431,14 @@ impl Drop for Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shared_text_gives_its_link() {
+        assert_eq!(shared_link("https://a.example/f.zip").as_deref(), Some("https://a.example/f.zip"));
+        assert_eq!(shared_link("Big Movie (2026) https://a.example/watch?v=1").as_deref(), Some("https://a.example/watch?v=1"));
+        assert_eq!(shared_link("\"https://a.example/x.mp4\",").as_deref(), Some("https://a.example/x.mp4"));
+        assert!(shared_link("just some words").is_none());
+    }
 
     #[test]
     fn token_hash_is_stable_hex() {

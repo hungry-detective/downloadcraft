@@ -59,7 +59,7 @@ pub fn key_of(jk: &str) -> Option<[u8; 16]> {
     None
 }
 
-fn b64_decode(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn b64_decode(s: &str) -> Option<Vec<u8>> {
     fn val(c: u8) -> Option<u32> {
         Some(match c {
             b'A'..=b'Z' => c - b'A',

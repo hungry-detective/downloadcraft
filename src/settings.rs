@@ -268,7 +268,7 @@ impl Default for Settings {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| crate::model::default_download_dir().to_string_lossy().into_owned()),
             category_folders: true,
-            connections_default: 8,
+            connections_default: 16,
             speed_limit_kbps: 0,
             user_agent: String::new(),
             proxy_url: String::new(),
@@ -800,6 +800,8 @@ struct SettingsApp {
     font_note: String,
     /// Remote control's port as typed (saved when it is a valid port).
     remote_port: String,
+    /// A phone shortcut key just made (shown once).
+    phone_key: Option<String>,
     /// Browser Integration cards (Chromium family, Firefox) expanded.
     browser_open: [bool; 2],
     /// Native host registered per browser, asked when the pane first opens
@@ -958,6 +960,7 @@ pub fn run() -> eframe::Result<()> {
         font_job: None,
         font_note: String::new(),
         remote_port: crate::model::ui_pref_str("remote_port", ""),
+        phone_key: None,
         browser_open: [true, false],
         host_status: None,
         open_updates: true,
@@ -4901,6 +4904,8 @@ impl SettingsApp {
         let was_on = on;
         let mut new_code = false;
         let mut forget: Option<String> = None;
+        let mut make_phone_key = false;
+        let phone_key_shown = self.phone_key.clone();
         let port_text = &mut self.remote_port;
         card(ui, "Remote control", None, &mut open_remote, |ui| {
             let t = tok();
@@ -4963,6 +4968,41 @@ impl SettingsApp {
                         });
                     }
                 }
+                // ---- Send from the phone's Share menu ----
+                ui.add_space(10.0);
+                sec_head(ui, "Send links from the phone's Share menu");
+                let base = format!("{scheme}://{host}:{port}");
+                wrapped(
+                    ui,
+                    &format!("Quickest: on a paired phone, open {base}/?url=<link> and the link downloads at once. For a Share menu entry, make a key and add a shortcut:"),
+                    reg(11.0),
+                    t.text2,
+                );
+                ui.horizontal(|ui| {
+                    if button(ui, "Make a phone shortcut key", false).clicked() {
+                        make_phone_key = true;
+                    }
+                });
+                if let Some(key) = &phone_key_shown {
+                    ui.add(egui::Label::new(egui::RichText::new(format!("Key:  {key}")).font(egui::FontId::monospace(11.0)).color(t.accent)).selectable(true));
+                    hint(ui, "Shown once: copy it now. It is listed under Paired devices as \"Phone shortcut\" and can be removed there.");
+                    wrapped(
+                        ui,
+                        &format!(
+                            "iPhone (Shortcuts app): New shortcut → Show in Share Sheet, receives URLs → add \"Get Contents of URL\": URL {base}/api/add, Method POST, Header Authorization = Bearer <key>, Request Body JSON with url = Shortcut Input."
+                        ),
+                        reg(11.0),
+                        t.text,
+                    );
+                    wrapped(
+                        ui,
+                        &format!(
+                            "Android (free app \"HTTP Shortcuts\"): New shortcut → Method POST, URL {base}/api/add, Header Authorization = Bearer <key>, Body JSON {{\"url\": \"{{share text}}\"}}, and turn on \"Use as share target\". Then Share → HTTP Shortcuts sends the link."
+                        ),
+                        reg(11.0),
+                        t.text,
+                    );
+                }
                 ui.add_space(4.0);
                 if !https {
                     hint(ui, "The page is plain HTTP on your local network: use it at home or on a network you trust, or turn on HTTPS.");
@@ -4978,6 +5018,9 @@ impl SettingsApp {
         }
         if new_code {
             crate::remote::new_code();
+        }
+        if make_phone_key {
+            self.phone_key = Some(crate::remote::new_shortcut_key("Phone shortcut"));
         }
         if let Some(sha) = forget {
             crate::remote::remove_device(&sha);

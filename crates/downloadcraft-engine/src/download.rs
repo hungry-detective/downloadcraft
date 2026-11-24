@@ -34,6 +34,17 @@ const WAKE: Duration = Duration::from_millis(500);
 /// Connection failures in a row, with others working, before one fewer is
 /// kept: a single refused or timed-out connect is usually just a hiccup.
 const QUIET_FAILS_BEFORE_CUT: u32 = 3;
+/// Connections opened at once; more (up to the number set) are added two at
+/// a time, and kept only while each step raises the speed by GROW_GAIN.
+/// A server that shares one rate among all its connections is then not
+/// given connections that only add work.
+const OPEN_AT_ONCE: usize = 8;
+const GROW_STEP: usize = 2;
+/// How long a step is measured before it is judged.
+const GROW_TRIAL: Duration = Duration::from_secs(3);
+const GROW_GAIN: f64 = 1.10;
+/// Not worth growing for less than this left to fetch.
+const GROW_MIN_LEFT: u64 = 32 * 1024 * 1024;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -152,6 +163,8 @@ struct Run {
     control: Arc<Control>,
     url: RwLock<String>,
     cap: AtomicUsize,
+    /// The most connections allowed so far by the growth steps.
+    grow_to: AtomicUsize,
     last_cut: Mutex<Instant>,
     live: AtomicUsize,
     /// Most connections seen receiving data at the same time.
@@ -230,6 +243,7 @@ impl Run {
             return;
         }
         let mut cut = lock(&self.last_cut);
+        let configured = configured.min(self.grow_to.load(Ordering::SeqCst));
         if cut.elapsed() >= CAP_PROBE && self.cap.load(Ordering::SeqCst) < configured {
             self.cap.fetch_add(1, Ordering::SeqCst);
             *cut = Instant::now();
@@ -536,7 +550,8 @@ async fn run_once(
         map: Mutex::new(map),
         progress,
         control,
-        cap: AtomicUsize::new(conns),
+        cap: AtomicUsize::new(conns.min(OPEN_AT_ONCE)),
+        grow_to: AtomicUsize::new(conns.min(OPEN_AT_ONCE)),
         last_cut: Mutex::new(Instant::now()),
         live: AtomicUsize::new(0),
         peak: AtomicUsize::new(0),
@@ -586,6 +601,7 @@ async fn monitor(run: Arc<Run>) -> Result<Outcome, Error> {
     let mut last_speed = Instant::now();
     let mut last_pause = Instant::now().checked_sub(Duration::from_secs(3600)).unwrap_or_else(Instant::now);
     let mut last_bytes: Vec<u64> = Vec::new();
+    let mut growth = Growth::default();
     loop {
         while set.try_join_next().is_some() {}
         if run.stopping() {
@@ -629,6 +645,7 @@ async fn monitor(run: Arc<Run>) -> Result<Outcome, Error> {
         if last_speed.elapsed() >= Duration::from_secs(1) {
             let judge = last_pause.elapsed() >= cfg.slow_restart_after.unwrap_or_default() + Duration::from_secs(2);
             measure(&run, &cfg, &mut last_bytes, last_speed.elapsed(), judge);
+            grow(&run, cfg.connections.clamp(1, 32), &mut growth);
             last_speed = Instant::now();
         }
         // The save (a disk flush, then the journal) runs beside the loop:
@@ -681,6 +698,71 @@ async fn monitor(run: Arc<Run>) -> Result<Outcome, Error> {
         return Err(Error::Cancelled);
     }
     finish(&run).await
+}
+
+/// More connections while they help: with every allowed connection busy,
+/// the speed is measured over GROW_TRIAL, a step of GROW_STEP is tried and
+/// measured the same way, and growth goes on only while a step raised the
+/// speed by GROW_GAIN; the first step that did not ends it. Measured as
+/// bytes received over each window (not the smoothed per-second speeds,
+/// which still rise while a download warms up).
+#[derive(Default)]
+struct Growth {
+    /// The window being measured: bytes received when it began, and when.
+    window: Option<(u64, Instant)>,
+    /// The speed before the step being tried (None: measuring the base).
+    before: Option<f64>,
+    done: bool,
+}
+
+fn grow(run: &Run, configured: usize, g: &mut Growth) {
+    if g.done || run.single.load(Ordering::SeqCst) || !run.ranges_ok.load(Ordering::SeqCst) {
+        return;
+    }
+    let to = run.grow_to.load(Ordering::SeqCst);
+    let cap = run.cap.load(Ordering::SeqCst);
+    if cap < to {
+        // A server limit was met: no more steps.
+        g.done = true;
+        return;
+    }
+    let bytes: u64 = lock(&run.stats).iter().map(|s| s.bytes.load(Ordering::SeqCst)).sum();
+    let live = run.live.load(Ordering::SeqCst);
+    let left = {
+        let m = lock(&run.map);
+        m.total().map(|t| t.saturating_sub(m.written())).unwrap_or(0)
+    };
+    if to >= configured || left < GROW_MIN_LEFT {
+        return;
+    }
+    // A window counts only with every allowed connection running.
+    if live < to {
+        g.window = None;
+        return;
+    }
+    let Some((from, since)) = g.window else {
+        g.window = Some((bytes, Instant::now()));
+        return;
+    };
+    if since.elapsed() < GROW_TRIAL {
+        return;
+    }
+    let rate = bytes.saturating_sub(from) as f64 / since.elapsed().as_secs_f64();
+    if let Some(before) = g.before {
+        if rate < before * GROW_GAIN {
+            g.done = true;
+            run.emit(Event::ConnectionsSettled { at: to });
+            return;
+        }
+    }
+    // The base (or a step that helped): try the next step.
+    let next = (to + GROW_STEP).min(configured);
+    g.before = Some(rate);
+    g.window = None;
+    run.grow_to.store(next, Ordering::SeqCst);
+    run.cap.fetch_max(next, Ordering::SeqCst);
+    run.wake.notify_one();
+    run.emit(Event::ConnectionsAdded { to: next });
 }
 
 /// Speeds per connection, and reopening the very slow ones.

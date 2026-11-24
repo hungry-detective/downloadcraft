@@ -73,7 +73,7 @@ pub(crate) struct UiPrefs {
 
 pub(crate) fn load_prefs() -> UiPrefs {
     let mut p = UiPrefs {
-        connections: 8,
+        connections: 16,
         category_folders: true,
         timeout_secs: 60,
         ..Default::default()
@@ -1220,7 +1220,10 @@ pub fn run() -> eframe::Result<()> {
     // never dead-end on a stale "already in queue".
     let initial_notice = match crate::model::queued_entry(url.trim(), &quality_pref) {
         Some((id, false)) => format!("Already in the queue (#{id})."),
-        _ => String::new(),
+        // Downloaded before (the history keeps it after the row is gone).
+        _ => crate::history::find(url.trim(), &engine::sanitize_filename(&filename), known_size)
+            .map(|e| crate::history::before_note(&e))
+            .unwrap_or_default(),
     };
 
     let rt = std::sync::Arc::new(

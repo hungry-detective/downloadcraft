@@ -32,7 +32,7 @@ fn ui_prefs() -> (String, usize, String, bool) {
         .get("connections_default")
         .and_then(|x| x.as_u64())
         .map(|n| (n as usize).clamp(1, 32))
-        .unwrap_or(8);
+        .unwrap_or(16);
     let tpl = v
         .get("rename_template")
         .and_then(|x| x.as_str())

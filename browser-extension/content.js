@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.11.2";
+  const EXT_VER = "0.11.3";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -528,7 +528,20 @@
     t = t.trim();
     // "Title - Site" / "Title | Site": the suffix is chrome, not the name.
     t = clean(t) || String(document.title || "").trim();
-    return isMetricTitle(t) ? "" : t;
+    if (isMetricTitle(t)) return "";
+    // A series: "Show S01E02 - Episode name", from the players' addresses
+    // (VidSrc, 2Embed… name the season and episode) and the page's text.
+    try {
+      const R = typeof DCRank !== "undefined" ? DCRank : null;
+      if (R && R.episodeTitle) {
+        const urls = [...document.querySelectorAll("iframe[src], embed[src]")]
+          .map((f) => f.src)
+          .concat([location.href]);
+        const text = (document.body && document.body.innerText) || "";
+        t = R.episodeTitle(t, urls, text);
+      }
+    } catch (e) { /* the plain title */ }
+    return t;
   }
   const GENERIC_TITLE = /^(video|videos|media|stream|player|watch|download|index|untitled|movie|online\s+video|full\s+video)$/i;
   // A title that is only a compact counter ("50K views", "6.6K likes") is
@@ -3917,6 +3930,9 @@
           links,
           fb,
           net: net.map((n) => (n.thumb ? n : { ...n, thumb })),
+          // The page's picture, for file links on it too (a movie page's
+          // "Download" button showed a blank card).
+          thumb,
           page: location.href,
           // The same name the player's own button uses (the page's
           // og:title, the site's suffix dropped), not the raw tab text.
