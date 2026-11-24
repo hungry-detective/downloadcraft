@@ -172,3 +172,15 @@ test('an Instagram reel is one card of qualities sent as the post link, not its 
   assert.equal(q720.quality, '720p');
   assert.equal(q720.filename, 'NCP explained in 12 seconds [720p].mp4');
 });
+
+test('a stream whose link names no .m3u8 is sent with its type, and shows no playlist size', () => {
+  const p = panel();
+  const items = p.collectItems({
+    title: 'The Cuckold (2009)', links: [],
+    net: [{ url: 'https://vercetti.org/seg/9XtqMmahx', mime: 'application/vnd.apple.mpegurl', size: 24, dur: 5707 }],
+  }, 'https://www.imdb.com/title/tt1326207/');
+  const s = items.find((i) => i.kind === 'streams');
+  assert.ok(s, 'listed as a stream');
+  assert.equal(s.options[0].msg.mime, 'application/vnd.apple.mpegurl');
+  assert.equal(s.options[0].size, 0);
+});

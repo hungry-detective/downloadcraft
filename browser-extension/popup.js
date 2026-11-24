@@ -577,6 +577,10 @@ function collectItems(peek, pageUrl) {
   // full-length video is there; and when the player moved on to another
   // video (the next episode), the earlier ones go under Other.
   const streamPlan = planStreams(netItems);
+  // A stream's type goes with it: its link may name no ".m3u8"
+  // (vercetti.org/seg/…), and without the type the app saved the 24-byte
+  // playlist text as the "video". The player's own button sends it.
+  const streamMime = (n) => n.mime || (/mpd|dash/i.test(n.url) ? "application/dash+xml" : "application/vnd.apple.mpegurl");
   const qualityCards = new Map();
   // An MP4 under 45 s while a long video plays (the player on screen, or
   // another file) is a site's hover preview: "Download in browser" saved a
@@ -634,12 +638,12 @@ function collectItems(peek, pageUrl) {
     const asideTitle = `${pageTitle || "Video"} (${streamPlan.short.has(n.url) ? "short clip" : "played earlier"})`;
     if (master) {
       const best = { label: "Best quality", size: 0, url: n.url,
-        browser: browserJob(n.url, streamName, { mime: n.mime || "" }),
-        msg: { type: "download", url: n.url, filename: streamName, pageUrl: pageUrl || undefined, dur: streamPlan.durOf.get(n.url) || n.dur || undefined } };
+        browser: browserJob(n.url, streamName, { mime: streamMime(n) }),
+        msg: { type: "download", url: n.url, filename: streamName, pageUrl: pageUrl || undefined, mime: streamMime(n), dur: streamPlan.durOf.get(n.url) || n.dur || undefined } };
       const each = master.map((v) => ({
         label: v.h ? `${v.h}p` : "Stream", size: 0, url: v.url,
-        browser: browserJob(v.url, streamName, { mime: n.mime || "" }),
-        msg: { type: "download", url: v.url, filename: streamName, pageUrl: pageUrl || undefined, dur: streamPlan.durOf.get(n.url) || undefined },
+        browser: browserJob(v.url, streamName, { mime: streamMime(n) }),
+        msg: { type: "download", url: v.url, filename: streamName, pageUrl: pageUrl || undefined, mime: streamMime(n), dur: streamPlan.durOf.get(n.url) || undefined },
       }));
       items.push({
         key: `net:${n.url}`, kind: aside ? "other" : "streams",
@@ -657,11 +661,12 @@ function collectItems(peek, pageUrl) {
       thumb: n.thumb, dur: n.dur, tag, link: n.url, page: pageUrl,
       options: [{
         label: isStream ? (n.master ? "Best quality" : "Stream") : isSub ? "Subtitles" : `${tag}${n.pairUrl ? " + audio" : ""}`,
-        size: n.size || 0, url: n.url, pairUrl: n.pairUrl || undefined,
-        browser: browserJob(n.url, isStream ? streamName : (name || ""), { mime: n.mime || "", pairUrl: n.pairUrl || undefined }),
+        // A playlist's own size (24 B) is not the video's: none for streams.
+        size: isStream ? 0 : (n.size || 0), url: n.url, pairUrl: n.pairUrl || undefined,
+        browser: browserJob(n.url, isStream ? streamName : (name || ""), { mime: isStream ? streamMime(n) : (n.mime || ""), pairUrl: n.pairUrl || undefined }),
         // A stream is saved as one video named after the page (it was
         // sent without a name, so the app called it "index.m3u8").
-        msg: { type: "download", url: n.url, filename: isStream ? streamName : name, pageUrl: pageUrl || undefined, pairUrl: n.pairUrl || undefined, pairMime: n.pairMime || undefined, dur: n.dur || undefined },
+        msg: { type: "download", url: n.url, filename: isStream ? streamName : name, pageUrl: pageUrl || undefined, mime: isStream ? streamMime(n) : (n.mime || undefined), pairUrl: n.pairUrl || undefined, pairMime: n.pairMime || undefined, dur: n.dur || undefined },
       }],
     });
   }
@@ -826,7 +831,10 @@ function enrich(items, pageUrl) {
   }
   // Rows without a size, or with only an estimate, get measured; a row that
   // carries its audio track (`pairUrl`) is both files together.
-  const want = opts.filter(({ o }) => o.url && (!(o.size > 0) || o.approx) && !/\.(m3u8|mpd)(\?|$)/i.test(o.url)).slice(0, 10);
+  // Never a stream's (its link answers with the playlist: "24 B" for a
+  // 1:35:07 movie, whatever the link looks like) nor a post's (a web page).
+  const isStream = (it, o) => it.kind === "streams" || it.viaApp || /^(HLS|DASH|M3U8|MPD)$/i.test(it.tag || "") || /\.(m3u8|mpd)(\?|$)/i.test(o.url);
+  const want = opts.filter(({ it, o }) => o.url && (!(o.size > 0) || o.approx) && !isStream(it, o)).slice(0, 10);
   const need = [...new Set(want.flatMap(({ o }) => [o.url, o.pairUrl].filter(Boolean)))].slice(0, 16);
   if (need.length) {
     chrome.runtime.sendMessage({ type: "getSizes", urls: need, referer: pageUrl }, (res) => {
@@ -1096,15 +1104,17 @@ $("refreshBtn").onclick = async () => {
   await loadVideos();
   status("");
 };
-// 🗑 Clear: drop what was found (the sniffer's list and the cards the page
-// itself reports) until ⟳ Rescan.
+// 🗑 Clear: hide what was found until ⟳ Rescan, which shows it again. What
+// the sniffer caught is kept: it was wiped before, and a player that had
+// already fetched its stream never asks for it again, so ⟳ found nothing.
 $("clearBtn").onclick = async () => {
   const tab = await activeTab();
   for (const k of shownKeys) hidden.keys.add(k);
   await saveHidden();
-  if (tab && tab.id !== undefined) chrome.runtime.sendMessage({ type: "clearMedia", tabId: tab.id }, () => loadVideos());
-  else if (lastRender) lastRender();
-  status("Cleared — press ⟳ to look for videos again", "ok");
+  try { if (tab && tab.id !== undefined) api.action.setBadgeText({ text: "", tabId: tab.id }); } catch (e) { /* badge only */ }
+  lastSig = "";
+  if (lastRender) lastRender();
+  status("Cleared — press ⟳ to show them again", "ok");
 };
 
 chrome.storage.local.get({ dcQuality: "" }, (v) => {
