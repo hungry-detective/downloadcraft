@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.11.3";
+  const EXT_VER = "0.11.8";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -503,6 +503,19 @@
       return URL_DECODE(last);
     } catch (e) { return ""; }
   }
+  // A player in another site's frame cannot read the page around it: the
+  // page's own name (already "Show S01E04 - Episode name" on an episode
+  // page) is asked of the top frame through the background, kept here and
+  // refreshed on each use (the episode changes as the viewer moves on).
+  let topTitle = "";
+  function refreshTopTitle() {
+    if (typeof window === "undefined" || window.top === window) return;
+    try {
+      const p = api.runtime.sendMessage({ type: "topTitle" });
+      if (p && p.then) p.then((r) => { if (r && r.title) topTitle = String(r.title); }).catch(() => {});
+    } catch (e) { /* the page's name stays unknown */ }
+  }
+  refreshTopTitle();
   function pageTitle() {
     const clean = (t) =>
       String(t || "")
@@ -518,7 +531,12 @@
         const t = clean((og && og.getAttribute("content")) || td.title);
         if (t) return t;
       }
-    } catch (e) { /* cross-origin parent: fall through */ }
+    } catch (e) {
+      // Cross-origin parent: the name it gave (asked through the
+      // background), the frame's own only when there is none yet.
+      refreshTopTitle();
+      if (topTitle) return topTitle;
+    }
     let t = "";
     try {
       const og = document.querySelector('meta[property="og:title"]');
@@ -1376,6 +1394,8 @@
       const streams = list.filter((m) => R.kindOf(m) === "playlist");
       if (streams.length) list = streams;
     }
+    // Not a preview or ad of another length, nor another frame's video.
+    if (R && R.fitPlayer) list = R.fitPlayer(list, opts && opts.dur, opts && opts.framePage);
     // P4: when the tab already holds a playlist, loose segments are its
     // children (the engine assembles them) — never pick a part. Without
     // rank.js, fall back to the legacy inline score below.
@@ -3381,7 +3401,12 @@
             // than sending the bare page.
             if (pill.__dcBusy) return;
             const src = String((v && (v.currentSrc || v.src)) || "");
-            const pick = (items) => bestSniffed(items, { streamPlayer: /^blob:/i.test(src) || !!(v && v.srcObject) });
+            let playerDur = 0;
+            try { const d = Math.round(v.duration); if (Number.isFinite(d) && d > 0 && d < 86400) playerDur = d; } catch (e) { /* unknown */ }
+            const pick = (items) => bestSniffed(items, {
+              streamPlayer: /^blob:/i.test(src) || !!(v && v.srcObject),
+              dur: playerDur, framePage: location.href,
+            });
             barBusy(pill, dcT("busyCapturing", "Capturing…"));
             waitFor(() => sniffedNow().then(pick), (best) => {
               barBusy(pill, null);
@@ -3843,6 +3868,11 @@
   // another tab's stale snapshot (global storage keys are fallback only).
   try {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      // The page's own name, for a player in another site's frame.
+      if (msg && msg.type === "dcPageTitle" && window.top === window) {
+        sendResponse({ title: pageTitle() });
+        return false;
+      }
       if (msg && msg.type === "ctxDownloadVideo" && alive()) {
         try { downloadContextVideo(); } catch (e) { /* ignore */ }
         sendResponse({ ok: true });

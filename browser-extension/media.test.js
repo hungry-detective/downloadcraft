@@ -51,6 +51,16 @@ it('replays the headers the player sent for a captured file',async()=>{
  assert.equal(plain.calls[0].headers,null);
  assert.equal(plain.calls[0].referer,context.pageUrl);
 });
+it('a quality the player never asked for gets the headers it sent to that server',async()=>{
+ // The IMDb page's episode player: the master playlist was requested with
+ // the player's Referer; its 640p list, picked from the menu, never was.
+ const master='https://cdn.example.xyz/e837/7beb.m3u8';
+ const quality='https://cdn.example.xyz/e837/807787.m3u8';
+ const auth=new Map([[master,{referer:'https://vidsrc.su/',cookie:null,headers:{}}],['https://other.example/x.m3u8',{referer:'https://elsewhere.example/',cookie:null,headers:{}}]]);
+ const h=harness([{...context,url:quality,mime:'application/vnd.apple.mpegurl'}],undefined,async()=>null,auth);
+ assert.equal(await h.sendToHost(quality,'Stranger Things S01E04.mp4',{pageUrl:'https://www.imdb.com/title/tt4574334/',referer:'https://www.imdb.com/title/tt4574334/'}),true);
+ assert.equal(h.calls[0].referer,'https://vidsrc.su/');
+});
 it('hands a generic fragment to its complete playlist, preserving player expectations',async()=>{
  const h=harness([{...context,url:fragment},{...context,url:root,master:true}]);
  assert.equal(await h.sendToHost(fragment,'movie.mp4',{size:512}),true);

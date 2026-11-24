@@ -146,3 +146,25 @@ it("flags DRM (ContentProtection) and refuses live DASH", () => {
   assert.equal(S.parseMpd(drm, "https://h/m.mpd", parser).protected, true);
   assert.throws(() => S.parseMpd('<MPD type="dynamic"><Period/></MPD>', "https://h/m.mpd", parser), /live/);
 });
+
+// The player's download button picks the episode, not IMDb's 10 s trailer
+// preview playing in the page above the embedded player.
+{
+  const { test } = require('node:test');
+  const assert = require('node:assert/strict');
+  const R = require('./rank.js');
+  test('a player picks the stream of its own length, from its own frame', () => {
+    const embed = 'https://vidsrc.su/embed/tv/66732/1/4';
+    const preview = { url: 'https://imdb-video.media-imdb.com/previews/v.m3u8', pageUrl: 'https://www.imdb.com/title/tt4574334/', dur: 10 };
+    const master = { url: 'https://cdn.example/m.m3u8', pageUrl: embed, master: true, variants: [{ url: 'https://cdn.example/720.m3u8' }] };
+    const child = { url: 'https://cdn.example/720.m3u8', pageUrl: embed, dur: 2967 };
+    const urls = (l) => l.map((m) => m.url);
+    // Known player length: the preview goes, the episode's streams stay.
+    assert.deepEqual(urls(R.fitPlayer([preview, master, child], 2967, embed)), [master.url, child.url]);
+    // Length unknown, preview's length unknown too: this frame's media wins.
+    const noLen = { ...preview, dur: undefined };
+    assert.deepEqual(urls(R.fitPlayer([noLen, master, child], 0, embed)), [master.url, child.url]);
+    // Nothing fits: everything is kept rather than nothing.
+    assert.deepEqual(urls(R.fitPlayer([preview], 2967, embed)), [preview.url]);
+  });
+}

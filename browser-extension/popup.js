@@ -469,6 +469,50 @@ function facebookItem(e, pageUrl) {
   return { key: `fb:${e.id}`, kind: "videos", title: e.title || "Facebook video", thumb: e.thumb, dur, tag: "FACEBOOK", link: pageUrl, page: pageUrl, options: opts };
 }
 
+// Which streams to show: `drop` (variant playlists of a master that is
+// listed, and short clips when a full-length video exists), `earlier`
+// (videos the player played before the newest one), `durOf` (a master's
+// length, from its variants).
+function planStreams(netItems) {
+  const isPl = (n) => (typeof R !== "undefined" && R ? R.kindOf(n) : "") === "playlist";
+  const streams = netItems.filter(isPl);
+  const byUrl = new Map(streams.map((n) => [n.url, n]));
+  const drop = new Set(), earlier = new Set(), short = new Set(), durOf = new Map();
+  const masters = streams.filter((n) => n.master && (n.variants || []).length);
+  for (const m of masters) {
+    let d = 0;
+    for (const v of m.variants) {
+      const child = byUrl.get(v.url);
+      if (child) { drop.add(child.url); d = Math.max(d, child.dur || 0); }
+    }
+    if (d) durOf.set(m.url, d);
+  }
+  const length = (n) => durOf.get(n.url) || n.dur || 0;
+  const shown = streams.filter((n) => !drop.has(n.url));
+  // A clip under 45 s (a site's trailer preview, an ad; IMDb plays a 10 s
+  // one above the embedded episode) is left out whenever another stream is
+  // there that is long or of unknown length: the list is the video only.
+  if (shown.some((n) => length(n) >= 120 || !length(n))) {
+    for (const n of shown) if (length(n) > 0 && length(n) < 45) drop.add(n.url);
+  }
+  // Several full videos: the one seen last is what plays now; the rest
+  // (the episode before, the same video from a second server) are left
+  // out, as they would carry this video's name.
+  const full = shown.filter((n) => !drop.has(n.url) && (length(n) >= 120 || (!length(n) && n.master)));
+  if (full.length > 1) {
+    // A stream known to be full length beats one whose length is unknown.
+    const known = full.filter((n) => length(n) >= 120);
+    const newest = (known.length ? known : full).reduce((a, b) => ((b.seenAt || 0) > (a.seenAt || 0) ? b : a));
+    for (const n of full) if (n !== newest) drop.add(n.url);
+  }
+  // Media playlists of unknown length beside a full video are its parts
+  // or another server's copy: one card is enough.
+  if (full.length) {
+    for (const n of shown) if (!drop.has(n.url) && !full.includes(n) && !length(n)) drop.add(n.url);
+  }
+  return { drop, earlier, short, durOf };
+}
+
 // A link text that names nothing: "Download", "Download now", "Click here",
 // "Direct link", a number or a size.
 function linkTextIsWeak(text) {
@@ -497,10 +541,15 @@ function collectItems(peek, pageUrl) {
     .map((n) => ({ ...n, _score: R ? R.scoreMedia(n, { hasPlaylist }) : 0 }))
     .filter((n) => n._score >= 0)
     .sort((a, b) => b._score - a._score);
-  // Video files of one page (a player's 1080p, 720p, 480p…) are one card
-  // with a quality list, labelled by the resolution read from each file.
+  // Streams: one card per video. A master playlist's qualities go in its
+  // card's list (its variant playlists get no cards of their own); a clip
+  // under 45 s (a site's trailer preview, an ad) is left out when a
+  // full-length video is there; and when the player moved on to another
+  // video (the next episode), the earlier ones go under Other.
+  const streamPlan = planStreams(netItems);
   const qualityCards = new Map();
   for (const n of netItems) {
+    if (streamPlan.drop.has(n.url)) continue;
     const kind = R ? R.kindOf(n) : "file";
     const isStream = kind === "playlist";
     const isSub = kind === "subtitle";
@@ -529,10 +578,30 @@ function collectItems(peek, pageUrl) {
       card.options.sort((a, b) => (b.h - a.h) || (b.size - a.size));
       continue;
     }
+    const master = isStream && n.master && (n.variants || []).length ? n.variants : null;
+    const aside = isStream && (streamPlan.earlier.has(n.url) || streamPlan.short.has(n.url));
+    const asideTitle = `${pageTitle || "Video"} (${streamPlan.short.has(n.url) ? "short clip" : "played earlier"})`;
+    if (master) {
+      const best = { label: "Best quality", size: 0, url: n.url,
+        browser: browserJob(n.url, streamName, { mime: n.mime || "" }),
+        msg: { type: "download", url: n.url, filename: streamName, pageUrl: pageUrl || undefined, dur: streamPlan.durOf.get(n.url) || n.dur || undefined } };
+      const each = master.map((v) => ({
+        label: v.h ? `${v.h}p` : "Stream", size: 0, url: v.url,
+        browser: browserJob(v.url, streamName, { mime: n.mime || "" }),
+        msg: { type: "download", url: v.url, filename: streamName, pageUrl: pageUrl || undefined, dur: streamPlan.durOf.get(n.url) || undefined },
+      }));
+      items.push({
+        key: `net:${n.url}`, kind: aside ? "other" : "streams",
+        title: aside ? asideTitle : (pageTitle || "Video"),
+        thumb: n.thumb, dur: streamPlan.durOf.get(n.url) || n.dur, tag, link: n.url, page: pageUrl,
+        options: [best, ...each],
+      });
+      continue;
+    }
     items.push({
       key: `net:${n.url}`,
-      kind: isStream ? "streams" : isSub || kind === "segment" ? "other" : "videos",
-      title: pageTitle || "Video",
+      kind: aside ? "other" : isStream ? "streams" : isSub || kind === "segment" ? "other" : "videos",
+      title: aside ? asideTitle : (pageTitle || "Video"),
       thumb: n.thumb, dur: n.dur, tag, link: n.url, page: pageUrl,
       options: [{
         label: isStream ? (n.master ? "Best quality" : "Stream") : isSub ? "Subtitles" : `${tag}${n.pairUrl ? " + audio" : ""}`,
@@ -621,7 +690,9 @@ function render(peek, pageUrl) {
     for (const it of items) { const c = card(it, "app"); if (c) b.appendChild(c); }
   }));
   // 2) In the browser: no app needed (pairs and streams are joined here).
-  box.appendChild(group("browser", "Download in browser", "no app needed", browserCount, "br", (b) => {
+  // Shown when the app is not running; with the app, each card's ⋮ menu
+  // still offers "Download in browser instead" (one card per video).
+  if (!hostOk) box.appendChild(group("browser", "Download in browser", "no app needed", browserCount, "br", (b) => {
     if (!browserCount) {
       const n = document.createElement("div");
       n.className = "empty";

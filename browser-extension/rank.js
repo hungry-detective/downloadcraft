@@ -815,6 +815,37 @@
     }
   }
 
+  // ---- HLS playlists: length and qualities ----
+  // A media playlist's length (the sum of its #EXTINF durations, in
+  // seconds), and a master playlist's qualities: [{url, h, bw}], biggest
+  // first, each URL made absolute against the playlist's own.
+  function hlsInfo(body, base) {
+    const text = String(body || "");
+    const lines = text.split(/\r?\n/);
+    const abs = (u) => { try { return new URL(u, base).href; } catch (e) { return u; } };
+    const variants = [];
+    let dur = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i].trim();
+      if (/^#EXTINF:/i.test(l)) {
+        const d = parseFloat(l.slice(8));
+        if (d > 0 && d < 3600) dur += d;
+      } else if (/^#EXT-X-STREAM-INF:/i.test(l)) {
+        const res = l.match(/RESOLUTION=(\d+)x(\d+)/i);
+        const bw = l.match(/BANDWIDTH=(\d+)/i);
+        let j = i + 1;
+        while (j < lines.length && (!lines[j].trim() || lines[j].trim().startsWith("#"))) j++;
+        if (j < lines.length) {
+          // The shorter side names the quality (a 1920x960 film is 960p).
+          const w = res ? +res[1] : 0, h = res ? +res[2] : 0;
+          variants.push({ url: abs(lines[j].trim()), h: Math.min(w || h, h || w), bw: bw ? +bw[1] : 0 });
+        }
+      }
+    }
+    variants.sort((a, b) => (b.h - a.h) || (b.bw - a.bw));
+    return { master: variants.length > 0, variants, dur: Math.round(dur) };
+  }
+
   // ---- Series episodes: "Show S01E02 - Episode name" ----
   // Embed players (VidSrc, 2Embed, VidFast, MultiEmbed…) name the season and
   // episode in their own address; pages show "Season 1 • Episode 2 • Name".
@@ -889,7 +920,43 @@
     return `${showName(base)} S${pad(ep.s)}E${pad(ep.e)}${clean}`;
   }
 
-  const DCRank = { episodeFromUrl, episodeFromText, episodeTitle, showName, mp4Info, fbVideos, fbPathOf, countVideos, socialSite, socialPostUrl, pickHeight, attachmentDownload, videoDismissKey, directDownloadLink, addDirectExtensions, hideDownloadUI, playerEvidence, playlistReferences, samePlayer, completePlaylist, isVimeoAdaptive, isVimeoFragment, vimeoVideoPage, isPlaylistUrl, isSegmentUrl, canonicalUrl, kindOf, scoreMedia, classifyResponse, sniffBytes, forwardHeaders, extOf, dispositionFilename, collapseDupes, fmtDur, panelTokens, dcThemeMode, dcSetTheme, paintDcPanel };
+  // The sniffed media that can be what one player shows. A stream far
+  // shorter than the player's own length is not it (IMDb's 10 s trailer
+  // preview plays in the page above an embedded 49 min episode), nor is a
+  // short clip when a full-length stream is there; streams as long as the
+  // player come first. A stream's length is its own (media playlist) or its
+  // longest listed quality's (master); unknown lengths are kept. Media this
+  // player's own page (frame) fetched beats media another frame fetched.
+  function fitPlayer(list, playerDur, framePage) {
+    const all = (list || []).filter(Boolean);
+    const byUrl = new Map(all.map((m) => [m.url, m]));
+    const len = (m) => {
+      let d = Number(m.dur) || 0;
+      for (const v of m.variants || []) {
+        const c = byUrl.get(v && v.url);
+        if (c && c.dur) d = Math.max(d, Number(c.dur) || 0);
+      }
+      return d;
+    };
+    const pd = Number(playerDur) > 0 ? Number(playerDur) : 0;
+    let out = all;
+    if (pd >= 60) {
+      out = out.filter((m) => !len(m) || len(m) >= pd * 0.5);
+    } else if (out.some((m) => len(m) >= 120)) {
+      out = out.filter((m) => !len(m) || len(m) >= 45);
+    }
+    if (framePage) {
+      const mine = out.filter((m) => m.pageUrl && m.pageUrl === framePage);
+      if (mine.length) out = mine;
+    }
+    if (pd >= 60) {
+      const same = out.filter((m) => len(m) && Math.abs(len(m) - pd) <= Math.max(5, pd * 0.03));
+      if (same.length) out = same;
+    }
+    return out.length ? out : all;
+  }
+
+  const DCRank = { fitPlayer, hlsInfo,episodeFromUrl, episodeFromText, episodeTitle, showName, mp4Info, fbVideos, fbPathOf, countVideos, socialSite, socialPostUrl, pickHeight, attachmentDownload, videoDismissKey, directDownloadLink, addDirectExtensions, hideDownloadUI, playerEvidence, playlistReferences, samePlayer, completePlaylist, isVimeoAdaptive, isVimeoFragment, vimeoVideoPage, isPlaylistUrl, isSegmentUrl, canonicalUrl, kindOf, scoreMedia, classifyResponse, sniffBytes, forwardHeaders, extOf, dispositionFilename, collapseDupes, fmtDur, panelTokens, dcThemeMode, dcSetTheme, paintDcPanel };
   g.DCRank = DCRank;
   if (typeof module !== "undefined" && module.exports) module.exports = DCRank;
 })(typeof globalThis !== "undefined" ? globalThis : this);

@@ -3810,18 +3810,27 @@ async fn download_hls(
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    // 1. Master playlist?
+    // 1. Master playlist? A server that refuses the player page's full
+    // address as Referer (vidsrc's stream hosts answer 400) gets what a
+    // browser sends another site: only the page's origin ("https://site/").
+    // Every later request of this download then uses that.
+    let origin_opts;
+    let mut opts = opts;
     let mut pl_url = playlist_url.to_string();
-    let mut text = opts
-        .get(&client, &pl_url)
-        .send()
-        .await
-        .map_err(|e| anyhow!("playlist fetch: {e}"))?
-        .error_for_status()
-        .map_err(|e| anyhow!("playlist HTTP: {e}"))?
-        .text()
-        .await
-        .map_err(|e| anyhow!("playlist read: {e}"))?;
+    let mut text = match fetch_playlist_text(&client, opts, &pl_url).await {
+        Ok(t) => t,
+        Err(e) => match cross_origin_referer(&opts.referer, &pl_url) {
+            Some(r) if refused_status(&e) => {
+                let mut o = opts.clone();
+                o.referer = r;
+                origin_opts = o;
+                let t = fetch_playlist_text(&client, &origin_opts, &pl_url).await.map_err(|_| e)?;
+                opts = &origin_opts;
+                t
+            }
+            _ => return Err(e),
+        },
+    };
     let external_audio = hls_external_audio(&text);
     if external_audio || text.contains("#EXT-X-BYTERANGE") || text.contains("BYTERANGE=") {
         if external_audio { shared.expects_audio.store(true, Ordering::SeqCst); }
@@ -4481,6 +4490,71 @@ async fn record_live_hls(
         }
     }
     Ok(())
+}
+
+/// A stream's length in seconds and its estimated size (the best quality's
+/// bitrate × length), read from its playlist(s) the way a download would,
+/// for the Add dialog to show before anything is saved (as IDM does).
+pub async fn stream_facts(client: &reqwest::Client, opts: &EngineOpts, url: &str) -> Option<(u64, Option<u64>)> {
+    let fetch = |o: EngineOpts, u: String| {
+        let c = client.clone();
+        async move { fetch_playlist_text(&c, &o, &u).await }
+    };
+    let mut o = opts.clone();
+    let mut text = match fetch(o.clone(), url.to_string()).await {
+        Ok(t) => t,
+        Err(e) => {
+            let r = cross_origin_referer(&o.referer, url).filter(|_| refused_status(&e))?;
+            o.referer = r;
+            fetch(o.clone(), url.to_string()).await.ok()?
+        }
+    };
+    let mut bandwidth = 0u64;
+    if let Some(variant) = hls_pick_variant(&text, url) {
+        bandwidth = hls_best_bandwidth(&text);
+        text = fetch(o, variant).await.ok()?;
+    }
+    let secs: f64 = text
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("#EXTINF:"))
+        .filter_map(|r| r.split(',').next().and_then(|n| n.trim().parse::<f64>().ok()))
+        .sum();
+    // A live stream has no end: no length to show.
+    if secs < 1.0 || !text.contains("#EXT-X-ENDLIST") {
+        return None;
+    }
+    let est = (bandwidth > 0).then(|| (bandwidth as f64 / 8.0 * secs) as u64);
+    Some((secs.round() as u64, est))
+}
+
+/// The highest BANDWIDTH a master playlist lists (bits per second).
+fn hls_best_bandwidth(text: &str) -> u64 {
+    text.lines()
+        .filter(|l| l.trim_start().starts_with("#EXT-X-STREAM-INF"))
+        .filter_map(|l| {
+            l.split([':', ',', ' '])
+                .find_map(|kv| kv.trim().strip_prefix("BANDWIDTH=").and_then(|v| v.parse::<u64>().ok()))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The origin a browser sends as Referer to another site ("https://site/"),
+/// when `referer` is a full page address on a different host than `url`.
+fn cross_origin_referer(referer: &str, url: &str) -> Option<String> {
+    let r = reqwest::Url::parse(referer.trim()).ok()?;
+    let u = reqwest::Url::parse(url).ok()?;
+    if r.host_str()? == u.host_str()? || (r.path() == "/" && r.query().is_none()) {
+        return None;
+    }
+    Some(format!("{}/", r.origin().ascii_serialization()))
+}
+
+/// The server refused the request itself (400/401/403), as some do for a
+/// Referer they don't accept.
+fn refused_status(e: &anyhow::Error) -> bool {
+    let s = e.to_string();
+    ["(400 ", "(401 ", "(403 "].iter().any(|c| s.contains(c))
 }
 
 /// One playlist GET with the row's headers (cookies/referer/proxy).
@@ -10196,6 +10270,35 @@ fn engine_error(url: &str, e: downloadcraft_engine::Error) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Live: the length and size estimate of a real stream (set DC_STREAM_URL
+    /// and DC_STREAM_REFERER), as the Add dialog shows them.
+    #[test]
+    #[ignore]
+    fn live_stream_facts() {
+        let url = std::env::var("DC_STREAM_URL").expect("DC_STREAM_URL");
+        let opts = EngineOpts { referer: std::env::var("DC_STREAM_REFERER").unwrap_or_default(), ..Default::default() };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let facts = rt.block_on(async {
+            let client = opts.build_client().unwrap();
+            stream_facts(&client, &opts, &url).await
+        });
+        eprintln!("facts: {facts:?}");
+        assert!(facts.is_some_and(|(secs, _)| secs > 60));
+    }
+
+    #[test]
+    fn a_refused_page_referer_falls_back_to_its_origin() {
+        assert_eq!(
+            cross_origin_referer("https://vidsrc.su/embed/tv/66732/1/4", "https://cdn.example/a/b.m3u8").as_deref(),
+            Some("https://vidsrc.su/")
+        );
+        // Same host, or already just an origin: nothing to change.
+        assert_eq!(cross_origin_referer("https://vidsrc.su/embed/tv/1", "https://vidsrc.su/x.m3u8"), None);
+        assert_eq!(cross_origin_referer("https://vidsrc.su/", "https://cdn.example/x.m3u8"), None);
+        assert!(refused_status(&anyhow!("playlist HTTP: HTTP status client error (400 Bad Request) for url (x)")));
+        assert!(!refused_status(&anyhow!("playlist HTTP: HTTP status client error (404 Not Found) for url (x)")));
+    }
 
     #[test]
     fn ytdlp_leftovers_go_with_their_download_only() {

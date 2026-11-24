@@ -11,7 +11,7 @@ let lastFallbackError = "";
 // Must match manifest version + content.js EXT_VER. Tabs running an older
 // content script are rejected with a "reload the tab" error instead of
 // failing mysteriously (their extension APIs are gone after a reload).
-const EXT_VER = "0.11.3";
+const EXT_VER = "0.11.8";
 
 // Promise-style calls (the `await api.*` ones below) go through this handle so
 // one file serves both engines: Firefox exposes the promise-returning
@@ -257,7 +257,7 @@ async function sendToHost(url, filename, extra) {
     // What the player itself sent for this exact URL when it was captured:
     // the referer/origin the CDN checks, its session cookie and any bearer
     // or x-* token. Truer than the page URL, so it wins when present.
-    const seenAuth = mediaAuth.get(url) || null;
+    const seenAuth = authFor(url) || null;
     let cookie = (extra && extra.cookie) || (seenAuth && seenAuth.cookie) || null;
     // A URL known only from a page script's report (page-hook) gets no
     // cookies attached: any page can post such reports, and the app must
@@ -343,6 +343,27 @@ function rememberCapture(url, filename, extra) {
   sentCaptures.set(url, { url, filename: filename || null, pairUrl: e.pairUrl || null, mime: e.mime || null,
     quality: e.quality || null, pageUrl: e.pageUrl || null, title: e.title || null, at: Date.now() });
   if (sentCaptures.size > 100) sentCaptures.delete(sentCaptures.keys().next().value);
+}
+
+// The headers the player sent for `url`, or, for an address it never asked
+// for itself (a quality from a master playlist's list that did not play),
+// those it sent to the same server: the newest from the same folder, else
+// from the same host. Stream servers check the player's Referer exactly
+// ("https://vidsrc.su/"); the page's own address got "400 Bad Request".
+function authFor(url) {
+  const own = mediaAuth.get(url);
+  if (own) return own;
+  let host = "", dir = "";
+  try { const u = new URL(url); host = u.host; dir = u.pathname.replace(/[^/]*$/, ""); } catch (e) { return null; }
+  let sameDir = null, sameHost = null;
+  for (const [k, v] of mediaAuth) {
+    let ku;
+    try { ku = new URL(k); } catch (e) { continue; }
+    if (ku.host !== host) continue;
+    sameHost = v;
+    if (ku.pathname.replace(/[^/]*$/, "") === dir) sameDir = v;
+  }
+  return sameDir || sameHost;
 }
 
 // ---- IDM-style network sniffer ----
@@ -700,9 +721,42 @@ async function sniffUrl(url, headers) {
   } finally { sniffInflight--; }
 }
 
+// Chrome drops a Referer or Origin that fetch() sets, and some stream hosts
+// refuse a playlist without the player's (vidsrc's answer 400): the
+// extension then never learned an episode's length or qualities, so its
+// 10 s preview looked like the video. A short session rule puts the
+// player's own Referer/Origin on this extension's request for this one URL.
+let pageHeaderRuleSeq = 0;
+async function withPageHeaders(url, auth, run) {
+  const dnr = typeof chrome !== "undefined" && chrome.declarativeNetRequest;
+  const ref = auth && (auth.referer || (auth.headers && auth.headers.referer)) || "";
+  const origin = auth && auth.headers && auth.headers.origin || "";
+  if (!dnr || typeof dnr.updateSessionRules !== "function" || !/^https?:\/\//i.test(ref)
+      || /[\r\n]/.test(ref + origin) || url.length > 2000 || /[*^|]/.test(url)) {
+    return run();
+  }
+  const set = [{ header: "Referer", operation: "set", value: ref }];
+  if (/^https?:\/\//i.test(origin)) set.push({ header: "Origin", operation: "set", value: origin });
+  const id = 800000 + (pageHeaderRuleSeq++ % 90000);
+  try {
+    await dnr.updateSessionRules({ removeRuleIds: [id], addRules: [{
+      id, priority: 2,
+      action: { type: "modifyHeaders", requestHeaders: set },
+      condition: { urlFilter: `|${url}|`, initiatorDomains: [new URL(chrome.runtime.getURL("")).host], resourceTypes: ["xmlhttprequest", "other"] },
+    }] });
+  } catch (e) {
+    return run();
+  }
+  try {
+    return await run();
+  } finally {
+    try { await dnr.updateSessionRules({ removeRuleIds: [id] }); } catch (e) { /* gone with the session */ }
+  }
+}
+
 // Master flag + child references of a playlist, for parent/part linking.
 async function playlistShape(url, headers) {
-  let master = false, children = [];
+  let master = false, children = [], variants = [], dur = 0;
   try {
     const res = await fetch(url, {credentials:"include", headers:headers || {}, signal:AbortSignal.timeout(8000)});
     if (res.ok && (!res.headers.get("content-length") || Number(res.headers.get("content-length")) <= 1024 * 1024)) {
@@ -716,11 +770,20 @@ async function playlistShape(url, headers) {
           size += value.length; body += decoder.decode(value, {stream:true});
           if (/#EXT-X-STREAM-INF|<MPD[\s>]/i.test(body)) master = true;
         }
-        if (typeof DCRank !== "undefined") children = DCRank.playlistReferences(body, url);
+        if (typeof DCRank !== "undefined") {
+          children = DCRank.playlistReferences(body, url);
+          // Its length and qualities, so the menu can offer one card per
+          // video with its qualities, and leave a 10-second preview out.
+          if (DCRank.hlsInfo) {
+            const info = DCRank.hlsInfo(body, url);
+            variants = info.variants;
+            dur = info.dur;
+          }
+        }
       } finally { await reader.cancel(); }
     }
   } catch (e) { /* metadata optional; keep the original signed URL */ }
-  return { master, children };
+  return { master, children, variants, dur };
 }
 
 function responseMeta(details) {
@@ -758,17 +821,21 @@ async function onMediaResponse(details) {
   const minBytes = Math.max(0, (parseInt(cfg.minSizeKB, 10) || 100)) * 1024;
   let hit = DCRank.classifyResponse(meta, { minBytes, deep: cfg.deepDetect !== false });
   if (hit && hit.sniff) {
-    const found = await sniffUrl(details.url, replayHeaders(auth));
+    const found = await withPageHeaders(details.url, auth, () => sniffUrl(details.url, replayHeaders(auth)));
     if (!found) return;
     if (found.kind === "file" && meta.size > 0 && meta.size < minBytes) return;
     hit = found;
   }
   if (!hit) return;
-  const shape = hit.kind === "playlist" ? await playlistShape(details.url, replayHeaders(auth)) : { master: false, children: [] };
+  const shape = hit.kind === "playlist"
+    ? await withPageHeaders(details.url, auth, () => playlistShape(details.url, replayHeaders(auth)))
+    : { master: false, children: [], variants: [], dur: 0 };
   if (navSeqOf(tabId) !== seq) return; // the tab navigated while we looked
   if (auth) rememberAuth(mediaAuth, stripFbSlice(details.url), auth, 300);
   noteMedia(tabId, {
     master: shape.master, children: shape.children,
+    variants: shape.variants && shape.variants.length ? shape.variants : undefined,
+    dur: shape.dur > 0 ? shape.dur : undefined,
     url: details.url,
     mime: hit.mime || meta.mime,
     // A playlist's byte length is its text, not the video.
@@ -1403,7 +1470,7 @@ async function bdlHistory() {
 async function bdlHeaderRules(j, url) {
   const dnr = chrome.declarativeNetRequest;
   if (!dnr || typeof dnr.updateSessionRules !== "function") return;
-  const auth = mediaAuth.get(url) || {};
+  const auth = authFor(url) || {};
   const page = auth.referer || j.page || "";
   const set = [];
   const add = (header, value) => {
@@ -1568,6 +1635,16 @@ try {
 
 // ---- popup / content-script messages ----
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // A player frame asks for the page's name: the top frame answers.
+  if (msg && msg.type === "topTitle" && sender && sender.id === chrome.runtime.id && sender.tab && sender.tab.id >= 0) {
+    try {
+      chrome.tabs.sendMessage(sender.tab.id, { type: "dcPageTitle" }, { frameId: 0 }, (r) => {
+        void chrome.runtime.lastError;
+        sendResponse({ title: (r && r.title) || "" });
+      });
+    } catch (e) { sendResponse({ title: "" }); }
+    return true;
+  }
   if (msg && msg.type === "layoutReport" && sender && sender.id === chrome.runtime.id && typeof msg.key === "string") {
     layoutReport(msg.key.slice(0, 80), msg.text || msg.key);
     sendResponse({ ok: true });

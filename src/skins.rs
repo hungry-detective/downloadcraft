@@ -97,13 +97,14 @@ pub fn palette(look: &str, dark: bool) -> Palette {
     if look.starts_with("user.") {
         return crate::theme_files::load(look).map(|t| t.palette(dark)).unwrap_or(if dark { DARK_PAL } else { LIGHT_PAL });
     }
-    match (look, dark) {
-        ("petal", false) => PETAL_LIGHT,
-        ("petal", true) => PETAL_DARK,
-        ("classic", false) => CLASSIC_LIGHT,
-        ("classic", true) => CLASSIC_DARK,
-        (_, true) => DARK_PAL,
-        (_, false) => LIGHT_PAL,
+    // Every layout wears Download Craft's own colours; each keeps only its
+    // shape (the corner radius, which is also how `active()` tells the
+    // layouts apart).
+    let craft = if dark { DARK_PAL } else { LIGHT_PAL };
+    match look {
+        "petal" => Palette { radius: PETAL_LIGHT.radius, ..craft },
+        "classic" => Palette { radius: CLASSIC_LIGHT.radius, ..craft },
+        _ => craft,
     }
 }
 

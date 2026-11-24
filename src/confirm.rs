@@ -334,6 +334,8 @@ struct ConfirmApp {
     folder_rules: Vec<crate::model::FolderRule>,
     probing: bool,
     probe_size: Option<u64>,
+    /// A stream's size estimated from its bitrate and length (shown "~").
+    est_size: Option<u64>,
     /// Size the browser measured in its own session (`--size`): what a
     /// refused off-session re-probe falls back to instead of "—".
     browser_size: Option<u64>,
@@ -344,7 +346,7 @@ struct ConfirmApp {
     queue_pick: Option<egui::Pos2>,
     /// The queue the download joins ("" = Main).
     target_queue: String,
-    probe_rx: Option<Receiver<(Option<u64>, Option<String>)>>,
+    probe_rx: Option<Receiver<(Option<u64>, Option<String>, Option<(u64, Option<u64>)>)>>,
     rt: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     /// Where the window opens: where the user last left it (issue #27).
     spot: crate::model::WindowSpot,
@@ -834,6 +836,7 @@ impl ConfirmApp {
         self.probe_rx = Some(rx);
         self.probing = true;
         self.probe_size = None;
+        self.est_size = None;
         let url = self.url.clone();
         let referer = self.referer.clone();
         // Quality choice feeds the page resolve so the dialog measures the
@@ -867,8 +870,11 @@ impl ConfirmApp {
                         engine::probe(&client, &opts, &url).await;
                     // A playlist's length is its text, not the video: show
                     // the duration instead (as IDM does for streams).
+                    let mut facts = None;
                     if engine::is_stream_manifest(&url, ctype.as_deref(), &page_mime) {
                         total = None;
+                        // Its length (and a size estimate) from the playlist.
+                        facts = engine::stream_facts(&client, &opts, &url).await;
                     }
                     // A YouTube video: the app's own reader names the size
                     // (from the links themselves) and the title, without
@@ -948,9 +954,9 @@ impl ConfirmApp {
                             disp = Some(guess_name.trim_end_matches(".bin").to_string() + ext);
                         }
                     }
-                    (total, disp)
+                    (total, disp, facts)
                 }
-                Err(_) => (None, None),
+                Err(_) => (None, None, None),
             };
             let _ = tx.send(out);
         });
@@ -1264,6 +1270,7 @@ pub fn run() -> eframe::Result<()> {
         prefetch_id: None,
         probing: false,
         probe_size: known_size,
+        est_size: None,
         probe_rx: None,
         rt: Some(rt.clone()),
         spot: crate::model::WindowSpot::new("pos_file_info"),
@@ -1298,7 +1305,7 @@ pub fn run() -> eframe::Result<()> {
     // written) still opens the window to say so.
     if !crate::model::ui_pref_bool("show_start_dialog", true) {
         if let Some(rx) = app.probe_rx.take() {
-            if let Ok((sz, nm)) = rx.recv_timeout(std::time::Duration::from_secs(6)) {
+            if let Ok((sz, nm, _)) = rx.recv_timeout(std::time::Duration::from_secs(6)) {
                 app.probe_size = sz.or(app.browser_size);
                 if let Some(n) = nm {
                     if app.auto_name.as_deref() == Some(app.filename.as_str()) || crate::model::is_fallback_filename(&app.filename) {
@@ -1439,8 +1446,14 @@ impl eframe::App for ConfirmApp {
         self.spot.tick(ctx, egui::vec2(DM_W, DM_H));
         // Collect probe result.
         if let Some(rx) = self.probe_rx.as_ref() {
-            while let Ok((sz, nm)) = rx.try_recv() {
+            while let Ok((sz, nm, facts)) = rx.try_recv() {
                 self.probing = false;
+                if let Some((secs, est)) = facts {
+                    if self.duration_secs == 0 {
+                        self.duration_secs = secs;
+                    }
+                    self.est_size = est;
+                }
                 // A refused re-probe (off-session 403) must not erase the
                 // size the browser measured in its own session.
                 self.probe_size = sz.or(self.browser_size);
@@ -1687,7 +1700,10 @@ impl eframe::App for ConfirmApp {
                     Some(sz) => format_bytes(sz),
                     // Streams (HLS/DASH) have no size until assembled; the
                     // duration is the useful fact, as IDM shows it.
-                    None if self.duration_secs > 0 => format_dur(self.duration_secs),
+                    None if self.duration_secs > 0 => match self.est_size {
+                        Some(e) => format!("{} • ~{}", format_dur(self.duration_secs), format_bytes(e)),
+                        None => format_dur(self.duration_secs),
+                    },
                     None => "—".to_string(),
                 }
             };
@@ -1695,6 +1711,12 @@ impl eframe::App for ConfirmApp {
             let tw = g.size().x;
             let tx = chip.min.x + 37.0;
             p.galley(egui::pos2(tx, chip.center().y - g.size().y * 0.5), g, pl().dm_txt);
+            if self.probing {
+                // The size and length are being read: a turning ring.
+                let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
+                dm_arc(&p, egui::pos2(chip.max.x - 18.0, chip.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
+                ui.ctx().request_repaint();
+            }
             if known {
                 dm_icon(
                     &p,

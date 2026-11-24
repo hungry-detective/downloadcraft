@@ -397,6 +397,26 @@ fn record_browser_download(msg: &Incoming) -> Result<(), String> {
     }
 }
 
+/// The Referer the Add dialog gets. The engine reads it as both the Referer
+/// and "the page the media came from" (YouTube fresh-link retry, social page
+/// fallback), so the page wins over an origin-only Referer of its own site
+/// ("https://www.youtube.com/"). A Referer with a real path is an embedded
+/// player's page, which the CDN checks (sending the article URL instead got
+/// 403s): that one wins. So does one from another site than the page, even
+/// as a bare origin ("https://vidsrc.su/" inside an IMDb page): its stream
+/// host refuses the outer page (400).
+fn dialog_referer(page: Option<String>, captured: Option<String>) -> Option<String> {
+    let page = page.filter(|s| !s.trim().is_empty());
+    let captured = captured.filter(|s| !s.trim().is_empty());
+    let has_path = |u: &str| reqwest::Url::parse(u).map(|x| x.path() != "/" && !x.path().is_empty()).unwrap_or(false);
+    let host = |u: &str| reqwest::Url::parse(u).ok().and_then(|x| x.host_str().map(str::to_ascii_lowercase));
+    match (page, captured) {
+        (Some(p), Some(r)) if r != p && (has_path(&r) || (host(&r).is_some() && host(&r) != host(&p))) => Some(r),
+        (Some(p), _) => Some(p),
+        (None, r) => r,
+    }
+}
+
 /// Queue a pause/resume/cancel order for the app (the same cmd.json the
 /// progress windows use).
 pub(crate) fn app_control(id: Option<u64>, action: &str) -> Result<(), String> {
@@ -964,19 +984,7 @@ fn spawn_confirm(msg: &Incoming) {
     if let Some(f) = msg.filename.as_deref().and_then(file_part) {
         cmd.arg("--filename").arg(f);
     }
-    // The engine reads this as both the Referer and "the page the media came
-    // from" (YouTube fresh-link retry, social page fallback), so the page
-    // wins over an origin-only Referer ("https://www.youtube.com/"). A
-    // Referer with a real path is an embedded player's page, which the CDN
-    // checks (sending the article URL instead got 403s): that one wins.
-    let page = msg.page_url.clone().filter(|s| !s.trim().is_empty());
-    let captured = msg.referer.clone().filter(|s| !s.trim().is_empty());
-    let has_path = |u: &str| reqwest::Url::parse(u).map(|x| x.path() != "/" && !x.path().is_empty()).unwrap_or(false);
-    let pick = match (page, captured) {
-        (Some(p), Some(r)) if r != p && has_path(&r) => Some(r),
-        (Some(p), _) => Some(p),
-        (None, r) => r,
-    };
+    let pick = dialog_referer(msg.page_url.clone(), msg.referer.clone());
     if let Some(r) = pick {
         cmd.arg("--referer").arg(r);
     }
@@ -1156,6 +1164,19 @@ static PUSHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 #[cfg(test)]
 mod media_tests {
     use super::*;
+    #[test]
+    fn an_embedded_players_referer_beats_the_outer_page() {
+        let s = |v: &str| Some(v.to_string());
+        let imdb = s("https://www.imdb.com/title/tt4574334/");
+        // vidsrc's player inside IMDb: its own origin, which its host checks.
+        assert_eq!(dialog_referer(imdb.clone(), s("https://vidsrc.su/")), s("https://vidsrc.su/"));
+        assert_eq!(dialog_referer(imdb.clone(), s("https://vidsrc.su/embed/tv/1/1/4")), s("https://vidsrc.su/embed/tv/1/1/4"));
+        // The page's own site as a bare origin: the page (YouTube retry).
+        let yt = s("https://www.youtube.com/watch?v=abc");
+        assert_eq!(dialog_referer(yt.clone(), s("https://www.youtube.com/")), yt);
+        assert_eq!(dialog_referer(None, s("https://vidsrc.su/")), s("https://vidsrc.su/"));
+        assert_eq!(dialog_referer(imdb.clone(), None), imdb);
+    }
     #[test]
     fn player_expectations_survive_browser_and_inbox_formats() {
         let msg: Incoming = serde_json::from_str(r#"{"type":"download","url":"https://cdn.example.org/video.mp4","dur":2700,"audioExpected":true}"#).unwrap();

@@ -1,4 +1,66 @@
-# Download Craft 0.11.12
+# Download Craft 0.11.13
+
+## What's new
+
+- **Full episodes from embedded players**: a series that plays in a player
+  inside another site (VidSrc on IMDb, for example) downloads in full. The
+  extension used to pick the site's own 11-second trailer preview, and the
+  player's server refused the download (it checks that requests come from
+  the player's site, which is now sent).
+- **One card per video** in the extension (0.11.8): the video playing now,
+  with its length and a list of its qualities. Trailer previews, short
+  clips, earlier episodes and copies from other servers are left out, and
+  the "Download in browser" list shows only when the app is not running
+  (each card's ⋮ menu still offers it).
+- **The player's download button picks the playing video**: the one as
+  long as the player's, from the player's own frame.
+- **Stream length and size before it starts**: Download File Info reads a
+  stream's length and estimates its size from its best quality
+  ("49:27 • ~1.5 GB"), with a turning ring while it reads.
+- **Part Info for streams, like IDM**: a stream arrives in hundreds of
+  pieces; Part Info now lists the pieces arriving now and says how many are
+  done ("212 of 600 pieces done"), not every piece.
+- **Classic and Petal in Craft's colors**: Petal's title bar and toolbar
+  are one band with tools that fill the row; Classic's tools have even
+  spacing, lighter strokes, and all fit the default window.
+
+## Fixes
+
+- **Add download**: the name is caught for links pasted one after another
+  (it kept the previous link's), and the name and size boxes show a
+  loading ring while they are read.
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.11.13-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.11.13-windows-x64-portable.zip` and run `download_craft.exe`.
+
+**macOS 12+.** Unzip `DownloadCraft-0.11.13-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.11.13_amd64.deb`; Fedora: install
+`downloadcraft-0.11.13-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.13-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.11.8.xpi` from
+`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
+Chrome ZIP and load the extracted folder in `chrome://extensions`.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.13`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+
+
+# Earlier: Download Craft 0.11.12
 
 ## What's new
 
@@ -47,35 +109,6 @@
   the extension.
 - **Colons in titles** become " - " in file names ("Spider-Man - Brand
   New Day", not "Spider-Man_ Brand New Day").
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.11.12-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.11.12-windows-x64-portable.zip` and run `download_craft.exe`.
-
-**macOS 12+.** Unzip `DownloadCraft-0.11.12-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.12_amd64.deb`; Fedora: install
-`downloadcraft-0.11.12-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.12-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.11.3.xpi` from
-`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
-Chrome ZIP and load the extracted folder in `chrome://extensions`.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.12`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
-
 
 # Earlier: Download Craft 0.11.11
 

@@ -1975,14 +1975,14 @@ fn draw_tool_glyph(p: &egui::Painter, c: egui::Pos2, icon: &str, size: f32, colo
         // are): the filled glyphs swapped for their outlined forms.
         if icon == MI_STOP_CIRCLE {
             // Stop All: a ring with an empty square in it.
-            let st = egui::Stroke::new((size / 12.0).max(1.6), color);
+            let st = egui::Stroke::new((size / 15.0).max(1.3), color);
             p.circle_stroke(c, size * 0.40, st);
             let h = size * 0.14;
             p.rect_stroke(egui::Rect::from_center_size(c, egui::vec2(h * 2.0, h * 2.0)), 1.0, st, egui::StrokeKind::Middle);
         } else if icon == MI_DELETE_SWEEP {
             // Delete Completed: an outlined bin with the sweep lines before it.
             p.stext(egui::pos2(c.x + size * 0.14, c.y), egui::Align2::CENTER_CENTER, line, crate::fonts::icon(size * 0.86), color);
-            let st = egui::Stroke::new((size / 13.0).max(1.4), color);
+            let st = egui::Stroke::new((size / 16.0).max(1.2), color);
             for (k, len) in [(-0.16_f32, 0.30_f32), (0.02, 0.24), (0.20, 0.18)] {
                 let y = c.y + size * k;
                 let x1 = c.x - size * 0.22;
@@ -2011,7 +2011,8 @@ fn classic_outline(icon: &str) -> Option<&'static str> {
 /// sign: a thick U with the pole tips marked off.
 fn draw_magnet(p: &egui::Painter, c: egui::Pos2, size: f32, color: egui::Color32) {
     let k = size / 24.0;
-    let th = 4.2 * k; // limb thickness
+    // Limb thickness: lighter in Classic, whose tools are line art.
+    let th = if crate::skins::active() == "classic" { 3.2 * k } else { 4.2 * k };
     let r = 7.0 * k; // centre-line radius of the bend
     let top = c.y - 2.5 * k; // centre of the bend
     let foot = c.y + 9.0 * k; // bottom of the poles
@@ -2065,20 +2066,28 @@ fn craft_stacked() -> bool {
 /// Classic's toolbar labels: one line, or two when wider than a classic
 /// button ("Delete Completed" as "Delete" over "Completed"), split at the
 /// space nearest the middle.
+/// Classic's toolbar is on its tighter fit (narrower buttons, labels cut a
+/// little sooner) so every tool fits the default window.
+static CLASSIC_TIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn classic_tight() -> bool {
+    CLASSIC_TIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn classic_label_lines(p: &egui::Painter, label: &str) -> Vec<String> {
     // One row, as a classic toolbar draws them: a label longer than the
     // button ends in "…" ("Delete C…"), never a second line.
-    const MAX: f32 = 62.0;
+    let max: f32 = if classic_tight() { 54.0 } else { 62.0 };
     let font = egui::FontId::proportional(STACKED_TOOL_FONT);
     let w = |s: &str| crate::shaped::measure(p, s, &font, None).x;
-    if w(label) <= MAX {
+    if w(label) <= max {
         return vec![label.to_string()];
     }
     let mut cut: String = label.to_string();
     while !cut.is_empty() {
         cut.pop();
         let t = format!("{}…", cut.trim_end());
-        if w(&t) <= MAX {
+        if w(&t) <= max {
             return vec![t];
         }
     }
@@ -2103,7 +2112,7 @@ fn tool_w(ui: &egui::Ui, label: &str) -> f32 {
                 .iter()
                 .map(|l| crate::shaped::measure(p, l, &egui::FontId::proportional(size), None).x)
                 .fold(0.0_f32, f32::max);
-            (widest + 10.0).max(40.0)
+            if classic_tight() { (widest + 6.0).max(36.0) } else { (widest + 10.0).max(40.0) }
         }
         "ledger" => (lw + 12.0).max(48.0),
         _ if stacked => (lw + 12.0).max(44.0),
@@ -2195,7 +2204,8 @@ fn tool_button(
             if look == "classic" {
                 // A coloured glyph over one or two short lines.
                 let lines = classic_label_lines(p, label);
-                draw_tool_glyph(p, egui::pos2(rect.center().x, rect.min.y + 17.0), icon, 22.0, ic);
+                // 20 px: the glyphs' lines read lighter than at 22.
+                draw_tool_glyph(p, egui::pos2(rect.center().x, rect.min.y + 17.0), icon, 20.0, ic);
                 let ys: &[f32] = if lines.len() > 1 { &[37.0, 48.0] } else { &[42.0] };
                 for (line, y) in lines.iter().zip(ys) {
                     p.stext(egui::pos2(rect.center().x, rect.min.y + y), egui::Align2::CENTER_CENTER, line, egui::FontId::proportional(STACKED_TOOL_FONT), tc);
@@ -2792,6 +2802,9 @@ pub struct CraftApp {
     probe_size: Option<u64>,
     probe_name: Option<String>,
     probe_done_for: String,
+    /// A link waiting to be checked, and since when it has stayed the same
+    /// (checked after a short pause, not at every keystroke).
+    probe_wait: Option<(String, Instant)>,
     probe_rx: Option<std::sync::mpsc::Receiver<(Option<u64>, Option<String>, Vec<u64>, bool)>>,
     /// A YouTube link's picture sizes (2160, 1080…): the quality list offers
     /// only these. Empty = not known (every quality is offered).
@@ -3062,6 +3075,7 @@ impl CraftApp {
             probe_size: None,
             probe_name: None,
             probe_done_for: String::new(),
+            probe_wait: None,
             probe_rx: None,
             add_yt_sides: Vec::new(),
             host_folder_rx: None,
@@ -6434,7 +6448,36 @@ impl CraftApp {
                     // The view switch and the pill keep their room; tools
                     // that do not fit drop off the end (all are in the menus).
                     let pill_w = 0.0;
-                    let room = ui.available_width() - pill_w - 84.0 - 16.0;
+                    let room = ui.available_width() - pill_w - 84.0 - 12.0;
+                    // The room left over is shared out between the gaps, so
+                    // the tools run up to the view switch instead of
+                    // leaving an empty stretch before it.
+                    {
+                        let mut widths = 0.0;
+                        let mut items = 0usize;
+                        'plan: for (gi, group) in groups.iter().enumerate() {
+                            if gi > 0 {
+                                if widths + 60.0 > room {
+                                    break;
+                                }
+                                widths += 11.0;
+                                items += 1;
+                            }
+                            for (_, _, label, _) in group.iter() {
+                                let lw = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(11.0), pl().txt).size().x;
+                                let w = (lw + 14.0).max(46.0);
+                                if widths + w + 2.0 * items as f32 > room {
+                                    break 'plan;
+                                }
+                                widths += w;
+                                items += 1;
+                            }
+                        }
+                        if items > 1 {
+                            let gap = (room - widths) / (items as f32 - 1.0);
+                            ui.spacing_mut().item_spacing.x = gap.clamp(2.0, 22.0);
+                        }
+                    }
                     let mut used = 0.0;
                     let mut full_row = true;
                     'groups: for (gi, group) in groups.iter().enumerate() {
@@ -6476,12 +6519,14 @@ impl CraftApp {
                     let _ = full_row;
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // View switch: cards | table, in a soft trough.
-                        let (sw, _) = ui.allocate_exact_size(egui::vec2(76.0, 32.0), egui::Sense::hover());
+                        // As tall as the tools beside it, its glyphs their size.
+                        let (sw, _) = ui.allocate_exact_size(egui::vec2(84.0, PETAL_TOOL_H), egui::Sense::hover());
                         let p = ui.painter();
                         p.rect_filled(sw, 10.0, pl().surface_lt);
+                        let half = egui::vec2(38.0, PETAL_TOOL_H - 6.0);
                         let halves = [
-                            (egui::Rect::from_min_size(sw.min + egui::vec2(3.0, 3.0), egui::vec2(34.0, 26.0)), MI_GRID, !table, ToolId::ViewCards, "Grid view: downloads as cards"),
-                            (egui::Rect::from_min_size(sw.min + egui::vec2(39.0, 3.0), egui::vec2(34.0, 26.0)), MI_VIEW_LIST, table, ToolId::ViewTable, "List view: downloads as a table"),
+                            (egui::Rect::from_min_size(sw.min + egui::vec2(3.0, 3.0), half), MI_GRID, !table, ToolId::ViewCards, "Grid view: downloads as cards"),
+                            (egui::Rect::from_min_size(sw.min + egui::vec2(43.0, 3.0), half), MI_VIEW_LIST, table, ToolId::ViewTable, "List view: downloads as a table"),
                         ];
                         let mut tip = None;
                         for (r, icon, on, id, hint) in halves {
@@ -6492,7 +6537,7 @@ impl CraftApp {
                                 p.rect_filled(r, 8.0, pl().central_bg);
                             }
                             let c = if on || self.man.hover(&r) { pl().txt } else { pl().dim };
-                            p.stext(r.center(), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(16.0), c);
+                            p.stext(r.center(), egui::Align2::CENTER_CENTER, icon, crate::fonts::icon(19.0), c);
                             self.hits.push((HitKind::Tool(id), r));
                         }
                         if let Some(hint) = tip {
@@ -9872,23 +9917,46 @@ impl eframe::App for CraftApp {
                     CRAFT_LAST.store(craft_stacked(), std::sync::atomic::Ordering::Relaxed);
                     let mut fit = tools.len();
                     if classic {
-                        // Classic keeps every label: a narrow window drops
-                        // the last tools instead (all are in the menus too).
+                        // Classic keeps every label: first at its normal
+                        // width, then on a tighter fit (narrower buttons) so
+                        // the default window shows every tool; only a
+                        // narrower one drops the last tools (all are in the
+                        // menus too).
                         icons_only = false;
-                        let mut used = add_w + TOOL_GAP + sep_w;
-                        fit = 0;
-                        for t in &tools {
-                            let w = tool_w(ui, t.2) + TOOL_GAP;
-                            if used + w > room {
-                                break;
+                        let count = |ui: &egui::Ui| {
+                            let add = tool_w(ui, crate::i18n::t("Add URL"));
+                            let mut used = add + TOOL_GAP + sep_w;
+                            let mut n = 0;
+                            for t in &tools {
+                                let w = tool_w(ui, t.2) + TOOL_GAP;
+                                if used + w > room {
+                                    break;
+                                }
+                                used += w;
+                                n += 1;
                             }
-                            used += w;
-                            fit += 1;
+                            n
+                        };
+                        CLASSIC_TIGHT.store(false, std::sync::atomic::Ordering::Relaxed);
+                        fit = count(ui);
+                        if fit < tools.len() {
+                            CLASSIC_TIGHT.store(true, std::sync::atomic::Ordering::Relaxed);
+                            fit = count(ui);
                         }
                     } else if icons_only {
                         while fit > 0 && add_w + TOOL_GAP + sep_w + fit as f32 * (sq + TOOL_GAP) > room {
                             fit -= 1;
                         }
+                    }
+                    // Classic: the room left over is shared out between the
+                    // gaps, so the last tool ends as far from the card's
+                    // right edge as Add URL starts from its left (7 px).
+                    if classic && fit > 0 {
+                        let tools_w: f32 = tools.iter().take(fit).map(|t| tool_w(ui, t.2)).sum();
+                        let avail = ui.available_width();
+                        let add_now = tool_w(ui, crate::i18n::t("Add URL"));
+                        let gap = (avail - 7.0 - add_now - 13.0 - tools_w) / (fit as f32 + 1.0);
+                        ui.spacing_mut().item_spacing.x = gap.clamp(TOOL_GAP, TOOL_GAP + 48.0);
                     }
                     // Craft: the room left at the end is shared out between
                     // the buttons, so every gap (Settings' too) is the same.
@@ -10426,6 +10494,11 @@ impl eframe::App for CraftApp {
             }
             self.add_file_auto.clear();
         }
+        if !self.show_add && !self.probe_done_for.is_empty() {
+            self.probe_done_for.clear();
+            self.probe_rx = None;
+            self.probing = false;
+        }
         if self.show_add {
             if self.add_focus_req {
                 // Focus lands without any click (hit-test independent).
@@ -10442,10 +10515,23 @@ impl eframe::App for CraftApp {
                     self.add_focus_req = false;
                 }
             }
-            // auto-probe once per URL
-            if !self.add_url.trim().is_empty()
+            // auto-probe once per URL; a new link starts its own check at
+            // once (it waited for the previous link's, whose late answer
+            // could land on the new one).
+            let settled = {
+                let now_url = self.add_url.trim().to_string();
+                match &self.probe_wait {
+                    Some((u, since)) if *u == now_url => since.elapsed() >= std::time::Duration::from_millis(350),
+                    _ => {
+                        self.probe_wait = Some((now_url, Instant::now()));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(360));
+                        false
+                    }
+                }
+            };
+            if settled
+                && !self.add_url.trim().is_empty()
                 && self.add_url.trim() != self.probe_done_for
-                && !self.probing
             {
                 // The old link's own file name counts as chosen by the
                 // dialog too (a pasted-over link left "EQaa…" as the name).
@@ -10707,6 +10793,12 @@ impl eframe::App for CraftApp {
                         g,
                         pl().dm_txt,
                     );
+                    if pbusy {
+                        // The size and qualities are being read: a turning ring.
+                        let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
+                        dm_arc(&p, egui::pos2(chip.max.x - 18.0, chip.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
+                        ui.ctx().request_repaint();
+                    }
                     if known {
                         dm_icon(
                             &p,
@@ -10739,6 +10831,12 @@ impl eframe::App for CraftApp {
                         false,
                     );
                     self.hits.push((HitKind::Field("add_file"), file_box));
+                    if pbusy && (self.add_file.trim().is_empty() || self.add_file == self.add_file_auto) {
+                        // The real name is on its way (a video's title).
+                        let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
+                        dm_arc(&p, egui::pos2(file_box.max.x - 22.0, file_box.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
+                        ui.ctx().request_repaint();
+                    }
                     dm_icon_btn_box(&p, &self.man, refr_btn, DmIcon::Refresh, 14.0, 1.5, pl().dm_dim);
                     self.hits.push((HitKind::Btn(ButtonId::AddRefresh), refr_btn));
                     dm_icon_btn_box(&p, &self.man, gear_btn, DmIcon::Settings, 15.0, 1.5, pl().dm_dim);

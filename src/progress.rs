@@ -1814,6 +1814,19 @@ impl ProgressApp {
         }
 
         // ---- table: header row, then one row per part ----
+        // A stream arrives in hundreds of pieces: listing them all put the
+        // finished ones on top and called every piece not begun yet
+        // "Connecting...". Like IDM, list only what is arriving now (or the
+        // next piece), with how many are done in the header.
+        let many = n > 32;
+        let shown: Vec<usize> = if many {
+            let unfinished = |i: &usize| self.snap.parts[*i].2 < lens[*i];
+            let active: Vec<usize> = (0..n).filter(|i| unfinished(i) && self.snap.parts[*i].2 > 0).collect();
+            if active.is_empty() { (0..n).filter(unfinished).take(1).collect() } else { active }
+        } else {
+            (0..n).collect()
+        };
+        let pieces_done = (0..n).filter(|&i| self.snap.parts[i].2 >= lens[i]).count();
         let hdr_y = o.y + TBL_HDR_Y + 4.0;
         p.stext(
             egui::pos2(o.x + PAD_X, hdr_y),
@@ -1825,7 +1838,7 @@ impl ProgressApp {
         p.stext(
             egui::pos2(o.x + PAD_X + COL_NUM_W, hdr_y),
             egui::Align2::LEFT_TOP,
-            "Status",
+            if many { format!("Status  ·  {pieces_done} of {n} pieces done") } else { "Status".to_string() },
             reg(10.0),
             pl().dm_head,
         );
@@ -1856,7 +1869,7 @@ impl ProgressApp {
             egui::pos2(o.x + 1.0, rows_top),
             egui::pos2(o.x + PG_W - 1.0, rows_bottom),
         );
-        let table_h = TBL_STEP * n as f32;
+        let table_h = TBL_STEP * shown.len() as f32;
         let max_scroll = (table_h - rows_rect.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         let rows = ui.interact(rows_rect, egui::Id::new("pg-rows"), egui::Sense::hover());
@@ -1867,8 +1880,9 @@ impl ProgressApp {
             }
         }
         let pc = p.with_clip_rect(rows_rect);
-        for (i, (_, _, d)) in self.snap.parts.iter().enumerate() {
-            let y = rows_top + TBL_STEP * i as f32 - self.scroll;
+        for (row, &i) in shown.iter().enumerate() {
+            let d = &self.snap.parts[i].2;
+            let y = rows_top + TBL_STEP * row as f32 - self.scroll;
             if y > rows_bottom || y + TBL_STEP < rows_top {
                 continue;
             }
@@ -1920,7 +1934,7 @@ impl ProgressApp {
                 reg(10.0),
                 pl().dm_dim,
             );
-            if i + 1 < n {
+            if row + 1 < shown.len() {
                 pc.line_segment(
                     [
                         egui::pos2(o.x + 1.0, y + TBL_STEP - 0.5),
