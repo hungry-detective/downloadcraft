@@ -21,10 +21,30 @@ pub fn native_options(viewport: egui::ViewportBuilder) -> eframe::NativeOptions 
     #[allow(unused_mut)]
     let mut options = eframe::NativeOptions { viewport, ..Default::default() };
     #[cfg(windows)]
-    if software_renderer() {
+    if software_renderer() || framed_direct3d() {
         use_direct3d(&mut options);
     }
     options
+}
+
+/// The processes whose window keeps Windows' own title bar and frame.
+#[cfg(windows)]
+pub const FRAMED_ARGS: [&str; 6] = ["--links", "--basket", "--mini", "--torrent-files", "--history", "--subs"];
+
+/// A window with Windows' frame, on Windows 10, draws with Direct3D (issue
+/// #29). With OpenGL, some Windows 10 drivers keep the compositor from
+/// drawing the window's frame, so Windows painted its old "Basic" title bar
+/// (pale, boxed buttons) on Settings, with "Use the Windows title bar" on or
+/// off, and the window flashed white before its first frame. A Direct3D
+/// swap chain is always composited. `DOWNLOAD_CRAFT_RENDERER=gl` keeps
+/// OpenGL; if Direct3D cannot start, the window starts again with OpenGL.
+#[cfg(windows)]
+pub fn framed_direct3d() -> bool {
+    let forced = std::env::var_os("DOWNLOADCRAFT_BORDERLESS_GUARD").is_some_and(|v| v != "0");
+    let env = std::env::var("DOWNLOAD_CRAFT_RENDERER").unwrap_or_default().to_ascii_lowercase();
+    (windows_build() < 22000 || forced)
+        && !matches!(env.as_str(), "gl" | "opengl" | "glow")
+        && std::env::args().any(|a| FRAMED_ARGS.contains(&a.as_str()))
 }
 
 /// The file that says OpenGL failed on this PC (issue #14: an Intel HD
@@ -852,8 +872,7 @@ pub fn guard_borderless() {
     // These windows keep Windows' own title bar and frame: leave them whole
     // (taking their caption off left them without a title bar), but keep
     // that frame themed and in the app's colours (issue #29).
-    const FRAMED: [&str; 7] = ["--settings", "--links", "--basket", "--mini", "--torrent-files", "--history", "--subs"];
-    FRAMED_PROCESS.store(std::env::args().any(|a| FRAMED.contains(&a.as_str())), Ordering::SeqCst);
+    FRAMED_PROCESS.store(std::env::args().any(|a| FRAMED_ARGS.contains(&a.as_str())), Ordering::SeqCst);
     unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);

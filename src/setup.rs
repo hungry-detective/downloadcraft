@@ -454,16 +454,20 @@ impl SetupApp {
                 }
                 let folder = crate::platform::extension_directory(false).ok();
                 let by = card.max.y - 40.0;
-                let b1 = egui::Rect::from_min_size(egui::pos2(tx, by), egui::vec2(140.0, 30.0));
-                let b2 = egui::Rect::from_min_size(egui::pos2(tx + 148.0, by), egui::vec2(110.0, 30.0));
-                // Firefox installs from its store (it stays and updates itself).
-                let b3 = egui::Rect::from_min_size(egui::pos2(tx + 266.0, by), egui::vec2(150.0, 30.0));
-                for (r, label, k) in [(b1, "Open folder", 0u8), (b2, "Copy path", 1u8), (b3, "Firefox Add-ons", 2u8)] {
+                let b1 = egui::Rect::from_min_size(egui::pos2(tx, by), egui::vec2(112.0, 30.0));
+                let b2 = egui::Rect::from_min_size(egui::pos2(tx + 120.0, by), egui::vec2(96.0, 30.0));
+                // Firefox and Edge install from their stores (the copy stays
+                // and updates itself).
+                let b3 = egui::Rect::from_min_size(egui::pos2(tx + 224.0, by), egui::vec2(104.0, 30.0));
+                let b4 = egui::Rect::from_min_size(egui::pos2(tx + 336.0, by), egui::vec2(92.0, 30.0));
+                for (r, label, k) in [(b1, "Open folder", 0u8), (b2, "Copy path", 1u8), (b3, "Firefox store", 2u8), (b4, "Edge store", 3u8)] {
                     let resp = ui.interact(r, egui::Id::new(("setup-ext", k)), egui::Sense::click());
                     btn_flat(&p, r, resp.hovered(), label);
                     if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                         if k == 2 {
                             crate::platform::open_url("https://addons.mozilla.org/firefox/addon/download-craft/");
+                        } else if k == 3 {
+                            crate::platform::open_url(crate::settings::EDGE_ADDON_URL);
                         } else if let Some(f) = &folder {
                             if k == 0 {
                                 crate::app::open_path(f, false);

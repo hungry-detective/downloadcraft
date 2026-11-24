@@ -24,14 +24,10 @@ What is known to be unfinished, in no particular order. Remove an entry when it 
 
 ## Browser stores
 
-- **Edge Add-ons: first submission.** Register in Microsoft Partner Center (free)
-  and submit `DownloadCraft-Edge-<version>.zip` (the Chrome package without the
-  pinned `key`). Then:
-  - add the ID Edge assigns to `STORE_EXTENSION_IDS` in `src/app.rs`, or the
-    native host will not answer the store copy;
-  - add the GitHub secrets `EDGE_PRODUCT_ID`, `EDGE_CLIENT_ID` and
-    `EDGE_API_KEY`, so each release tag publishes the update
-    (`publish-stores` in `.github/workflows/portable.yml`).
+- **Edge Add-ons: automatic updates.** The extension is live there (uploaded by
+  hand in Partner Center). Add the GitHub secrets `EDGE_PRODUCT_ID`,
+  `EDGE_CLIENT_ID` and `EDGE_API_KEY` so each release tag publishes the update
+  (`publish-stores` in `.github/workflows/portable.yml`).
 - **Firefox Add-ons: automatic updates.** Add the GitHub secrets `AMO_JWT_ISSUER`
   and `AMO_JWT_SECRET` (addons.mozilla.org → Developer Hub → Manage API Keys).
 - **Chrome Web Store** (one-time USD 5 registration) if wanted.

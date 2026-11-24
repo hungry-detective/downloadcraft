@@ -70,24 +70,42 @@
   const READABLE = /json|text\/plain|javascript|text\/html|xml/i;
   const SKIP = /mpegurl|dash\+xml|text\/css/i;
 
-  const origFetch = window.fetch;
-  if (typeof origFetch === "function") {
-    window.fetch = function (...args) {
-      const a0 = args[0];
-      const target = typeof a0 === "string" ? a0 : (a0 && (a0.url || a0.href)) || "";
-      // data:/blob: answers are the page's own bytes, never a media list.
-      if (/^(data|blob):/i.test(String(target))) return origFetch.apply(this, args);
-      const p = origFetch.apply(this, args);
-      p.then((res) => {
-        try {
-          const ct = res.headers.get("content-type") || "";
-          const len = Number(res.headers.get("content-length") || 0);
-          if (!READABLE.test(ct) || SKIP.test(ct) || len > (FB ? FB_MAX : MAX_BODY)) return;
-          res.clone().text().then(scanText, () => {});
-        } catch (e) { /* never disturb the page */ }
-      }, () => {});
+  // Answers are read when the page itself reads them (Response.text /
+  // .json), not by wrapping fetch: with fetch wrapped, every request the
+  // page made that failed (an ad an ad-blocker stopped) was reported by
+  // Chrome as "Uncaught (in promise) TypeError: Failed to fetch" in this
+  // file, an error on the extension's page that was never ours.
+  const RP = window.Response && window.Response.prototype;
+  const origText = RP && RP.text;
+  const eligible = (res) => {
+    try {
+      const ct = res.headers.get("content-type") || "";
+      const len = Number(res.headers.get("content-length") || 0);
+      return READABLE.test(ct) && !SKIP.test(ct) && !(len > (FB ? FB_MAX : MAX_BODY));
+    } catch (e) { return false; }
+  };
+  const mine = new WeakSet();
+  if (RP && typeof origText === "function") {
+    RP.text = function (...args) {
+      const p = origText.apply(this, args);
+      try {
+        if (!mine.has(this) && eligible(this)) p.then(scanText, () => {});
+      } catch (e) { /* never disturb the page */ }
       return p;
     };
+    const origJson = RP.json;
+    if (typeof origJson === "function") {
+      RP.json = function (...args) {
+        try {
+          if (!mine.has(this) && !this.bodyUsed && eligible(this)) {
+            const copy = this.clone();
+            mine.add(copy);
+            origText.call(copy).then(scanText, () => {});
+          }
+        } catch (e) { /* never disturb the page */ }
+        return origJson.apply(this, args);
+      };
+    }
   }
 
   const XHR = window.XMLHttpRequest && window.XMLHttpRequest.prototype;

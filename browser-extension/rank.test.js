@@ -303,6 +303,14 @@ describe("mp4Info", () => {
     assert.equal(r.moovAt, 16 + 40);
     assert.deepEqual(DCRank.mp4Info(whole.slice(r.moovAt), r.moovAt), { w: 640, h: 360, drm: false });
   });
+  it("reads the movie's length from mvhd (a hover preview is told apart)", () => {
+    // version 0: flags(4) created(4) modified(4) timescale(4) duration(4) …
+    const body = new Uint8Array(100);
+    body.set([0, 0, 3, 232], 12); // timescale 1000
+    body.set([0, 13, 22, 220], 16); // 857 820 ms = 858 s (14:18)
+    const moov = box("moov", cat(box("mvhd", body), trak(1280, 720, "vide", "avc1")));
+    assert.deepEqual(DCRank.mp4Info(file(moov)), { w: 1280, h: 720, drm: false, dur: 858 });
+  });
   it("ignores what is not an MP4", () => {
     assert.equal(DCRank.mp4Info(new TextEncoder().encode("<html>encv</html>")), null);
   });

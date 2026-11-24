@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.11.8";
+  const EXT_VER = "0.11.15";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -989,7 +989,7 @@
   // poster and dimensions ended up in the panel.
   function fbPickVideo(list, vw, vh) {
     let best = null;
-    let bs = -1;
+    let bs = -Infinity;
     const width = Number(vw) > 0 ? Number(vw) : 0;
     const height = Number(vh) > 0 ? Number(vh) : 0;
     for (const v of Array.from(list || [])) {
@@ -1001,6 +1001,19 @@
       if (!(visW > 40 && visH > 40)) continue;
       let s = visW * visH;
       try { if (v.paused === false) s += 1e7; } catch (e) { /* ignore */ }
+      // Covered by another layer: the home feed (an ad video still playing)
+      // stays mounted under the Reels viewer, and won while the reel had
+      // not started, so the panel showed the ad's caption.
+      try {
+        const top = typeof document !== "undefined" && document.elementFromPoint
+          ? document.elementFromPoint(Math.max(r.left, 0) + visW / 2, Math.max(r.top, 0) + visH / 2) : null;
+        if (top && top !== v) {
+          let up = v.parentElement;
+          let mine = false;
+          for (let k = 0; up && k < 6; k++, up = up.parentElement) if (up.contains(top)) { mine = true; break; }
+          if (!mine) s -= 5e7;
+        }
+      } catch (e) { /* ignore */ }
       try { if (v.videoWidth > 0) s += 1e5; } catch (e) { /* ignore */ }
       if (s > bs) { bs = s; best = v; }
     }
@@ -3581,8 +3594,35 @@
     try { return !!(typeof DCRank !== "undefined" && DCRank.socialSite && DCRank.socialSite(location.hostname)); } catch (e) { return false; }
   }
   const SOCIAL_QUALITIES = ["best", "1080p", "720p", "480p", "360p"];
+  // An Instagram post's caption, read beside its own <video>: the tab is
+  // just "Instagram", so every reel was named "Instagram". The text is a
+  // dir="auto" block in the post's container (not the author link, not
+  // "Follow" / "See translation"); without one, the author's reel.
+  function instaCaption(video) {
+    try {
+      if (!video || !/(^|\.)instagram\.com$/i.test(location.hostname)) return "";
+      const skip = /^(follow|following|see translation|more|… ?more|original audio|audio is muted|verified)$/i;
+      let el = video.parentElement;
+      let author = "";
+      for (let d = 0; el && d < 18; d++, el = el.parentElement) {
+        if (el.querySelectorAll("video").length > 1) break;
+        let best = "";
+        for (const t of el.querySelectorAll('[dir="auto"], h1')) {
+          if (t.closest("a, svg")) continue;
+          const txt = String(t.innerText || t.textContent || "").replace(/\s+/g, " ").trim();
+          if (txt.length >= 2 && !skip.test(txt) && txt.length > best.length) best = txt;
+        }
+        if (!author) {
+          const a = [...el.querySelectorAll("a[href]")].find((x) => /^\/[\w.]+\/(reels\/)?$/.test(x.getAttribute("href") || "") && (x.innerText || "").trim());
+          if (a) author = a.innerText.trim();
+        }
+        if (best) return best.replace(/\s*(…|\.\.\.)\s*more$/i, "").slice(0, 120);
+      }
+      return author ? `${author} reel` : "";
+    } catch (e) { return ""; }
+  }
   function socialSend(post, q, video) {
-    const title = String(document.title || "video").replace(/\s*[|•·]\s*(Instagram|TikTok|X|Reddit).*$/i, "").replace(/ on X: .*$/i, "").trim().slice(0, 90) || "video";
+    const title = instaCaption(video) || String(document.title || "video").replace(/\s*[|•·]\s*(Instagram|TikTok|X|Reddit).*$/i, "").replace(/ on X: .*$/i, "").trim().slice(0, 90) || "video";
     const stem = title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/\.+$/, "").trim() || "video";
     const audio = q === "audio";
     const name = audio ? `${stem}.mp3` : q && q !== "best" ? `${stem} [${q}].mp4` : `${stem}.mp4`;
@@ -3944,7 +3984,11 @@
             const stored = fbStoredVideos(net);
             if (stored.length) {
               const info = fbInfo();
-              fb = stored.slice(0, 15).map((e, i) => ({
+              // A reel or video page lists the video on screen only, like
+              // YouTube: the reels scrolled past (and the neighbours Facebook
+              // preloads) are not on this page any more.
+              const single = !!fbReelKeyOf(location.href) || /\/(reel|watch|share\/[rv])\b/i.test(location.pathname);
+              fb = stored.slice(0, single ? 1 : 15).map((e, i) => ({
                 id: e.id, dur: e.dur, thumb: e.thumb || (i === 0 ? info.thumb : ""),
                 title: i === 0 ? info.title : "",
                 video: e.video, audio: e.audio, progressive: e.progressive,
@@ -3955,18 +3999,64 @@
             }
           }
         } catch (e) { fb = []; }
+        // Instagram / TikTok / X / Reddit: the post on screen, which the app
+        // downloads in any quality with its sound. Their players fetch each
+        // video in many byte-range pieces (video and audio apart): listed
+        // one by one they made 25 "MP4" choices, none a whole video.
+        let social = null;
+        try {
+          if (isSocialPage()) {
+            const v = pageVideos().find((x) => { const r = x.getBoundingClientRect(); return r.width > 80 && r.bottom > 0 && r.top < window.innerHeight; });
+            const post = v ? socialPostFor(v) : "";
+            if (post) {
+              const d = Number.isFinite(v.duration) && v.duration > 0 && v.duration < 86400 ? Math.round(v.duration) : null;
+              social = { post, title: instaCaption(v) || pageTitle() || document.title || "video", thumb: socialThumb(post, v) || thumb, dur: d, site: DCRank.socialSite(location.hostname) };
+              const cdn = /(^|\.)(cdninstagram\.com|fbcdn\.net|tiktokcdn(-us|-eu)?\.com|tiktokv\.(com|us|eu)|ibytedtos\.com|byteoversea\.com|twimg\.com|redd\.it)$/i;
+              net = net.filter((n) => { try { return !cdn.test(new URL(n.url).hostname); } catch (e) { return true; } });
+            }
+          }
+        } catch (e) { social = null; }
         sendResponse({
+          social,
           videos,
           links,
           fb,
           net: net.map((n) => (n.thumb ? n : { ...n, thumb })),
+          // Where the video on screen is, so the popup can cut its picture
+          // out of a screenshot of the tab when the page gives none
+          // (Instagram reels have no poster and no og:image of their own).
+          shot: (() => {
+            try {
+              let best = null;
+              let area = 0;
+              let bestDur = 0;
+              for (const v of pageVideos()) {
+                const r = v.getBoundingClientRect();
+                const x0 = Math.max(0, r.left), y0 = Math.max(0, r.top);
+                const x1 = Math.min(window.innerWidth, r.right), y1 = Math.min(window.innerHeight, r.bottom);
+                const a = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+                if (a > area && x1 - x0 > 80 && y1 - y0 > 60) {
+                  area = a; best = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+                  bestDur = Number.isFinite(v.duration) && v.duration > 0 && v.duration < 86400 ? Math.round(v.duration) : 0;
+                }
+              }
+              return best ? { ...best, vw: window.innerWidth, vh: window.innerHeight, dur: bestDur } : null;
+            } catch (e) { return null; }
+          })(),
           // The page's picture, for file links on it too (a movie page's
           // "Download" button showed a blank card).
           thumb,
           page: location.href,
           // The same name the player's own button uses (the page's
           // og:title, the site's suffix dropped), not the raw tab text.
-          title: pageTitle() || document.title || "",
+          title: (() => {
+            try {
+              const v = pageVideos().find((x) => { const r = x.getBoundingClientRect(); return r.width > 80 && r.bottom > 0 && r.top < window.innerHeight; });
+              const c = instaCaption(v);
+              if (c) return c;
+            } catch (e) { /* the page's own title */ }
+            return pageTitle() || document.title || "";
+          })(),
         });
       })();
       return true;

@@ -11,7 +11,7 @@ let lastFallbackError = "";
 // Must match manifest version + content.js EXT_VER. Tabs running an older
 // content script are rejected with a "reload the tab" error instead of
 // failing mysteriously (their extension APIs are gone after a reload).
-const EXT_VER = "0.11.8";
+const EXT_VER = "0.11.15";
 
 // Promise-style calls (the `await api.*` ones below) go through this handle so
 // one file serves both engines: Firefox exposes the promise-returning
@@ -425,7 +425,7 @@ function pumpProbes() {
       if (!info) return;
       probedFiles.set(url, info);
       for (const list of tabMedia.values()) {
-        for (const e of list) if (e.url === url) Object.assign(e, { w: info.w || undefined, h: info.h || undefined, drm: info.drm || undefined });
+        for (const e of list) if (e.url === url) Object.assign(e, { w: info.w || undefined, h: info.h || undefined, drm: info.drm || undefined, dur: e.dur || info.dur || undefined });
       }
     }, () => {}).finally(() => { probesRunning--; pumpProbes(); });
   }
@@ -458,7 +458,7 @@ async function probeMp4(url) {
     const tail = await readBytes(url, info.moovAt, 4 * 1024 * 1024);
     info = tail ? DCRank.mp4Info(tail, info.moovAt) : null;
   }
-  return info && (info.h > 0 || info.drm) ? info : null;
+  return info && (info.h > 0 || info.drm || info.dur > 0) ? info : null;
 }
 
 function noteMedia(tabId, entry) {
@@ -528,7 +528,11 @@ function noteMedia(tabId, entry) {
   // subtitle side files: first from this list, then (a moment later) the
   // number the popup itself lists for the page.
   const badgeN = list.filter((e) => !e.child && e.kind !== "subtitle").length;
-  setTabBadge(tabId, badgeN);
+  // A social site's pieces (Instagram sends one reel as dozens) are not
+  // videos to count: the page's own count follows in a moment.
+  let piece = false;
+  try { piece = /(^|\.)(cdninstagram\.com|tiktokcdn(-us|-eu)?\.com|twimg\.com|redd\.it)$/i.test(new URL(entry.url).hostname); } catch (e) { piece = false; }
+  if (!piece) setTabBadge(tabId, badgeN);
   scheduleBadge(tabId);
 }
 
@@ -552,7 +556,7 @@ function scheduleBadge(tabId) {
     badgeTimers.delete(tabId);
     try {
       const peek = await api.tabs.sendMessage(tabId, { type: "peekState" }, { frameId: 0 });
-      if (peek && (peek.videos || peek.links || peek.net || peek.fb)) setTabBadge(tabId, DCRank.countVideos(peek));
+      if (peek && (peek.videos || peek.links || peek.net || peek.fb || peek.social)) setTabBadge(tabId, DCRank.countVideos(peek));
     } catch (e) { /* no content script on this page: keep the list count */ }
   }, 700));
 }
@@ -904,6 +908,13 @@ try {
     chrome.tabs.onUpdated.addListener((tabId, info) => {
       if ((info.status === "loading" && info.url !== undefined) || info.url !== undefined) {
         forgetTab(tabId, info.url);
+      }
+      // YouTube's video is read from the page, never sniffed, so nothing
+      // else counted it: the badge stayed empty on a watch page. Count once
+      // the page (or the SPA's next video) has loaded, and again once its
+      // player has its formats.
+      if (info.url !== undefined || info.status === "complete") {
+        for (const ms of [1500, 4000]) setTimeout(() => scheduleBadge(tabId), ms);
       }
     });
   }

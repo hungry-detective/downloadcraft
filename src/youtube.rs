@@ -738,8 +738,30 @@ pub async fn video_facts(client: &reqwest::Client, page_url: &str) -> Result<(St
         Ok(answer) => serde_json::from_str(&text_capped(answer, "the player API").await.unwrap_or_default()).unwrap_or(Value::Null),
         Err(_) => Value::Null,
     };
-    let title = video_title(&player, &facts, &id);
+    let mut title = video_title(&player, &facts, &id);
+    if title.starts_with("youtube_") {
+        if let Some(t) = oembed_title(client, &id).await {
+            title = t;
+        }
+    }
     Ok((title, sides_of(&player)))
+}
+
+/// A video's title from YouTube's oEmbed answer: a small public JSON that
+/// names the video even when the watch page is a consent or "confirm you
+/// are not a bot" page (the Add dialog then named a youtu.be link by its
+/// video id).
+pub async fn oembed_title(client: &reqwest::Client, id: &str) -> Option<String> {
+    let url = format!("https://www.youtube.com/oembed?format=json&url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{id}");
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(10), client.get(&url).header(reqwest::header::USER_AGENT, PAGE_AGENT).send())
+        .await
+        .ok()?
+        .ok()?;
+    if !answer.status().is_success() {
+        return None;
+    }
+    let v: Value = serde_json::from_str(&text_capped(answer, "oEmbed").await.ok()?).ok()?;
+    v.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
 
 /// The picture sizes in a player answer, biggest first, without repeats.

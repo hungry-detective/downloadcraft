@@ -15,12 +15,17 @@ function page(globals = {}) {
   const window = {
     location: { origin: "https://site.example" },
     postMessage: (msg) => { raw.push(msg); if (msg.items) posted.push(...msg.items); },
+    // A Response as the page sees it: the hook patches its prototype.
+    Response: class Response {
+      constructor(a) { this.a = a; this.bodyUsed = false; this.headers = { get: (k) => (k === "content-type" ? a.type : null) }; }
+      clone() { return new window.Response(this.a); }
+      async text() { this.bodyUsed = true; return this.a.body; }
+      async json() { this.bodyUsed = true; return JSON.parse(this.a.body); }
+    },
+    // The page fetches and reads the answer, as pages do.
     fetch: async (url) => {
-      const a = answers.get(url);
-      const res = {
-        headers: { get: (k) => (k === "content-type" ? a.type : null) },
-        clone: () => ({ text: async () => a.body }),
-      };
+      const res = new window.Response(answers.get(url));
+      try { await (/json/.test(res.a.type) ? res.json() : res.text()); } catch (e) { /* not JSON */ }
       return res;
     },
     ...globals,

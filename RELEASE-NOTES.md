@@ -1,4 +1,84 @@
-# Download Craft 0.11.13
+# Download Craft 0.11.14
+
+## What's new
+
+- **Add download opens in its own window**, like Settings. The main window
+  stays usable and is no longer dimmed while it is open.
+- **Settings has its own title bar** instead of Windows' frame, like the
+  rest of the app ("Use the Windows title bar" brings Windows' frame back).
+- **Batch is back** in the Craft and Classic toolbars. In Classic the order
+  is now Delete Completed, Batch, Scheduler, Options.
+- **YouTube titles in Add download**: a pasted YouTube link (youtu.be too)
+  is named after the video. The refresh button beside the name reads it
+  again.
+- **Edge Add-ons**: Settings → Browser Integration and Get ready open the
+  extension's page on Microsoft Edge Add-ons, as they do for Firefox.
+- **Browser extension 0.11.15**:
+  - **Instagram, TikTok, X and Reddit**: one card for the post on screen,
+    named after its caption, with Best, 1080p, 720p, 480p, 360p and MP3.
+    The app downloads the whole video with its sound.
+  - **Facebook Reels**: only the reel you are watching, with its own title.
+  - The list **follows the page while the popup is open** (the next reel
+    you scroll to appears).
+  - **Download in browser** is always there, folded until you open it, and
+    it remembers whether you did.
+  - It **remembers the quality you last downloaded** and picks it next time.
+  - Cards without a picture get one from the video on screen; MP4 cards
+    show the video's length; the toolbar badge counts YouTube videos too.
+
+## Fixes
+
+- **Windows 10 (#29)**: Settings no longer shows Windows' old pale title bar
+  with boxed buttons, nor a white flash as it opens. The other windows that
+  keep Windows' title bar draw in a way that keeps it from appearing too.
+- **Add download**: the quality list is no longer cut off, and its arrow no
+  longer shows as a square.
+- **Extension**:
+  - Previews, GIF clips and 10-second pieces of the playing video are no
+    longer listed: only the full video, as a file or a stream.
+  - Page items that are not videos (a `.php` player script) are left out.
+  - "Download in browser" no longer saves a short preview instead of the
+    full video.
+  - Instagram no longer lists dozens of "MP4" pieces of one reel, nor names
+    every reel "Instagram".
+  - The quality list on a card is no longer squeezed into an arrow.
+  - The "Failed to fetch" error on the extension's Errors page is gone (it
+    came from the page's own blocked ad requests).
+  - The popup shows its list at once instead of waiting for a picture.
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.11.14-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.11.14-windows-x64-portable.zip` and run `download_craft.exe`.
+Already installed: About → Check again.
+
+**macOS 12+.** Unzip `DownloadCraft-0.11.14-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.11.14_amd64.deb`; Fedora: install
+`downloadcraft-0.11.14-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.14-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.11.15.xpi` from
+`about:debugging#/runtime/this-firefox`. Edge: install
+[Download Craft from Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/download-craft/bmjjepniglflidaclilkibodbkdogoio).
+Chrome and Brave: extract `DownloadCraft-Chrome-0.11.15.zip` and load the
+extracted folder in `chrome://extensions`. With the app running, the
+extension updates itself.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.14`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+# Earlier: Download Craft 0.11.13
 
 ## What's new
 
@@ -29,36 +109,6 @@
 - **Add download**: the name is caught for links pasted one after another
   (it kept the previous link's), and the name and size boxes show a
   loading ring while they are read.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.11.13-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.11.13-windows-x64-portable.zip` and run `download_craft.exe`.
-
-**macOS 12+.** Unzip `DownloadCraft-0.11.13-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.13_amd64.deb`; Fedora: install
-`downloadcraft-0.11.13-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.13-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.11.8.xpi` from
-`about:debugging#/runtime/this-firefox`. Chrome, Edge and Brave: extract the
-Chrome ZIP and load the extracted folder in `chrome://extensions`.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.13`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
-
-
 
 # Earlier: Download Craft 0.11.12
 

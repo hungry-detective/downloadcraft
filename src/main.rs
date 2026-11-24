@@ -85,6 +85,18 @@ pub(crate) const RELAUNCHED: &str = "DOWNLOAD_CRAFT_RELAUNCHED";
 /// Direct3D failed too, the error is shown and saved.
 fn window_result(result: eframe::Result<()>) -> eframe::Result<()> {
     let Err(e) = &result else { return result };
+    // A framed window on Windows 10 tried Direct3D first (issue #29): it
+    // starts again with OpenGL, and nothing is remembered.
+    #[cfg(windows)]
+    if crate::platform::framed_direct3d() && !crate::platform::software_renderer() {
+        eprintln!("Direct3D could not open the window ({e}); starting again with OpenGL");
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if let Ok(exe) = crate::platform::launch_path() {
+            if std::process::Command::new(exe).args(&args).env(RELAUNCHED, "1").env("DOWNLOAD_CRAFT_RENDERER", "gl").spawn().is_ok() {
+                return Ok(());
+            }
+        }
+    }
     #[cfg(windows)]
     if !crate::platform::software_renderer() {
         eprintln!("OpenGL could not open the window ({e}); starting again with Direct3D");

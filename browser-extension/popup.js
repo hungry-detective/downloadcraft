@@ -246,6 +246,8 @@ const SVG = {
 };
 
 let openMenu = null;
+// The quality last downloaded ("720p"), shared with the page's button.
+let prefQ = "";
 document.addEventListener("click", () => { if (openMenu) { openMenu.remove(); openMenu = null; } });
 
 // item: { title, thumb, dur, tag, link, page, kind, options: [opt] }
@@ -258,13 +260,13 @@ function card(item, mode) {
   const options = item.options;
   // YouTube cannot be saved by the browser itself: its card stays in the
   // browser section, but hands the video to the app.
-  const viaApp = mode === "browser" && item.tag === "YOUTUBE";
+  const viaApp = mode === "browser" && (item.tag === "YOUTUBE" || item.viaApp);
   if (mode === "browser" && !viaApp && !options.some((o) => o.browser)) return null;
   const el = document.createElement("div");
   el.className = "card";
   const th = document.createElement("div");
   th.className = "thumb";
-  if (item.thumb && /^https?:\/\//i.test(item.thumb)) {
+  if (item.thumb && /^(https?:\/\/|data:image\/)/i.test(item.thumb)) {
     const im = document.createElement("img");
     im.src = item.thumb; im.loading = "lazy"; im.alt = "";
     im.onerror = () => { im.remove(); };
@@ -301,6 +303,14 @@ function card(item, mode) {
     sel.appendChild(op);
   });
   if (mode === "browser" && !viaApp) sel.value = String(options.findIndex((o) => o.browser));
+  // The quality downloaded last time (720p, 1080p…), the same choice the
+  // page's own button remembers: the nearest one at or under it.
+  const hOf = (o) => o.h || parseInt((String(o.label).match(/(\d{3,4})p\b/) || [])[1], 10) || 0;
+  if (prefQ && R && R.pickHeight) {
+    const ok = (o) => !(mode === "browser" && !viaApp && !o.browser);
+    const i = R.pickHeight(options.map((o) => (ok(o) ? hOf(o) : 0)), prefQ);
+    if (i >= 0) sel.value = String(i);
+  }
   if (options.length < 2) sel.disabled = true;
   const showSize = () => {
     const o = options[Number(sel.value)] || {};
@@ -333,6 +343,8 @@ function card(item, mode) {
   dl.onclick = () => {
     const o = options[Number(sel.value)];
     if (!o || o.drm) return;
+    const h = hOf(o);
+    if (h > 0) { prefQ = `${h}p`; try { chrome.storage.local.set({ dcQuality: prefQ }); } catch (e) { /* this popup only */ } }
     if (inBrowser) sendBrowser({ ...o.browser, title: item.title, pageUrl: item.page });
     else send(o.msg);
   };
@@ -359,7 +371,9 @@ function card(item, mode) {
   if (viaApp) {
     const hint = document.createElement("div");
     hint.className = "meta";
-    hint.textContent = "YouTube refuses downloads made by the browser itself (its links only work inside YouTube's player). The app downloads it — it starts on its own.";
+    hint.textContent = item.tag === "YOUTUBE"
+      ? "YouTube refuses downloads made by the browser itself (its links only work inside YouTube's player). The app downloads it — it starts on its own."
+      : "This site sends its videos in pieces the browser cannot join. The app downloads the whole video with its sound — it starts on its own.";
     body.appendChild(hint);
   }
   el.append(th, body);
@@ -523,8 +537,24 @@ function linkTextIsWeak(text) {
 }
 
 // Everything the page offers, as cards: [{kind: "videos"|"streams"|"other", ...}].
+// The post on screen (Instagram, TikTok, X, Reddit): one card, every
+// quality and MP3, sent to the app as the post's link (as the page's own
+// button does); the app fetches it whole, with its sound.
+function socialItem(v, pageUrl) {
+  const stem = safeName(v.title || "video", "").replace(/[.]+$/, "") || "video";
+  const opts = [["best", "Best quality"], ["1080p", "1080p"], ["720p", "720p"], ["480p", "480p"], ["360p", "360p"], ["audio", "Audio (MP3)"]].map(([q, label]) => ({
+    h: parseInt(q, 10) || 0, label, size: 0, url: v.post, browser: null,
+    msg: { type: "download", url: v.post, pageUrl: pageUrl || v.post, dur: v.dur || undefined,
+      filename: q === "audio" ? `${stem}.mp3` : q === "best" ? `${stem}.mp4` : `${stem} [${q}].mp4`,
+      mime: q === "audio" ? "audio/mpeg" : "video/mp4", quality: q === "best" ? null : q },
+  }));
+  const tag = String(v.site || "post").replace(/[.].*$/, "").toUpperCase();
+  return { key: `social:${v.post}`, kind: "videos", title: v.title || "Video", thumb: v.thumb, dur: v.dur, tag, link: v.post, page: pageUrl, options: opts, viaApp: true };
+}
+
 function collectItems(peek, pageUrl) {
   const items = [];
+  if (peek.social && peek.social.post) items.push(socialItem(peek.social, pageUrl));
   for (const v of (peek.videos || [])) items.push(youtubeItem(v, pageUrl));
   for (const e of (peek.fb || [])) {
     const it = facebookItem(e, pageUrl);
@@ -548,6 +578,22 @@ function collectItems(peek, pageUrl) {
   // video (the next episode), the earlier ones go under Other.
   const streamPlan = planStreams(netItems);
   const qualityCards = new Map();
+  // An MP4 under 45 s while a long video plays (the player on screen, or
+  // another file) is a site's hover preview: "Download in browser" saved a
+  // 5 MB preview of a 14-minute video. It goes under Other files.
+  const playerDur = (peek.shot && peek.shot.dur) || 0;
+  const longThere = playerDur >= 120 || netItems.some((n) => (n.dur || 0) >= 120);
+  // Also: a file under a preview/GIF path (a site's hover clip:
+  // /pics/gifs/…mp4, 3 MB for a 12-minute video), one far too small for the
+  // video playing (under ~320 kbit/s of its length), or one whose own
+  // length is not the player's.
+  const isPreview = (n) => {
+    if (/\/(gifs?|previews?|thumbs?|teasers?|webm_?previews?)\//i.test(String(n.url || "").split("?")[0])) return true;
+    if (!longThere) return false;
+    if (n.dur > 0 && n.dur < 45) return true;
+    if (playerDur >= 120 && n.dur > 0 && Math.abs(n.dur - playerDur) > playerDur * 0.25) return true;
+    return playerDur >= 120 && n.size > 0 && n.size / playerDur < 40000;
+  };
   for (const n of netItems) {
     if (streamPlan.drop.has(n.url)) continue;
     const kind = R ? R.kindOf(n) : "file";
@@ -556,11 +602,16 @@ function collectItems(peek, pageUrl) {
     const tag = isSub ? "SUBS" : kind === "segment" ? "PART" : tagOf(n.url, n.mime);
     const name = isStream || isSub ? undefined : safeName(pageTitle || "video", /^audio\//i.test(n.mime || "") ? ".m4a" : ".mp4");
     const streamName = safeName(pageTitle || "video", ".mp4");
+    // A hover preview or a piece of the playing video (10 s of a 12-minute
+    // one) is not listed: the full video is there as a file or a stream.
+    if (kind === "file" && isPreview(n)) continue;
     if (kind === "file" && tag !== "AUDIO" && !/^audio\//i.test(n.mime || "")) {
       const key = `${pageUrl}|${pageTitle}`;
       let card = qualityCards.get(key);
       if (!card) {
-        card = { key: `net:${n.url}`, kind: "videos", title: pageTitle || "Video", thumb: n.thumb, dur: n.dur, tag, link: n.url, page: pageUrl, options: [] };
+        // Its length: the file's own, else the player's (it is the video
+        // playing: previews and other lengths were set aside above).
+        card = { key: `net:${n.url}`, kind: "videos", title: pageTitle || "Video", thumb: n.thumb, dur: n.dur || playerDur || undefined, tag, link: n.url, page: pageUrl, options: [] };
         qualityCards.set(key, card);
         items.push(card);
       }
@@ -601,6 +652,7 @@ function collectItems(peek, pageUrl) {
     items.push({
       key: `net:${n.url}`,
       kind: aside ? "other" : isStream ? "streams" : isSub || kind === "segment" ? "other" : "videos",
+      fold: aside || kind === "segment",
       title: aside ? asideTitle : (pageTitle || "Video"),
       thumb: n.thumb, dur: n.dur, tag, link: n.url, page: pageUrl,
       options: [{
@@ -615,6 +667,9 @@ function collectItems(peek, pageUrl) {
   }
   for (const l of (peek.links || [])) {
     if (!/^https?:\/\//i.test(l.url)) continue; // defense-in-depth: never offer odd schemes
+    // A <video>/<source> address that is no media file (a .php player
+    // script) is not a download.
+    if (/^Page media\b/.test(l.text || "") && !/^(MP4|MKV|WEBM|MOV|AVI|M4V|TS|FLV|WMV|MP3|M4A|FLAC|OGG|WAV|OPUS|AAC|M3U8|MPD)$/i.test(tagOf(l.url, ""))) continue;
     // A file link whose text names nothing ("Download", "Click here") is
     // shown under the page's title, with the page's picture when it is a
     // video or sound file (a movie page's 3 GB MP4 showed as "Download").
@@ -624,6 +679,8 @@ function collectItems(peek, pageUrl) {
     items.push({
       key: `link:${l.url}`,
       kind: "other",
+      // A <video>/<source> the page holds but nobody asked to download.
+      fold: /^Page media\b/.test(l.text || ""),
       title: weak && pageTitle ? pageTitle : (l.text || l.url),
       thumb: l.thumb || (media ? peek.thumb : undefined), tag, link: l.url, page: pageUrl,
       options: [{ label: "File", url: l.url, browser: browserJob(l.url, ""), msg: { type: "download", url: l.url, pageUrl: pageUrl || undefined } }],
@@ -635,7 +692,9 @@ function collectItems(peek, pageUrl) {
 
 function group(id, label, sub, count, cls, build) {
   const g = document.createElement("div");
-  g.className = "group" + ((prefs.closed || {})[id] ? " closed" : "");
+  // The browser section starts folded; each section keeps how it was left.
+  const closed = (prefs.closed || {})[id];
+  g.className = "group" + ((closed === undefined ? id === "browser" : closed) ? " closed" : "");
   const h = document.createElement("div");
   h.className = "ghead";
   h.innerHTML = `<span class="chev">${SVG.chev}</span><span class="pillsrc ${cls}"></span><b></b><span class="n"></span><span class="sub"></span>`;
@@ -655,12 +714,20 @@ function group(id, label, sub, count, cls, build) {
   return g;
 }
 
-function render(peek, pageUrl) {
+// What the list shows, to skip a live refresh that would change nothing.
+let lastSig = "";
+function render(peek, pageUrl, quiet) {
+  const found = collectItems(peek, pageUrl);
+  const all = found.filter((it) => !hidden.keys.has(it.key));
+  const sig = JSON.stringify([hostOk, all.map((it) => [it.key, it.title, it.thumb, it.options.map((o) => o.label)])]);
+  // A live refresh: only when something changed, and never under an open
+  // menu or quality list (rebuilding the cards would close it).
+  if (quiet && (sig === lastSig || openMenu || (document.activeElement && document.activeElement.tagName === "SELECT"))) return;
+  lastSig = sig;
   lastRender = () => render(peek, pageUrl);
   const box = $("videos");
   box.textContent = "";
-  const all = collectItems(peek, pageUrl).filter((it) => !hidden.keys.has(it.key));
-  shownKeys = collectItems(peek, pageUrl).map((it) => it.key);
+  shownKeys = found.map((it) => it.key);
   const q = $("q").value.trim().toLowerCase();
   const items = all.filter((it) => (filterKind === "all" || it.kind === filterKind)
     && (!q || String(it.title || "").toLowerCase().includes(q) || String(it.tag || "").toLowerCase().includes(q)));
@@ -678,7 +745,21 @@ function render(peek, pageUrl) {
   }
   const order = { videos: 0, streams: 1, other: 2 };
   items.sort((a, b) => order[a.kind] - order[b.kind]);
-  const browserCount = items.filter((it) => it.options.some((o) => o.browser)).length;
+  // Files the page only mentions (its sources, previews, clips played
+  // earlier) are not what plays: with a video listed they stay folded
+  // under one "Other files" line until asked for.
+  const others = items.filter((it) => it.fold);
+  const foldOthers = filterKind === "all" && !q && others.length && others.length < items.length && !prefs.showOther;
+  const listed = foldOthers ? items.filter((it) => !it.fold) : items;
+  const otherRow = () => {
+    if (!others.length || filterKind !== "all" || q || others.length === items.length) return null;
+    const r = document.createElement("button");
+    r.className = "morefiles";
+    r.textContent = foldOthers ? `Show ${others.length} other file${others.length > 1 ? "s" : ""} on this page` : "Hide other files";
+    r.onclick = () => { prefs.showOther = !prefs.showOther; savePrefs(); if (lastRender) lastRender(); };
+    return r;
+  };
+  const browserCount = listed.filter((it) => it.options.some((o) => o.browser)).length;
   // 1) With the app: every quality, the app resolves and merges.
   box.appendChild(group("app", "Download with Download Craft", hostOk ? "" : "app not running", items.length, "", (b) => {
     if (!hostOk) {
@@ -687,19 +768,20 @@ function render(peek, pageUrl) {
       n.textContent = "Download Craft is not running. Open it to download here, or use “Download in browser” below — it works without the app.";
       b.appendChild(n);
     }
-    for (const it of items) { const c = card(it, "app"); if (c) b.appendChild(c); }
+    for (const it of listed) { const c = card(it, "app"); if (c) b.appendChild(c); }
+    const r = otherRow(); if (r) b.appendChild(r);
   }));
   // 2) In the browser: no app needed (pairs and streams are joined here).
-  // Shown when the app is not running; with the app, each card's ⋮ menu
-  // still offers "Download in browser instead" (one card per video).
-  if (!hostOk) box.appendChild(group("browser", "Download in browser", "no app needed", browserCount, "br", (b) => {
+  // Always there, folded or open as the user left it (the owner missed it
+  // while the app was running).
+  box.appendChild(group("browser", "Download in browser", "no app needed", browserCount, "br", (b) => {
     if (!browserCount) {
       const n = document.createElement("div");
       n.className = "empty";
       n.textContent = "These need the app (the page only names them; the app resolves them).";
       b.appendChild(n);
     }
-    for (const it of items) { const c = card(it, "browser"); if (c) b.appendChild(c); }
+    for (const it of listed) { const c = card(it, "browser"); if (c) b.appendChild(c); }
   }));
   enrich(items, pageUrl);
 }
@@ -940,23 +1022,57 @@ async function activeTab() {
   }
 }
 
-async function loadVideos() {
+// A picture for cards the page gave none (Instagram reels): the video on
+// screen, cut out of a screenshot of the tab. Taken once per page.
+let shot = { page: "", url: "" };
+async function shotThumb(peek, tab) {
+  const s = peek.shot;
+  const bare = (peek.net || []).some((n) => !n.thumb) || (peek.fb || []).some((e) => !e.thumb);
+  if (!s || !bare || !tab || !api.tabs.captureVisibleTab) return;
+  const page = String(peek.page || "").split("#")[0];
+  if (shot.page !== page) {
+    shot = { page, url: "" };
+    try {
+      const full = await api.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
+      const img = await createImageBitmap(await (await fetch(full)).blob());
+      const k = img.width / (s.vw || img.width);
+      const w = Math.round(s.w * k), h = Math.round(s.h * k);
+      const scale = Math.min(1, 320 / w);
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(w * scale)); c.height = Math.max(1, Math.round(h * scale));
+      c.getContext("2d").drawImage(img, Math.round(s.x * k), Math.round(s.y * k), w, h, 0, 0, c.width, c.height);
+      shot.url = c.toDataURL("image/jpeg", 0.75);
+    } catch (e) { shot.url = ""; }
+  }
+  if (!shot.url) return;
+  for (const n of (peek.net || [])) if (!n.thumb) n.thumb = shot.url;
+  for (const e of (peek.fb || [])) if (!e.thumb) e.thumb = shot.url;
+}
+
+async function loadVideos(quiet) {
   const tab = await activeTab();
-  await loadHidden(tab);
+  if (!quiet) await loadHidden(tab);
   const tabUrl = (tab && tab.url && /^https?:\/\//i.test(tab.url)) ? tab.url : null;
   if (tab && tab.id !== undefined) {
     try {
       // The top frame only: every iframe also answers (ad/account frames
       // replied first with an empty or foreign video list).
       const peek = await api.tabs.sendMessage(tab.id, { type: "peekState" }, { frameId: 0 });
-      if (peek && (peek.videos || peek.links || peek.net || peek.fb)) {
-        render(peek, peek.page || tabUrl);
+      if (peek && (peek.videos || peek.links || peek.net || peek.fb || peek.social)) {
+        // The list at once; a picture cut from the tab follows (taking it
+        // held the popup back, so it opened late).
+        const page = peek.page || tabUrl;
+        const had = shot.url;
+        if (had) await shotThumb(peek, tab);
+        render(peek, page, quiet);
+        if (!had) shotThumb(peek, tab).then(() => { if (shot.url) render(peek, page, true); }, () => {});
         return;
       }
     } catch (e) {
       /* content unreachable (no script on this page): fall through */
     }
   }
+  if (quiet) return;
   // Fallback: last stored snapshot, filtered to this tab's page when known.
   chrome.storage.local.get(
     ["downloadCraftVideos", "downloadCraftLinks", "downloadCraftNet", "downloadCraftPage"],
@@ -991,6 +1107,13 @@ $("clearBtn").onclick = async () => {
   status("Cleared — press ⟳ to look for videos again", "ok");
 };
 
-loadVideos();
+chrome.storage.local.get({ dcQuality: "" }, (v) => {
+  prefQ = /^\d{3,4}p$/.test((v && v.dcQuality) || "") ? v.dcQuality : "";
+  loadVideos();
+});
+// While the popup stays open, the list follows the page: the next reel
+// scrolled to, a video that starts playing (it was missed until the popup
+// was opened again).
+setInterval(() => { if (!document.hidden && !$("viewVideos").hidden) loadVideos(true); }, 1500);
 updateDlCount();
 showTab(prefs.tab === "downloads" || prefs.tab === "settings" ? prefs.tab : "videos");

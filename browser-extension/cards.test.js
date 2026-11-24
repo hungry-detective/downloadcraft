@@ -116,3 +116,59 @@ test('an 11 s preview is left out even when the episode stream could not be read
   const items = p.collectItems({ title: 'Stranger Things S01E04', links: [], net }, 'https://www.imdb.com/title/tt4574334/');
   assert.equal(JSON.stringify(items.map((i) => [i.kind, i.link])), JSON.stringify([['streams', 'https://cdn.example/a/master.m3u8']]));
 });
+
+test('a short MP4 beside a long video (a preview, a piece of it) is not listed', () => {
+  const p = panel();
+  const items = p.collectItems({
+    title: 'Some long video',
+    shot: { x: 0, y: 0, w: 800, h: 450, vw: 1280, vh: 720, dur: 863 },
+    links: [],
+    net: [
+      { url: 'https://cdn.example/preview-720.mp4', mime: 'video/mp4', h: 720, dur: 12, size: 5e6 },
+      { url: 'https://cdn.example/full-720.mp4', mime: 'video/mp4', h: 720, dur: 863, size: 3e8 },
+    ],
+  }, 'https://site.example/watch/1');
+  assert.equal(items.some((i) => i.link.includes('preview')), false);
+  const video = items.find((i) => i.kind === 'videos');
+  assert.deepEqual(JSON.parse(JSON.stringify(video.options.map((o) => o.url))), ['https://cdn.example/full-720.mp4']);
+});
+
+test('a short MP4 alone (a real short video) stays a video', () => {
+  const p = panel();
+  const items = p.collectItems({
+    title: 'A reel', shot: { dur: 20 }, links: [],
+    net: [{ url: 'https://cdn.example/reel.mp4', mime: 'video/mp4', h: 1280, dur: 20 }],
+  }, 'https://site.example/reel/1');
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, 'videos');
+});
+
+test('a GIF-path MP4 (a 3 MB hover clip of a 12-minute video) is not the video', () => {
+  const p = panel();
+  const items = p.collectItems({
+    title: 'A long video', shot: { dur: 758 }, links: [
+      { url: 'https://site.example/player.php?id=1', text: 'Page media (source)' },
+    ],
+    net: [{ url: 'https://cdn.example/pics/gifs/055/447/961/55447961a.mp4?validfrom=1', mime: 'video/mp4', size: 3135000 }],
+  }, 'https://site.example/view/1');
+  assert.equal(items.some((i) => i.link.includes('/gifs/')), false);
+  // The .php player script is no download at all.
+  assert.equal(items.some((i) => i.link.includes('.php')), false);
+});
+
+test('an Instagram reel is one card of qualities sent as the post link, not its pieces', () => {
+  const p = panel();
+  const items = p.collectItems({
+    title: 'Instagram', links: [], net: [],
+    social: { post: 'https://www.instagram.com/reel/De7LaHnTe_T/', title: 'NCP explained in 12 seconds', dur: 12, site: 'instagram.com' },
+  }, 'https://www.instagram.com/reels/De7LaHnTe_T/');
+  assert.equal(items.length, 1);
+  const it = items[0];
+  assert.equal(it.tag, 'INSTAGRAM');
+  assert.equal(it.title, 'NCP explained in 12 seconds');
+  assert.deepEqual(JSON.parse(JSON.stringify(it.options.map((o) => o.label))), ['Best quality', '1080p', '720p', '480p', '360p', 'Audio (MP3)']);
+  const q720 = it.options.find((o) => o.label === '720p').msg;
+  assert.equal(q720.url, 'https://www.instagram.com/reel/De7LaHnTe_T/');
+  assert.equal(q720.quality, '720p');
+  assert.equal(q720.filename, 'NCP explained in 12 seconds [720p].mp4');
+});

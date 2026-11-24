@@ -726,7 +726,7 @@
   // audio/video pieces; they count once, as the video they belong to.
   function countVideos(peek) {
     if (!peek) return 0;
-    let n = (peek.videos || []).length;
+    let n = (peek.videos || []).length + (peek.social ? 1 : 0);
     for (const e of (peek.fb || [])) {
       const q = (e.video || []).some((v) => (Math.min(v.w || 0, v.h || 0) || v.h || 0) > 0);
       if (q || (e.progressive || []).length) n++;
@@ -792,7 +792,14 @@
         if (size < 8 || j + size > to) return track;
         const body = j + 8;
         if (t === "encv" || t === "enca") out.drm = true;
-        else if (t === "trak") {
+        else if (t === "mvhd" && size >= 32) {
+          // The movie's length: a site's hover preview (a few seconds) is
+          // told apart from the video the player plays.
+          const v1 = b[body] === 1;
+          const scale = u32(body + (v1 ? 20 : 12));
+          const len = v1 ? u32(body + 24) * 4294967296 + u32(body + 28) : u32(body + 16);
+          if (scale > 0 && len > 0 && len / scale < 86400) out.dur = Math.round(len / scale);
+        } else if (t === "trak") {
           const tr = walk(body, j + size, out, depth + 1) || {};
           if (tr.video && tr.h > out.h) { out.w = tr.w; out.h = tr.h; }
         } else if (t === "tkhd" && size >= 92) {

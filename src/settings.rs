@@ -975,7 +975,19 @@ pub fn run() -> eframe::Result<()> {
         // stands taller than the window it belongs to.
         .with_inner_size(if classic_look() { [452.0 * settings_scale(), CLASSIC_OPTIONS_H * settings_scale()] } else { [640.0 * settings_scale(), 460.0 * settings_scale()] })
         .with_min_inner_size(if classic_look() { [420.0, 420.0] } else { [560.0, 400.0] })
-        .with_resizable(true);
+        .with_resizable(true)
+        .with_decorations(crate::platform::system_title_bar());
+    if !crate::platform::system_title_bar() {
+        let size = if classic_look() { [452.0 * settings_scale(), CLASSIC_OPTIONS_H * settings_scale() + TITLE_H] } else { [640.0 * settings_scale(), 460.0 * settings_scale() + TITLE_H] };
+        viewport = viewport.with_inner_size(size);
+    }
+    // Windows 10 (Direct3D, see `framed_direct3d`): the window opens hidden
+    // and shows once its first frame is drawn; it flashed white before
+    // (issue #29). OpenGL draws nothing into a window started hidden.
+    #[cfg(windows)]
+    if crate::platform::framed_direct3d() && !crate::platform::software_renderer() {
+        viewport = viewport.with_visible(false);
+    }
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
@@ -990,6 +1002,85 @@ pub fn run() -> eframe::Result<()> {
         }),
     )
 }
+
+/// Settings' own title bar, like the main window's and Download File Info's:
+/// on Windows 10 the frame Windows drew for it fell back to the old "Basic"
+/// title bar (pale, boxed buttons) whenever the compositor skipped it (issue
+/// #29). The app's borderless windows never show that frame, so Settings is
+/// one of them now: drag the bar to move, double-click to maximize, the
+/// edges to resize.
+fn own_title_bar(ctx: &egui::Context) {
+    use egui::viewport::ResizeDirection as Dir;
+    let t = tok();
+    let max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+    egui::TopBottomPanel::top("settings_title")
+        .exact_height(TITLE_H)
+        .frame(egui::Frame::new().fill(t.bg))
+        .show_separator_line(false)
+        .show(ctx, |ui| {
+            let bar = ui.max_rect();
+            let p = ui.painter().clone();
+            p.hline(bar.x_range(), bar.max.y - 0.5, Stroke::new(1.0, t.border));
+            crate::dm::dm_mark(&p, Rect::from_center_size(egui::pos2(bar.min.x + 20.0, bar.center().y), egui::vec2(16.0, 16.0)));
+            p.stext(egui::pos2(bar.min.x + 36.0, bar.center().y), Align2::LEFT_CENTER, crate::i18n::t("Download Craft Settings"), semi(12.5), t.text);
+            let btn_w = 40.0;
+            let drag_r = bar.with_max_x(bar.max.x - 3.0 * btn_w);
+            let drag = ui.interact(drag_r, egui::Id::new("settings_drag"), Sense::click_and_drag());
+            if drag.double_clicked() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+            } else if drag.drag_started() {
+                crate::platform::start_drag(ctx);
+            }
+            let icons = [crate::dm::DmIcon::Minimize, if max { crate::dm::DmIcon::Restore } else { crate::dm::DmIcon::Maximize }, crate::dm::DmIcon::Close];
+            for (k, icon) in icons.into_iter().enumerate() {
+                let r = Rect::from_min_size(egui::pos2(bar.max.x - btn_w * (3 - k) as f32, bar.min.y), egui::vec2(btn_w, TITLE_H - 1.0));
+                let resp = ui.interact(r, egui::Id::new(("settings_ctl", k)), Sense::click());
+                if resp.hovered() {
+                    p.rect_filled(r, 0.0, if k == 2 { Color32::from_rgb(196, 43, 28) } else { t.hover });
+                }
+                let col = if resp.hovered() && k == 2 { Color32::WHITE } else if resp.hovered() { t.text } else { t.muted };
+                crate::dm::dm_icon(&p, Rect::from_center_size(r.center(), egui::vec2(14.0, 14.0)), icon, col, 1.4);
+                if resp.clicked() {
+                    match k {
+                        0 => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+                        1 => ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max)),
+                        _ => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    }
+                }
+            }
+        });
+    // The edges resize the window (no frame to grab), through Windows'
+    // own size loop (issue #28).
+    if max {
+        return;
+    }
+    let Some(q) = ctx.input(|i| i.pointer.hover_pos()) else { return };
+    let r = ctx.screen_rect();
+    let (z, c) = (5.0, 12.0);
+    let zone = |a: egui::Pos2, b: egui::Pos2| Rect::from_min_max(a, b);
+    let zones = [
+        (zone(r.min, egui::pos2(r.min.x + c, r.min.y + c)), Dir::NorthWest, egui::CursorIcon::ResizeNorthWest),
+        (zone(egui::pos2(r.max.x - c, r.min.y), egui::pos2(r.max.x, r.min.y + c)), Dir::NorthEast, egui::CursorIcon::ResizeNorthEast),
+        (zone(egui::pos2(r.min.x, r.max.y - c), egui::pos2(r.min.x + c, r.max.y)), Dir::SouthWest, egui::CursorIcon::ResizeSouthWest),
+        (zone(egui::pos2(r.max.x - c, r.max.y - c), r.max), Dir::SouthEast, egui::CursorIcon::ResizeSouthEast),
+        (zone(egui::pos2(r.min.x + c, r.min.y), egui::pos2(r.max.x - c, r.min.y + z)), Dir::North, egui::CursorIcon::ResizeNorth),
+        (zone(egui::pos2(r.min.x + c, r.max.y - z), egui::pos2(r.max.x - c, r.max.y)), Dir::South, egui::CursorIcon::ResizeSouth),
+        (zone(egui::pos2(r.min.x, r.min.y + c), egui::pos2(r.min.x + z, r.max.y - c)), Dir::West, egui::CursorIcon::ResizeWest),
+        (zone(egui::pos2(r.max.x - z, r.min.y + c), egui::pos2(r.max.x, r.max.y - c)), Dir::East, egui::CursorIcon::ResizeEast),
+    ];
+    for (rect, dir, icon) in zones {
+        if rect.contains(q) {
+            ctx.set_cursor_icon(icon);
+            if ctx.input(|i| i.pointer.primary_pressed()) {
+                crate::platform::begin_resize(ctx, dir);
+            }
+            return;
+        }
+    }
+}
+
+/// Height of Settings' own title bar.
+const TITLE_H: f32 = 36.0;
 
 /// Classic's Options window height: every page fits in it.
 const CLASSIC_OPTIONS_H: f32 = 510.0;
@@ -1045,6 +1136,19 @@ impl eframe::App for SettingsApp {
                 if let raw_window_handle::RawWindowHandle::Win32(w) = handle.as_raw() {
                     crate::tray::set_hwnd(w.hwnd.get());
                 }
+            }
+        }
+        // Opened hidden (Windows 10): shown once its first frame is drawn.
+        // On a window that is already showing this changes nothing.
+        {
+            static SHOWN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = SHOWN.load(std::sync::atomic::Ordering::Relaxed);
+            if n < 3 {
+                SHOWN.store(n + 1, std::sync::atomic::Ordering::Relaxed);
+                if n == 2 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                }
+                ctx.request_repaint();
             }
         }
         let resolved = format!(
@@ -1118,6 +1222,9 @@ impl eframe::App for SettingsApp {
             }
         }
 
+        if !crate::platform::system_title_bar() {
+            own_title_bar(ctx);
+        }
         let t = tok();
         CLASSIC.store(crate::skins::active() == "classic", std::sync::atomic::Ordering::Relaxed);
         if classic() {
@@ -4208,6 +4315,8 @@ fn code_chip(ui: &mut Ui, s: &str) {
 /// colour (identical metrics), so hover changes ink only, never layout.
 /// The extension on addons.mozilla.org.
 const FIREFOX_ADDON_URL: &str = "https://addons.mozilla.org/firefox/addon/download-craft/";
+/// The extension on Microsoft Edge Add-ons.
+pub const EDGE_ADDON_URL: &str = "https://microsoftedge.microsoft.com/addons/detail/download-craft/bmjjepniglflidaclilkibodbkdogoio";
 
 fn btn_icon(ui: &mut Ui, glyph: &str, label: &str, primary: bool) -> Response {
     let t = tok();
@@ -6229,6 +6338,10 @@ impl SettingsApp {
                             // updates itself (a folder one is temporary).
                             if firefox && btn_icon(ui, "\u{e89e}", "Get it from Firefox Add-ons", true).clicked() {
                                 crate::platform::open_url(FIREFOX_ADDON_URL);
+                            }
+                            // Edge installs from its own store, like Firefox.
+                            if !firefox && btn_icon(ui, "\u{e89e}", "Get it from Edge Add-ons", false).clicked() {
+                                crate::platform::open_url(EDGE_ADDON_URL);
                             }
                             if btn_icon(ui, "\u{e2c7}", "Open extension folder", !firefox).clicked() {
                                 open_folder = true;

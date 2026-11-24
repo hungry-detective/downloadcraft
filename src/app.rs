@@ -2891,6 +2891,8 @@ pub struct CraftApp {
     diag_hits_n: usize,
     // ---- manual pointer routing (bypasses egui hit-testing) ----
     man: ManState,
+    /// Pointer routing of the Add download window (its own input).
+    add_man: ManState,
     hits: Vec<(HitKind, egui::Rect)>,
     man_hover_dbg: String,
     ctx_menu: Option<(u64, egui::Pos2)>,
@@ -3136,6 +3138,7 @@ impl CraftApp {
             diag_std_click: 0,
             diag_hits_n: 0,
             man: ManState::default(),
+            add_man: ManState::default(),
             hits: Vec::new(),
             man_hover_dbg: "-".to_string(),
             ctx_menu: None,
@@ -4690,12 +4693,16 @@ impl CraftApp {
                     let mut sides = Vec::new();
                     if is_youtube_video_link(&url) {
                         total = None;
-                        if let Ok(Ok((title, s))) = tokio::time::timeout(
-                            std::time::Duration::from_secs(20),
-                            crate::youtube::video_facts(&client, &url),
-                        )
-                        .await
-                        {
+                        let facts = match tokio::time::timeout(std::time::Duration::from_secs(20), crate::youtube::video_facts(&client, &url)).await {
+                            Ok(Ok(f)) => Some(f),
+                            // The watch page could not be read: the title
+                            // alone, from oEmbed.
+                            _ => match crate::engine::youtube_id(&url) {
+                                Some(id) => crate::youtube::oembed_title(&client, &id).await.map(|t| (t, Vec::new())),
+                                None => None,
+                            },
+                        };
+                        if let Some((title, s)) = facts {
                             sides = s.clone();
                             // "- YouTube": the page of a video that is not there.
                             let placeholder = title.trim().trim_start_matches('-').trim().eq_ignore_ascii_case("youtube");
@@ -8604,6 +8611,16 @@ pub(crate) fn archive_passwords() -> Vec<String> {
 }
 
 /// A single YouTube video (not a playlist or channel page).
+/// Add download opens in its own window (ui.json "add_window", read once).
+fn add_in_window() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::model::ui_pref_bool("add_window", true))
+}
+
+/// Where the Add download window opens (screen points): the main window's
+/// centre the first time, then wherever the user left it.
+static ADD_WIN_POS: std::sync::Mutex<Option<egui::Pos2>> = std::sync::Mutex::new(None);
+
 fn is_youtube_video_link(url: &str) -> bool {
     let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
     (host == "youtu.be" || host == "youtube.com" || host.ends_with(".youtube.com"))
@@ -9851,8 +9868,10 @@ impl eframe::App for CraftApp {
                     tools.push((ToolId::StopAll, MI_STOP_CIRCLE, t("Stop All"), true, t("Stop every active download now")));
                     tools.push((ToolId::Delete, MI_DELETE, t("Delete"), n_checked > 0, t("Remove the selected downloads from the list")));
                     tools.push((ToolId::ClearDone, MI_DELETE_SWEEP, t("Delete Completed"), has_done, t("Take every finished download off the list (the files stay)")));
-                    tools.push((ToolId::Settings, MI_TUNE, t("Options"), true, t("Open Settings")));
+                    // Batch and Scheduler before Options (the owner's order).
+                    tools.push((ToolId::Batch, MI_PLAYLIST_ADD, t("Batch"), true, t("Add many links at once from a list file (.txt, IDM .ef2)")));
                     tools.push((ToolId::Queues, MI_ALARM, t("Scheduler"), true, t("Queues and their schedules")));
+                    tools.push((ToolId::Settings, MI_TUNE, t("Options"), true, t("Open Settings")));
                     tools.push((ToolId::StartQueue, MI_QUEUE_PLAY, t("Start Queue"), true, t("Start the main queue")));
                     tools.push((ToolId::StopQueue, MI_STOP, t("Stop Queue"), !self.tasks.is_empty(), t("Stop the main queue")));
                     tools.push((ToolId::Grabber, MI_PUBLIC, t("Grabber"), true, t("Collect file links from a web page")));
@@ -9860,6 +9879,7 @@ impl eframe::App for CraftApp {
                 if !classic {
                 // First after Add URL, so a narrow window drops it last.
                 tools.push((ToolId::AddTorrent, MI_MAGNET, crate::i18n::t("Add torrent"), true, crate::i18n::t("Add a torrent: a magnet link on the clipboard, or pick .torrent files")));
+                tools.push((ToolId::Batch, MI_PLAYLIST_ADD, crate::i18n::t("Batch"), true, crate::i18n::t("Add many links at once from a list file (.txt, IDM .ef2)")));
                 tools.push((ToolId::ResumeSel, MI_PLAY_CIRCLE, crate::i18n::t("Resume"), true, crate::i18n::t("Resume the selected downloads (all paused when none is checked)")));
                 tools.push((ToolId::StopSel, MI_PAUSE_CIRCLE, crate::i18n::t("Stop"), true, crate::i18n::t("Pause the selected downloads (all active when none is checked)")));
                 tools.push((ToolId::StopAll, MI_STOP_CIRCLE, crate::i18n::t("Stop All"), true, crate::i18n::t("Pause every active download now")));
@@ -10436,7 +10456,8 @@ impl eframe::App for CraftApp {
         }
 
         // ================= modal backdrop (dim only — never intercepts clicks) =================
-        if self.show_add
+        // Add download in its own window leaves the main one as it is.
+        if (self.show_add && !add_in_window())
             || self.show_queues
             || self.show_grabber
             || self.show_about
@@ -10500,7 +10521,7 @@ impl eframe::App for CraftApp {
             self.probing = false;
         }
         if self.show_add {
-            if self.add_focus_req {
+            if self.add_focus_req && !add_in_window() {
                 // Focus lands without any click (hit-test independent).
                 self.add_focus_req = false;
                 focus_field(ctx, "add_url");
@@ -10568,7 +10589,12 @@ impl eframe::App for CraftApp {
                 }
                 if let Some(n) = nm {
                     self.probe_name = Some(n.clone());
-                    if self.add_file.trim().is_empty() || self.add_file == self.add_file_auto {
+                    // The link's own last part ("SyGA5e0zi8M" for a youtu.be
+                    // link) is a name the dialog chose itself too: a pasted
+                    // YouTube link kept its id instead of the video's title,
+                    // even after refresh.
+                    let from_link = self.add_file == filename_from_url(self.add_url.trim());
+                    if self.add_file.trim().is_empty() || self.add_file == self.add_file_auto || from_link {
                         self.add_file = crate::model::apply_rename_template(
                             &self.rename_template,
                             &n,
@@ -10581,452 +10607,63 @@ impl eframe::App for CraftApp {
                     self.maybe_add_prestart();
                 }
             }
-            let psize = self.probe_size;
-            let pbusy = self.probing;
-            let mut open = self.show_add;
-            // In-canvas centered modal (a separate OS window proved unstable
-            // here, so the dialog lives in the main canvas like before).
-            // The concept is a fixed-size dialog; only the advanced panel makes
-            // it taller (the concept draws that collapsed).
-            let adv_h = if self.add_adv { DM_PANEL_H + 14.0 } else { 0.0 };
-            let card_h = (DM_H + adv_h).min((ctx.screen_rect().height() * 0.94).max(300.0));
-            egui::Window::new("Add download")
-                .id(egui::Id::new("add_download_modal"))
-                .order(egui::Order::Foreground)
-                .open(&mut open)
-                .title_bar(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .pivot(egui::Align2::CENTER_CENTER)
-                .collapsible(false)
-                .resizable(false)
-                .fixed_size(egui::vec2(DM_W, card_h))
-                .frame(egui::Frame::new())
-                .show(ctx, |ui| {
-                    // Everything is painted from the card origin: the concept is
-                    // a pixel layout, not a flow layout.
-                    let card = ui.max_rect();
-                    let o = card.min;
-                    let p = ui.painter().clone();
-                    let at = |x: f32, y: f32, w: f32, h: f32| {
-                        egui::Rect::from_min_size(egui::pos2(o.x + x, o.y + y), egui::vec2(w, h))
-                    };
-                    // ---- card ----
-                    p.rect(
-                        card,
-                        8.0,
-                        pl().dm_card,
-                        egui::Stroke::new(1.0, pl().dm_line),
-                        egui::StrokeKind::Inside,
-                    );
-                    // ---- header: mark + title + window controls ----
-                    dm_mark(&p, at(15.0, 11.0, 18.0, 18.0));
-                    p.stext(
-                        egui::pos2(o.x + 41.0, o.y + 20.0),
-                        egui::Align2::LEFT_CENTER,
-                        "Add download",
-                        crate::fonts::semi(13.0),
-                        pl().dm_txt,
-                    );
-                    p.line_segment(
-                        [
-                            egui::pos2(o.x + 1.0, o.y + 39.5),
-                            egui::pos2(o.x + DM_W - 1.0, o.y + 39.5),
-                        ],
-                        egui::Stroke::new(1.0, pl().dm_line),
-                    );
-                    // The dialog lives in the main canvas, so minimise/restore
-                    // drive the real OS window and the X closes the dialog.
-                    for (cx, icon, ctl) in [
-                        (485.0f32, DmIcon::Minimize, 0u8),
-                        (513.0, DmIcon::Maximize, 1),
-                        (541.0, DmIcon::Close, 2),
-                    ] {
-                        let r = at(cx - 8.0, 12.0, 16.0, 16.0);
-                        dm_icon_btn(&p, &self.man, r, icon, 12.0, 2.0, pl().dm_dim);
-                        if self.man.clicked(&r) {
-                            match ctl {
-                                0 => ui
-                                    .ctx()
-                                    .send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
-                                1 => {
-                                    let max = ui
-                                        .ctx()
-                                        .input(|i| i.viewport().maximized.unwrap_or(false));
-                                    ui.ctx()
-                                        .send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
-                                }
-                                _ => {
-                                    self.show_add = false;
-                                    self.add_focus_req = false;
-                                    self.add_recent_open = false;
-                                }
-                            }
-                        }
+            // Its own window (like Settings), the owner's choice; ui.json
+            // "add_window": false keeps it inside the main window.
+            if add_in_window() {
+                let adv_h = if self.add_adv { DM_PANEL_H + 14.0 } else { 0.0 };
+                let size = egui::vec2(DM_W, DM_H + adv_h);
+                // Centred on the main window when it opens; where the user
+                // moves it after that.
+                let pos = {
+                    let mut g = ADD_WIN_POS.lock().unwrap_or_else(|e| e.into_inner());
+                    if g.is_none() {
+                        let outer = ctx.input(|i| i.viewport().outer_rect).unwrap_or(ctx.screen_rect());
+                        *g = Some(outer.center() - size / 2.0);
                     }
-                    // ---- row 1: URL + clipboard ----
-                    let url_box = at(DM_X, DM_ROW1, DM_W_IN, DM_BOX_H);
-                    let url_btn = egui::Rect::from_min_size(
-                        egui::pos2(url_box.max.x - 33.0, url_box.min.y + 5.0),
-                        egui::Vec2::splat(28.0),
-                    );
-                    dm_field(
-                        ui,
-                        "add_url",
-                        url_box,
-                        url_btn.min.x - 6.0,
-                        &mut self.add_url,
-                        "https://…",
-                        false,
-                    );
-                    self.hits.push((HitKind::Field("add_url"), url_box));
-                    dm_icon_btn(&p, &self.man, url_btn, DmIcon::Clipboard, 14.0, 1.5, pl().dm_dim);
-                    self.hits.push((HitKind::Btn(ButtonId::AddPaste), url_btn));
-                    // ---- row 2: save folder + carets | size chip ----
-                    let path_box = at(DM_X, DM_ROW2, DM_PATH_W, DM_BOX_H);
-                    let caret_btn = egui::Rect::from_min_size(
-                        egui::pos2(path_box.max.x - 33.0, path_box.min.y + 5.0),
-                        egui::Vec2::splat(28.0),
-                    );
-                    let folder_btn = egui::Rect::from_min_size(
-                        egui::pos2(caret_btn.min.x - 28.0, caret_btn.min.y),
-                        egui::Vec2::splat(28.0),
-                    );
-                    dm_field(
-                        ui,
-                        "add_dir",
-                        path_box,
-                        folder_btn.min.x - 6.0,
-                        &mut self.add_dir,
-                        "Save folder",
-                        false,
-                    );
-                    self.hits.push((HitKind::Field("add_dir"), path_box));
-                    dm_icon_btn(&p, &self.man, folder_btn, DmIcon::Folder, 14.0, 1.5, pl().dm_dim);
-                    self.hits.push((HitKind::Btn(ButtonId::AddFolder), folder_btn));
-                    dm_icon_btn(&p, &self.man, caret_btn, DmIcon::Chevron, 10.0, 2.0, pl().dm_dim);
-                    self.add_caret = Some(caret_btn);
-                    if self.man.clicked(&caret_btn) {
-                        self.add_recent_open = !self.add_recent_open;
-                    }
-                    // size chip: grid mark, size, and a tick once the probe is in
-                    let chip = at(DM_X + DM_PATH_W + 8.0, DM_ROW2, DM_SIZE_W, DM_BOX_H);
-                    dm_box(&p, chip);
-                    // What is being downloaded, with the left panel's own
-                    // icons in the text colour (light on dark, dark on
-                    // light): a video, music (a YouTube link as MP3/M4A
-                    // too), an archive, a program, a picture, a document.
-                    let kind = if is_youtube_video_link(self.add_url.trim()) {
-                        if matches!(self.add_quality.trim().to_ascii_lowercase().as_str(), "mp3" | "m4a") { "Music" } else { "Video" }
-                    } else {
-                        category_of(self.add_file.trim())
-                    };
-                    p.stext(
-                        egui::pos2(chip.min.x + 21.0, chip.center().y),
-                        egui::Align2::CENTER_CENTER,
-                        file_icon(kind),
-                        crate::fonts::icon(17.0),
-                        pl().dm_txt,
-                    );
-                    let known = !pbusy && psize.filter(|s| *s > 0).is_some();
-                    let yt = is_youtube_video_link(self.add_url.trim());
-                    let size_part: String = if pbusy {
-                        "…".to_string()
-                    } else {
-                        psize
-                            .filter(|s| *s > 0)
-                            .map(format_bytes)
-                            .unwrap_or_else(|| "—".to_string())
-                    };
-                    // A YouTube link: the box names the quality too, and a
-                    // click on it picks another.
-                    let sz_txt: String = if yt {
-                        let q = YT_QUALITIES
-                            .iter()
-                            .find(|(k, _)| k.eq_ignore_ascii_case(self.add_quality.trim()))
-                            .map(|(k, l)| if k.is_empty() { "Best" } else { l.split(' ').next().unwrap_or(l) })
-                            .unwrap_or("Best");
-                        format!("{q} · {size_part} ▾")
-                    } else {
-                        size_part
-                    };
-                    if yt && self.man.clicked(&chip) {
-                        self.add_quality_open = !self.add_quality_open;
-                    }
-                    if !yt {
-                        self.add_quality_open = false;
-                    }
-                    if self.add_quality_open {
-                        let mut pick: Option<String> = None;
-                        egui::Area::new(egui::Id::new("add_quality_list"))
-                            .order(egui::Order::Tooltip)
-                            .fixed_pos(egui::pos2(chip.min.x, chip.max.y + 4.0))
-                            .show(ui.ctx(), |ui| {
-                                egui::Frame::popup(ui.style()).fill(pl().dm_card).show(ui, |ui| {
-                                    ui.set_min_width(chip.width());
-                                    for (k, l) in YT_QUALITIES {
-                                        // Only the sizes this video has.
-                                        if !yt_quality_offered(k, &self.add_yt_sides) {
-                                            continue;
-                                        }
-                                        let on = k.eq_ignore_ascii_case(self.add_quality.trim());
-                                        if ui.selectable_label(on, l).clicked() {
-                                            pick = Some(k.to_string());
-                                        }
-                                    }
-                                });
-                            });
-                        if let Some(k) = pick {
-                            self.add_quality_open = false;
-                            if k != self.add_quality {
-                                self.add_quality = k;
-                                // The size follows the quality: measure again.
-                                self.stop_add_prestart(None);
-                                self.probe_done_for.clear();
-                            }
-                        }
-                    }
-                    let g = p.layout_no_wrap(sz_txt, crate::fonts::reg(11.0), pl().dm_txt);
-                    let tw = g.size().x;
-                    let tx = chip.min.x + 37.0;
-                    p.galley(
-                        egui::pos2(tx, chip.center().y - g.size().y * 0.5),
-                        g,
-                        pl().dm_txt,
-                    );
-                    if pbusy {
-                        // The size and qualities are being read: a turning ring.
-                        let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
-                        dm_arc(&p, egui::pos2(chip.max.x - 18.0, chip.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
-                        ui.ctx().request_repaint();
-                    }
-                    if known {
-                        dm_icon(
-                            &p,
-                            egui::Rect::from_min_size(
-                                egui::pos2(tx + tw + 8.0, chip.min.y + 13.0),
-                                egui::Vec2::splat(12.0),
-                            ),
-                            DmIcon::Check,
-                            DM_OK,
-                            2.5,
-                        );
-                    }
-                    // ---- row 3: filename + refresh + advanced ----
-                    let file_box = at(DM_X, DM_ROW3, DM_FILE_W, DM_BOX_H);
-                    let refr_btn = egui::Rect::from_min_size(
-                        egui::pos2(file_box.max.x + 8.0, file_box.min.y),
-                        egui::Vec2::splat(38.0),
-                    );
-                    let gear_btn = egui::Rect::from_min_size(
-                        egui::pos2(refr_btn.max.x + 8.0, refr_btn.min.y),
-                        egui::Vec2::splat(38.0),
-                    );
-                    dm_field(
-                        ui,
-                        "add_file",
-                        file_box,
-                        file_box.max.x - 13.0,
-                        &mut self.add_file,
-                        "Filename",
-                        false,
-                    );
-                    self.hits.push((HitKind::Field("add_file"), file_box));
-                    if pbusy && (self.add_file.trim().is_empty() || self.add_file == self.add_file_auto) {
-                        // The real name is on its way (a video's title).
-                        let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
-                        dm_arc(&p, egui::pos2(file_box.max.x - 22.0, file_box.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
-                        ui.ctx().request_repaint();
-                    }
-                    dm_icon_btn_box(&p, &self.man, refr_btn, DmIcon::Refresh, 14.0, 1.5, pl().dm_dim);
-                    self.hits.push((HitKind::Btn(ButtonId::AddRefresh), refr_btn));
-                    dm_icon_btn_box(&p, &self.man, gear_btn, DmIcon::Settings, 15.0, 1.5, pl().dm_dim);
-                    self.hits.push((HitKind::Btn(ButtonId::AddAdv), gear_btn));
-                    // ---- advanced panel (gear): same tokens, placeholders
-                    // instead of labels, per the concept's field style ----
-                    if self.add_adv {
-                        let panel = at(DM_X, DM_ACT, DM_W_IN, DM_PANEL_H);
-                        dm_box(&p, panel);
-                        let cx = panel.min.x + 13.0;
-                        let cw = panel.width() - 26.0;
-                        let mut cy = panel.min.y + 13.0;
-                        let row = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, 30.0));
-                        p.stext(
-                            egui::pos2(row.min.x, row.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            "Connections",
-                            crate::fonts::reg(11.0),
-                            pl().dm_dim,
-                        );
-                        let srect = egui::Rect::from_min_size(
-                            egui::pos2(row.min.x + 92.0, row.min.y + 5.0),
-                            egui::vec2(row.width() - 144.0, 20.0),
-                        );
-                        let frac =
-                            (((self.add_conns as f64) - 1.0) / 15.0).clamp(0.0, 1.0) as f32;
-                        dm_slider(&p, &self.man, srect, frac);
-                        self.hits.push((
-                            HitKind::Slider(SliderId::AddConns, 1.0, 32.0, false),
-                            srect,
-                        ));
-                        p.stext(
-                            egui::pos2(row.max.x, row.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            format!("{}", self.add_conns),
-                            crate::fonts::reg(11.0),
-                            pl().dm_txt,
-                        );
-                        cy += 38.0;
-                        let half = (cw - 8.0) / 2.0;
-                        let r_ref = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(half, DM_BOX_H));
-                        let r_cok = egui::Rect::from_min_size(
-                            egui::pos2(cx + half + 8.0, cy),
-                            egui::vec2(half, DM_BOX_H),
-                        );
-                        dm_field(ui, "add_ref", r_ref, r_ref.max.x - 13.0, &mut self.add_referer, "Referer (optional)", false);
-                        self.hits.push((HitKind::Field("add_ref"), r_ref));
-                        dm_field(ui, "add_cookie", r_cok, r_cok.max.x - 13.0, &mut self.add_cookie, "Cookie (optional)", false);
-                        self.hits.push((HitKind::Field("add_cookie"), r_cok));
-                        cy += DM_BOX_H + 8.0;
-                        let r_usr = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(half, DM_BOX_H));
-                        let r_pwd = egui::Rect::from_min_size(
-                            egui::pos2(cx + half + 8.0, cy),
-                            egui::vec2(half, DM_BOX_H),
-                        );
-                        dm_field(ui, "add_user", r_usr, r_usr.max.x - 13.0, &mut self.add_user, "User (optional)", false);
-                        self.hits.push((HitKind::Field("add_user"), r_usr));
-                        dm_field(ui, "add_pass", r_pwd, r_pwd.max.x - 13.0, &mut self.add_pass, "Password", true);
-                        self.hits.push((HitKind::Field("add_pass"), r_pwd));
-                        cy += DM_BOX_H + 8.0;
-                        let r_sum = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, DM_BOX_H));
-                        dm_field(ui, "add_sum", r_sum, r_sum.max.x - 13.0, &mut self.add_checksum, "SHA-256 checksum (optional, 64 hex)", false);
-                        self.hits.push((HitKind::Field("add_sum"), r_sum));
-                        cy += DM_BOX_H + 8.0;
-                        let ow = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, 22.0));
-                        let cbx = egui::Rect::from_min_size(
-                            egui::pos2(ow.min.x, ow.center().y - 8.0),
-                            egui::Vec2::splat(16.0),
-                        );
-                        if self.add_overwrite {
-                            p.rect_filled(cbx, 4.0, DM_ACC());
-                            dm_icon(
-                                &p,
-                                egui::Rect::from_center_size(cbx.center(), egui::Vec2::splat(12.0)),
-                                DmIcon::Check,
-                                egui::Color32::WHITE,
-                                2.5,
-                            );
-                        } else {
-                            p.rect(
-                                cbx,
-                                4.0,
-                                pl().dm_card,
-                                egui::Stroke::new(1.0, pl().dm_box_bd),
-                                egui::StrokeKind::Inside,
-                            );
-                        }
-                        p.stext(
-                            egui::pos2(cbx.max.x + 8.0, ow.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            "Overwrite file if it already exists",
-                            crate::fonts::reg(11.0),
-                            pl().dm_dim,
-                        );
-                        self.hits.push((HitKind::Check(CheckId::AddOverwrite), ow));
-                    }
-                    // ---- actions (manual hit table, as before) ----
-                    let act_y = DM_ACT + adv_h;
-                    let add_btn = at(DM_X, act_y, 100.0, 36.0);
-                    dm_btn_flat(&p, &self.man, add_btn, "Add");
-                    self.hits.push((HitKind::Btn(ButtonId::AddAdd), add_btn));
-                    let dl_btn = egui::Rect::from_min_size(
-                        egui::pos2(add_btn.max.x + 8.0, add_btn.min.y),
-                        egui::vec2(140.0, 36.0),
-                    );
-                    dm_gradient(&p, dl_btn, DM_RAD, DM_ACC(), DM_ACC2());
-                    if self.man.hover(&dl_btn) {
-                        p.rect_filled(dl_btn, DM_RAD, egui::Color32::from_white_alpha(22));
-                    }
-                    p.stext(
-                        dl_btn.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "Download",
-                        crate::fonts::semi(13.0),
-                        egui::Color32::WHITE,
-                    );
-                    self.hits.push((HitKind::Btn(ButtonId::AddDownload), dl_btn));
-                    let cancel_btn = egui::Rect::from_min_size(
-                        egui::pos2(o.x + DM_W - 17.0 - 100.0, add_btn.min.y),
-                        egui::vec2(100.0, 36.0),
-                    );
-                    dm_btn_flat(&p, &self.man, cancel_btn, "Cancel");
-                    self.hits.push((HitKind::Btn(ButtonId::AddCancel), cancel_btn));
-                });
-            // The egui X button can't be relied on: keep the flag unless
-            // our own Cancel/Add/Download closed it.
-            self.show_add = open && self.show_add;
-            if self.add_dir.trim().is_empty() {
-                self.add_dir = dirs::download_dir()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| crate::model::default_download_dir().to_string_lossy().into_owned());
-            }
-            // ---- recent-folders menu (the path field's caret) ----
-            // A click outside the caret and outside the menu closes it. The
-            // caret rect is this frame's; the menu rect is derived, never
-            // stored, so the two can't drift apart.
-            if self.add_recent_open && ctx.input(|i| i.pointer.any_click()) {
-                let pos = ctx.input(|i| i.pointer.interact_pos());
-                let rows = self.add_recent_dirs().len();
-                let menu = self.add_caret.map(|c| dm_menu_rect(c, rows));
-                let inside = |r: Option<egui::Rect>| match (r, pos) {
-                    (Some(r), Some(q)) => r.contains(q),
-                    _ => false,
+                    g.unwrap_or_default()
                 };
-                if !inside(self.add_caret) && !inside(menu) {
-                    self.add_recent_open = false;
+                let mut vb = egui::ViewportBuilder::default()
+                    .with_title("Add download")
+                    .with_app_id(crate::platform::app_id())
+                    .with_inner_size(size)
+                    .with_position(pos)
+                    .with_resizable(false)
+                    .with_decorations(false)
+                    .with_transparent(true)
+                    .with_taskbar(true);
+                if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+                    vb = vb.with_icon(std::sync::Arc::new(icon));
                 }
-            }
-            if self.add_recent_open {
-                match self.add_caret {
-                    None => self.add_recent_open = false,
-                    Some(caret) => {
-                        let anchors = self.add_recent_dirs();
-                        let mut pick: Option<String> = None;
-                        egui::Area::new(egui::Id::new("add_recent_menu"))
-                            .order(egui::Order::Foreground)
-                            .fixed_pos(dm_menu_rect(caret, anchors.len()).min)
-                            .show(ctx, |ui| {
-                                egui::Frame::new()
-                                    .fill(pl().dm_card)
-                                    .stroke(egui::Stroke::new(1.0, pl().dm_line))
-                                    .corner_radius(DM_RAD)
-                                    .inner_margin(egui::Margin::same(6))
-                                    .show(ui, |ui| {
-                                        ui.spacing_mut().item_spacing.y = 0.0;
-                                        for d in &anchors {
-                                            let resp = ui
-                                                .add_sized(
-                                                    egui::vec2(308.0, 24.0),
-                                                    egui::Button::new(
-                                                        egui::RichText::new(elide_left(d, 46))
-                                                            .size(11.0)
-                                                            .color(pl().dm_txt),
-                                                    )
-                                                    .fill(egui::Color32::TRANSPARENT)
-                                                    .stroke(egui::Stroke::NONE),
-                                                )
-                                                .on_hover_text(d);
-                                            if resp.clicked() {
-                                                pick = Some(d.clone());
-                                            }
-                                        }
-                                    });
-                            });
-                        if let Some(d) = pick {
-                            self.add_dir = d;
+                let main_hits = std::mem::take(&mut self.hits);
+                ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("add_download_window"), vb, |wctx, _| {
+                    // Its own pointer routing: the window's input, its hits.
+                    std::mem::swap(&mut self.man, &mut self.add_man);
+                    self.man.begin(wctx);
+                    self.hits.clear();
+                    if (wctx.zoom_factor() - self.ui_scale).abs() > 0.001 {
+                        wctx.set_zoom_factor(self.ui_scale);
+                    }
+                    if self.add_focus_req {
+                        self.add_focus_req = false;
+                        focus_field(wctx, "add_url");
+                    }
+                    if wctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        if self.add_recent_open {
                             self.add_recent_open = false;
+                        } else {
+                            self.show_add = false;
                         }
                     }
-                }
+                    if wctx.input(|i| i.viewport().close_requested()) {
+                        self.show_add = false;
+                    }
+                    self.add_dialog_body(wctx, true);
+                    self.process_hits(wctx);
+                    std::mem::swap(&mut self.man, &mut self.add_man);
+                });
+                self.hits = main_hits;
+            } else {
+                self.add_dialog_body(ctx, false);
             }
         }
         if !self.show_add {
@@ -11493,12 +11130,12 @@ impl eframe::App for CraftApp {
                             pl().txt,
                         );
                         // dropdown arrow
-                        ui.painter().stext(
-                            egui::pos2(r.max.x - 14.0, r.center().y),
-                            egui::Align2::CENTER_CENTER,
-                            "▾".to_string(),
-                            egui::FontId::proportional(12.0),
+                        dm_icon(
+                            ui.painter(),
+                            egui::Rect::from_center_size(egui::pos2(r.max.x - 14.0, r.center().y), egui::Vec2::splat(10.0)),
+                            DmIcon::Chevron,
                             pl().dim,
+                            2.0,
                         );
                         self.hits.push((HitKind::ComboAnchor, r));
                     });
@@ -12552,6 +12189,511 @@ impl eframe::App for CraftApp {
 }
 
 impl CraftApp {
+
+    /// The Add download dialog: in the main window's canvas, or (the
+    /// default) drawn into its own window, `in_window`.
+    fn add_dialog_body(&mut self, ctx: &egui::Context, in_window: bool) {
+        let psize = self.probe_size;
+        let pbusy = self.probing;
+        let mut open = self.show_add;
+        // In-canvas centered modal (a separate OS window proved unstable
+        // here, so the dialog lives in the main canvas like before).
+        // The concept is a fixed-size dialog; only the advanced panel makes
+        // it taller (the concept draws that collapsed).
+        let adv_h = if self.add_adv { DM_PANEL_H + 14.0 } else { 0.0 };
+        let card_h = if in_window { DM_H + adv_h } else { (DM_H + adv_h).min((ctx.screen_rect().height() * 0.94).max(300.0)) };
+        // In its own window the card fills the window; in the main canvas it
+        // floats centred over the list.
+        let mut body = |ui: &mut egui::Ui| {
+                // Everything is painted from the card origin: the concept is
+                // a pixel layout, not a flow layout.
+                let card = ui.max_rect();
+                let o = card.min;
+                let p = ui.painter().clone();
+                let at = |x: f32, y: f32, w: f32, h: f32| {
+                    egui::Rect::from_min_size(egui::pos2(o.x + x, o.y + y), egui::vec2(w, h))
+                };
+                // ---- card ----
+                p.rect(
+                    card,
+                    8.0,
+                    pl().dm_card,
+                    egui::Stroke::new(1.0, pl().dm_line),
+                    egui::StrokeKind::Inside,
+                );
+                // ---- header: mark + title + window controls ----
+                dm_mark(&p, at(15.0, 11.0, 18.0, 18.0));
+                p.stext(
+                    egui::pos2(o.x + 41.0, o.y + 20.0),
+                    egui::Align2::LEFT_CENTER,
+                    "Add download",
+                    crate::fonts::semi(13.0),
+                    pl().dm_txt,
+                );
+                p.line_segment(
+                    [
+                        egui::pos2(o.x + 1.0, o.y + 39.5),
+                        egui::pos2(o.x + DM_W - 1.0, o.y + 39.5),
+                    ],
+                    egui::Stroke::new(1.0, pl().dm_line),
+                );
+                // The dialog lives in the main canvas, so minimise/restore
+                // drive the real OS window and the X closes the dialog.
+                for (cx, icon, ctl) in [
+                    (485.0f32, DmIcon::Minimize, 0u8),
+                    (513.0, DmIcon::Maximize, 1),
+                    (541.0, DmIcon::Close, 2),
+                ] {
+                    // Its own window: no maximize (a dialog of fixed size).
+                    if in_window && ctl == 1 {
+                        continue;
+                    }
+                    let r = at(cx - 8.0, 12.0, 16.0, 16.0);
+                    dm_icon_btn(&p, &self.man, r, icon, 12.0, 2.0, pl().dm_dim);
+                    if self.man.clicked(&r) {
+                        match ctl {
+                            0 => ui
+                                .ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+                            1 => {
+                                let max = ui
+                                    .ctx()
+                                    .input(|i| i.viewport().maximized.unwrap_or(false));
+                                ui.ctx()
+                                    .send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+                            }
+                            _ => {
+                                self.show_add = false;
+                                self.add_focus_req = false;
+                                self.add_recent_open = false;
+                            }
+                        }
+                    }
+                }
+                // Its own window moves by its header, as a title bar does.
+                if in_window {
+                    let head = at(0.0, 0.0, 470.0, 39.0);
+                    let press = ui.ctx().input(|i| i.pointer.primary_pressed().then(|| i.pointer.interact_pos()).flatten());
+                    if press.is_some_and(|q| head.contains(q)) {
+                        crate::platform::start_drag(ui.ctx());
+                    }
+                }
+                // ---- row 1: URL + clipboard ----
+                let url_box = at(DM_X, DM_ROW1, DM_W_IN, DM_BOX_H);
+                let url_btn = egui::Rect::from_min_size(
+                    egui::pos2(url_box.max.x - 33.0, url_box.min.y + 5.0),
+                    egui::Vec2::splat(28.0),
+                );
+                dm_field(
+                    ui,
+                    "add_url",
+                    url_box,
+                    url_btn.min.x - 6.0,
+                    &mut self.add_url,
+                    "https://…",
+                    false,
+                );
+                self.hits.push((HitKind::Field("add_url"), url_box));
+                dm_icon_btn(&p, &self.man, url_btn, DmIcon::Clipboard, 14.0, 1.5, pl().dm_dim);
+                self.hits.push((HitKind::Btn(ButtonId::AddPaste), url_btn));
+                // ---- row 2: save folder + carets | size chip ----
+                let path_box = at(DM_X, DM_ROW2, DM_PATH_W, DM_BOX_H);
+                let caret_btn = egui::Rect::from_min_size(
+                    egui::pos2(path_box.max.x - 33.0, path_box.min.y + 5.0),
+                    egui::Vec2::splat(28.0),
+                );
+                let folder_btn = egui::Rect::from_min_size(
+                    egui::pos2(caret_btn.min.x - 28.0, caret_btn.min.y),
+                    egui::Vec2::splat(28.0),
+                );
+                dm_field(
+                    ui,
+                    "add_dir",
+                    path_box,
+                    folder_btn.min.x - 6.0,
+                    &mut self.add_dir,
+                    "Save folder",
+                    false,
+                );
+                self.hits.push((HitKind::Field("add_dir"), path_box));
+                dm_icon_btn(&p, &self.man, folder_btn, DmIcon::Folder, 14.0, 1.5, pl().dm_dim);
+                self.hits.push((HitKind::Btn(ButtonId::AddFolder), folder_btn));
+                dm_icon_btn(&p, &self.man, caret_btn, DmIcon::Chevron, 10.0, 2.0, pl().dm_dim);
+                self.add_caret = Some(caret_btn);
+                if self.man.clicked(&caret_btn) {
+                    self.add_recent_open = !self.add_recent_open;
+                }
+                // size chip: grid mark, size, and a tick once the probe is in
+                let chip = at(DM_X + DM_PATH_W + 8.0, DM_ROW2, DM_SIZE_W, DM_BOX_H);
+                dm_box(&p, chip);
+                // What is being downloaded, with the left panel's own
+                // icons in the text colour (light on dark, dark on
+                // light): a video, music (a YouTube link as MP3/M4A
+                // too), an archive, a program, a picture, a document.
+                let kind = if is_youtube_video_link(self.add_url.trim()) {
+                    if matches!(self.add_quality.trim().to_ascii_lowercase().as_str(), "mp3" | "m4a") { "Music" } else { "Video" }
+                } else {
+                    category_of(self.add_file.trim())
+                };
+                p.stext(
+                    egui::pos2(chip.min.x + 21.0, chip.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    file_icon(kind),
+                    crate::fonts::icon(17.0),
+                    pl().dm_txt,
+                );
+                let known = !pbusy && psize.filter(|s| *s > 0).is_some();
+                let yt = is_youtube_video_link(self.add_url.trim());
+                let size_part: String = if pbusy {
+                    "…".to_string()
+                } else {
+                    psize
+                        .filter(|s| *s > 0)
+                        .map(format_bytes)
+                        .unwrap_or_else(|| "—".to_string())
+                };
+                // A YouTube link: the box names the quality too, and a
+                // click on it picks another.
+                let sz_txt: String = if yt {
+                    let q = YT_QUALITIES
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(self.add_quality.trim()))
+                        .map(|(k, l)| if k.is_empty() { "Best" } else { l.split(' ').next().unwrap_or(l) })
+                        .unwrap_or("Best");
+                    // The arrow is drawn as an icon: the font has no "▾"
+                    // and showed a box.
+                    format!("{q} · {size_part}")
+                } else {
+                    size_part
+                };
+                if yt && self.man.clicked(&chip) {
+                    self.add_quality_open = !self.add_quality_open;
+                }
+                if !yt {
+                    self.add_quality_open = false;
+                }
+
+                if self.add_quality_open {
+                    let mut pick: Option<String> = None;
+                    let shown = egui::Area::new(egui::Id::new("add_quality_list"))
+                        .order(egui::Order::Tooltip)
+                        // Compact rows, kept inside the dialog: in its own
+                        // window the list was cut off at the window's edge.
+                        // It opens below the chip when it fits, else as low
+                        // as it fits, and scrolls when even that is short.
+                        .fixed_pos({
+                            let n = YT_QUALITIES.iter().filter(|(k, _)| yt_quality_offered(k, &self.add_yt_sides)).count() as f32;
+                            let list_h = n * 24.0 + 14.0;
+                            let floor = card.max.y - 6.0;
+                            egui::pos2(chip.min.x, (chip.max.y + 4.0).min(floor - list_h).max(card.min.y + 42.0))
+                        })
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style()).fill(pl().dm_card).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+                                ui.set_min_width(chip.width() - 12.0);
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+                                ui.spacing_mut().interact_size.y = 24.0;
+                                let room = (card.max.y - 6.0 - ui.min_rect().min.y - 12.0).max(72.0);
+                                egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
+                                for (k, l) in YT_QUALITIES {
+                                    // Only the sizes this video has.
+                                    if !yt_quality_offered(k, &self.add_yt_sides) {
+                                        continue;
+                                    }
+                                    let on = k.eq_ignore_ascii_case(self.add_quality.trim());
+                                    let r = ui.add_sized(egui::vec2(ui.available_width(), 24.0), egui::Button::selectable(on, l));
+                                    if r.clicked() {
+                                        pick = Some(k.to_string());
+                                    }
+                                }
+                                });
+                            });
+                        });
+                    let _ = shown;
+                    if let Some(k) = pick {
+                        self.add_quality_open = false;
+                        if k != self.add_quality {
+                            self.add_quality = k;
+                            // The size follows the quality: measure again.
+                            self.stop_add_prestart(None);
+                            self.probe_done_for.clear();
+                        }
+                    }
+                }
+                let g = p.layout_no_wrap(sz_txt, crate::fonts::reg(11.0), pl().dm_txt);
+                let mut tw = g.size().x;
+                let tx = chip.min.x + 37.0;
+                p.galley(
+                    egui::pos2(tx, chip.center().y - g.size().y * 0.5),
+                    g,
+                    pl().dm_txt,
+                );
+                if yt {
+                    dm_icon(
+                        &p,
+                        egui::Rect::from_center_size(egui::pos2(tx + tw + 10.0, chip.center().y), egui::Vec2::splat(10.0)),
+                        DmIcon::Chevron,
+                        pl().dm_dim,
+                        2.0,
+                    );
+                    tw += 14.0;
+                }
+                if pbusy {
+                    // The size and qualities are being read: a turning ring.
+                    let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
+                    dm_arc(&p, egui::pos2(chip.max.x - 18.0, chip.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
+                    ui.ctx().request_repaint();
+                }
+                if known {
+                    dm_icon(
+                        &p,
+                        egui::Rect::from_min_size(
+                            egui::pos2(tx + tw + 8.0, chip.min.y + 13.0),
+                            egui::Vec2::splat(12.0),
+                        ),
+                        DmIcon::Check,
+                        DM_OK,
+                        2.5,
+                    );
+                }
+                // ---- row 3: filename + refresh + advanced ----
+                let file_box = at(DM_X, DM_ROW3, DM_FILE_W, DM_BOX_H);
+                let refr_btn = egui::Rect::from_min_size(
+                    egui::pos2(file_box.max.x + 8.0, file_box.min.y),
+                    egui::Vec2::splat(38.0),
+                );
+                let gear_btn = egui::Rect::from_min_size(
+                    egui::pos2(refr_btn.max.x + 8.0, refr_btn.min.y),
+                    egui::Vec2::splat(38.0),
+                );
+                dm_field(
+                    ui,
+                    "add_file",
+                    file_box,
+                    file_box.max.x - 13.0,
+                    &mut self.add_file,
+                    "Filename",
+                    false,
+                );
+                self.hits.push((HitKind::Field("add_file"), file_box));
+                if pbusy && (self.add_file.trim().is_empty() || self.add_file == self.add_file_auto) {
+                    // The real name is on its way (a video's title).
+                    let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
+                    dm_arc(&p, egui::pos2(file_box.max.x - 22.0, file_box.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
+                    ui.ctx().request_repaint();
+                }
+                dm_icon_btn_box(&p, &self.man, refr_btn, DmIcon::Refresh, 14.0, 1.5, pl().dm_dim);
+                self.hits.push((HitKind::Btn(ButtonId::AddRefresh), refr_btn));
+                dm_icon_btn_box(&p, &self.man, gear_btn, DmIcon::Settings, 15.0, 1.5, pl().dm_dim);
+                self.hits.push((HitKind::Btn(ButtonId::AddAdv), gear_btn));
+                // ---- advanced panel (gear): same tokens, placeholders
+                // instead of labels, per the concept's field style ----
+                if self.add_adv {
+                    let panel = at(DM_X, DM_ACT, DM_W_IN, DM_PANEL_H);
+                    dm_box(&p, panel);
+                    let cx = panel.min.x + 13.0;
+                    let cw = panel.width() - 26.0;
+                    let mut cy = panel.min.y + 13.0;
+                    let row = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, 30.0));
+                    p.stext(
+                        egui::pos2(row.min.x, row.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        "Connections",
+                        crate::fonts::reg(11.0),
+                        pl().dm_dim,
+                    );
+                    let srect = egui::Rect::from_min_size(
+                        egui::pos2(row.min.x + 92.0, row.min.y + 5.0),
+                        egui::vec2(row.width() - 144.0, 20.0),
+                    );
+                    let frac =
+                        (((self.add_conns as f64) - 1.0) / 15.0).clamp(0.0, 1.0) as f32;
+                    dm_slider(&p, &self.man, srect, frac);
+                    self.hits.push((
+                        HitKind::Slider(SliderId::AddConns, 1.0, 32.0, false),
+                        srect,
+                    ));
+                    p.stext(
+                        egui::pos2(row.max.x, row.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        format!("{}", self.add_conns),
+                        crate::fonts::reg(11.0),
+                        pl().dm_txt,
+                    );
+                    cy += 38.0;
+                    let half = (cw - 8.0) / 2.0;
+                    let r_ref = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(half, DM_BOX_H));
+                    let r_cok = egui::Rect::from_min_size(
+                        egui::pos2(cx + half + 8.0, cy),
+                        egui::vec2(half, DM_BOX_H),
+                    );
+                    dm_field(ui, "add_ref", r_ref, r_ref.max.x - 13.0, &mut self.add_referer, "Referer (optional)", false);
+                    self.hits.push((HitKind::Field("add_ref"), r_ref));
+                    dm_field(ui, "add_cookie", r_cok, r_cok.max.x - 13.0, &mut self.add_cookie, "Cookie (optional)", false);
+                    self.hits.push((HitKind::Field("add_cookie"), r_cok));
+                    cy += DM_BOX_H + 8.0;
+                    let r_usr = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(half, DM_BOX_H));
+                    let r_pwd = egui::Rect::from_min_size(
+                        egui::pos2(cx + half + 8.0, cy),
+                        egui::vec2(half, DM_BOX_H),
+                    );
+                    dm_field(ui, "add_user", r_usr, r_usr.max.x - 13.0, &mut self.add_user, "User (optional)", false);
+                    self.hits.push((HitKind::Field("add_user"), r_usr));
+                    dm_field(ui, "add_pass", r_pwd, r_pwd.max.x - 13.0, &mut self.add_pass, "Password", true);
+                    self.hits.push((HitKind::Field("add_pass"), r_pwd));
+                    cy += DM_BOX_H + 8.0;
+                    let r_sum = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, DM_BOX_H));
+                    dm_field(ui, "add_sum", r_sum, r_sum.max.x - 13.0, &mut self.add_checksum, "SHA-256 checksum (optional, 64 hex)", false);
+                    self.hits.push((HitKind::Field("add_sum"), r_sum));
+                    cy += DM_BOX_H + 8.0;
+                    let ow = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, 22.0));
+                    let cbx = egui::Rect::from_min_size(
+                        egui::pos2(ow.min.x, ow.center().y - 8.0),
+                        egui::Vec2::splat(16.0),
+                    );
+                    if self.add_overwrite {
+                        p.rect_filled(cbx, 4.0, DM_ACC());
+                        dm_icon(
+                            &p,
+                            egui::Rect::from_center_size(cbx.center(), egui::Vec2::splat(12.0)),
+                            DmIcon::Check,
+                            egui::Color32::WHITE,
+                            2.5,
+                        );
+                    } else {
+                        p.rect(
+                            cbx,
+                            4.0,
+                            pl().dm_card,
+                            egui::Stroke::new(1.0, pl().dm_box_bd),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    p.stext(
+                        egui::pos2(cbx.max.x + 8.0, ow.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        "Overwrite file if it already exists",
+                        crate::fonts::reg(11.0),
+                        pl().dm_dim,
+                    );
+                    self.hits.push((HitKind::Check(CheckId::AddOverwrite), ow));
+                }
+                // ---- actions (manual hit table, as before) ----
+                let act_y = DM_ACT + adv_h;
+                let add_btn = at(DM_X, act_y, 100.0, 36.0);
+                dm_btn_flat(&p, &self.man, add_btn, "Add");
+                self.hits.push((HitKind::Btn(ButtonId::AddAdd), add_btn));
+                let dl_btn = egui::Rect::from_min_size(
+                    egui::pos2(add_btn.max.x + 8.0, add_btn.min.y),
+                    egui::vec2(140.0, 36.0),
+                );
+                dm_gradient(&p, dl_btn, DM_RAD, DM_ACC(), DM_ACC2());
+                if self.man.hover(&dl_btn) {
+                    p.rect_filled(dl_btn, DM_RAD, egui::Color32::from_white_alpha(22));
+                }
+                p.stext(
+                    dl_btn.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Download",
+                    crate::fonts::semi(13.0),
+                    egui::Color32::WHITE,
+                );
+                self.hits.push((HitKind::Btn(ButtonId::AddDownload), dl_btn));
+                let cancel_btn = egui::Rect::from_min_size(
+                    egui::pos2(o.x + DM_W - 17.0 - 100.0, add_btn.min.y),
+                    egui::vec2(100.0, 36.0),
+                );
+                dm_btn_flat(&p, &self.man, cancel_btn, "Cancel");
+                self.hits.push((HitKind::Btn(ButtonId::AddCancel), cancel_btn));
+        };
+        if in_window {
+            egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx, |ui| {
+                let card = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(DM_W, card_h));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(card));
+                body(&mut child);
+            });
+        } else {
+            egui::Window::new("Add download")
+                .id(egui::Id::new("add_download_modal"))
+                .order(egui::Order::Foreground)
+                .open(&mut open)
+                .title_bar(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .collapsible(false)
+                .resizable(false)
+                .fixed_size(egui::vec2(DM_W, card_h))
+                .frame(egui::Frame::new())
+                .show(ctx, |ui| body(ui));
+        }
+        // The egui X button can't be relied on: keep the flag unless
+        // our own Cancel/Add/Download closed it.
+        self.show_add = open && self.show_add;
+        if self.add_dir.trim().is_empty() {
+            self.add_dir = dirs::download_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| crate::model::default_download_dir().to_string_lossy().into_owned());
+        }
+        // ---- recent-folders menu (the path field's caret) ----
+        // A click outside the caret and outside the menu closes it. The
+        // caret rect is this frame's; the menu rect is derived, never
+        // stored, so the two can't drift apart.
+        if self.add_recent_open && ctx.input(|i| i.pointer.any_click()) {
+            let pos = ctx.input(|i| i.pointer.interact_pos());
+            let rows = self.add_recent_dirs().len();
+            let menu = self.add_caret.map(|c| dm_menu_rect(c, rows));
+            let inside = |r: Option<egui::Rect>| match (r, pos) {
+                (Some(r), Some(q)) => r.contains(q),
+                _ => false,
+            };
+            if !inside(self.add_caret) && !inside(menu) {
+                self.add_recent_open = false;
+            }
+        }
+        if self.add_recent_open {
+            match self.add_caret {
+                None => self.add_recent_open = false,
+                Some(caret) => {
+                    let anchors = self.add_recent_dirs();
+                    let mut pick: Option<String> = None;
+                    egui::Area::new(egui::Id::new("add_recent_menu"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(dm_menu_rect(caret, anchors.len()).min)
+                        .show(ctx, |ui| {
+                            egui::Frame::new()
+                                .fill(pl().dm_card)
+                                .stroke(egui::Stroke::new(1.0, pl().dm_line))
+                                .corner_radius(DM_RAD)
+                                .inner_margin(egui::Margin::same(6))
+                                .show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    for d in &anchors {
+                                        let resp = ui
+                                            .add_sized(
+                                                egui::vec2(308.0, 24.0),
+                                                egui::Button::new(
+                                                    egui::RichText::new(elide_left(d, 46))
+                                                        .size(11.0)
+                                                        .color(pl().dm_txt),
+                                                )
+                                                .fill(egui::Color32::TRANSPARENT)
+                                                .stroke(egui::Stroke::NONE),
+                                            )
+                                            .on_hover_text(d);
+                                        if resp.clicked() {
+                                            pick = Some(d.clone());
+                                        }
+                                    }
+                                });
+                        });
+                    if let Some(d) = pick {
+                        self.add_dir = d;
+                        self.add_recent_open = false;
+                    }
+                }
+            }
+        }
+    }
     /// Menubar dropdown items for `render_popup`. (label, MenuItem act.)
     /// The Theme menu marks the active theme (19 system, 20 dark, 22 light).
     fn drop_rows(&self, menu: u8) -> Vec<(String, Option<HitKind>)> {
@@ -13051,6 +13193,9 @@ impl CraftApp {
             }
             ButtonId::AddRefresh => {
                 if !self.add_url.trim().is_empty() {
+                    // Refresh (beside the name) asks for the name again: the
+                    // answer replaces what the field holds.
+                    self.add_file_auto = self.add_file.clone();
                     self.probe_done_for = self.add_url.trim().to_string();
                     self.start_probe(self.add_url.trim().to_string());
                 }
@@ -13613,7 +13758,7 @@ impl CraftApp {
         if !self.man.down_left() {
             self.drag_out_done = false;
         }
-        if self.man.down_left() && !self.drag_out_done && self.resize_cap.is_none() && !self.show_add && self.details_id.is_none() {
+        if self.man.down_left() && !self.drag_out_done && self.resize_cap.is_none() && !(self.show_add && !add_in_window()) && self.details_id.is_none() {
             if let (Some(o), Some(p)) = (self.man.press_origin(), self.man.pos()) {
                 if o.distance(p) > 8.0 {
                     let row = self.hits.iter().rev().find_map(|(k, r)| match k {
@@ -13639,7 +13784,7 @@ impl CraftApp {
             }
         }
         // Modal dialogs block main-UI hits beneath them; popups stay live.
-        let modal_open = self.show_add
+        let modal_open = (self.show_add && !add_in_window())
             || self.show_queues
             || self.show_about
             || self.details_id.is_some();
