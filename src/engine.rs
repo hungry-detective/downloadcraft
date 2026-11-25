@@ -447,6 +447,12 @@ pub const PHASE_APP_ENGINE: &str = "Downloading using app engine";
 pub const PHASE_YTDLP: &str = "Downloading using yt-dlp";
 
 /// Whether `phase` only says the transfer is under way (no stage to name).
+/// A phase that runs after every byte has arrived (a merge, an MP3
+/// conversion): the row names it even though the bar is full.
+pub fn phase_is_finishing(phase: &str) -> bool {
+    phase == "Merging" || phase.starts_with("Converting")
+}
+
 pub fn phase_is_downloading(phase: &str) -> bool {
     phase == "Downloading" || phase == PHASE_APP_ENGINE || phase == PHASE_YTDLP
 }
@@ -985,7 +991,17 @@ pub fn remove_ytdlp_partials(dest: &std::path::Path) {
 
 /// Whether a download still has a work folder on disk (see `remove_work_dirs`).
 pub fn has_work_dirs(dest: &std::path::Path) -> bool {
-    adaptive_work_dir(dest).exists() || hls_dir(dest).exists()
+    adaptive_work_dir(dest).exists() || hls_dir(dest).exists() || mp3_work_dir(dest).exists()
+}
+
+/// Where an MP3 download keeps its sound and the MP3 being made, until the
+/// MP3 is ready ("<name>.dcwork-mp3"; `remove_work_dirs` clears it).
+fn mp3_work_dir(dest: &std::path::Path) -> std::path::PathBuf {
+    let stem = dest
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "dl".to_string());
+    dest.with_file_name(format!("{stem}.dcwork-mp3"))
 }
 
 /// The work folder of an adaptive (picture + sound) download: one per
@@ -1444,25 +1460,68 @@ fn conflict_free_mp3(dest: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-/// Re-encodes `src` (an M4A/WebM sound) as an MP3 at `out`: LAME's best
-/// variable bit rate, as yt-dlp's `--audio-quality 0` asks for.
-async fn ffmpeg_to_mp3(src: &std::path::Path, out: &std::path::Path) -> Result<()> {
+/// Re-encodes `src` (an M4A/WebM sound) as an MP3 at `out`: LAME's
+/// variable bit rate V2 (about 190 kbit/s). YouTube's own sound is
+/// 128-160 kbit/s, so V0 only made the file bigger and the conversion
+/// slower, with nothing more to hear. yt-dlp is asked for the same.
+/// LAME's VBR quality for every MP3 the app makes (0 best .. 9 smallest).
+const MP3_VBR_QUALITY: &str = "2";
+
+async fn ffmpeg_to_mp3(src: &std::path::Path, out: &std::path::Path, shared: Option<&Arc<SharedState>>) -> Result<()> {
     let ffmpeg = ffmpeg_path().ok_or_else(|| anyhow!("MP3 needs FFmpeg (Settings -> Plugins)"))?;
+    // The sound's length, so the row can say how far the conversion is: a
+    // two-hour recording takes minutes, and a still "Downloading" looked hung.
+    // YouTube's sound is a fragmented MP4, whose length the headers leave
+    // open: then the length the source named, else ffmpeg's own reading.
+    let mut total = own_facts(src).await.and_then(|f| f.duration).filter(|d| *d > 0.0);
+    if total.is_none() {
+        total = shared.map(|s| s.expected_duration.load(Ordering::SeqCst)).filter(|d| *d > 0).map(|d| d as f64);
+    }
+    if total.is_none() {
+        total = ffmpeg_facts(src).await.and_then(|f| f.duration);
+    }
     let mut cmd = tokio::process::Command::new(ffmpeg);
     #[cfg(windows)]
     {
         cmd.creation_flags(0x08000000);
     }
-    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+    cmd.args(["-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y", "-i"])
         .arg(src)
-        .args(["-vn", "-c:a", "libmp3lame", "-q:a", "0"])
+        .args(["-vn", "-c:a", "libmp3lame", "-q:a", MP3_VBR_QUALITY, "-f", "mp3"])
         .arg(out)
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let o = cmd.output().await.map_err(|e| anyhow!("FFmpeg would not start: {e}"))?;
-    if !o.status.success() {
+    let mut child = cmd.spawn().map_err(|e| anyhow!("FFmpeg would not start: {e}"))?;
+    let stderr = child.stderr.take();
+    let err_task = tokio::spawn(async move {
+        let mut text = String::new();
+        if let Some(mut e) = stderr {
+            use tokio::io::AsyncReadExt;
+            let _ = e.read_to_string(&mut text).await;
+        }
+        text
+    });
+    if let Some(stdout) = child.stdout.take() {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut shown = u32::MAX;
+        while let Ok(Some(line)) = lines.next_line().await {
+            // "out_time_us=1234567" (microseconds converted so far).
+            let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) else { continue };
+            if let (Some(sh), Some(t)) = (shared, total) {
+                let pct = ((us / 1e6) / t * 100.0).clamp(0.0, 99.0) as u32;
+                if pct != shown {
+                    shown = pct;
+                    sh.set_phase(format!("Converting to MP3 · {pct}%"));
+                }
+            }
+        }
+    }
+    let status = child.wait().await.map_err(|e| anyhow!("FFmpeg stopped: {e}"))?;
+    let err = err_task.await.unwrap_or_default();
+    if !status.success() {
         let _ = tokio::fs::remove_file(out).await;
-        let err = String::from_utf8_lossy(&o.stderr);
         return Err(anyhow!("making the MP3 failed: {}", err.lines().last().unwrap_or("FFmpeg error")));
     }
     Ok(())
@@ -5489,12 +5548,41 @@ async fn download_inner(
                         shared.set_phase("Fetching ffmpeg");
                         ensure_ffmpeg(&client).await.map_err(|e| anyhow!("MP3 needs FFmpeg, and {e:#}; pick M4A to save the sound as it is"))?;
                     }
-                    download_adaptive(url.clone(), None, dest.clone(), connections, opts.clone(), shared.clone()).await?;
+                    // MP3: the sound and the MP3 being made live in the
+                    // download's work folder ("<name>.dcwork-mp3"), so a
+                    // Pause or Cancel while converting leaves nothing
+                    // half-made beside your files, and Resume goes straight
+                    // back to converting with the sound already here.
+                    let conv = mp3_work_dir(&dest);
+                    let sound = conv.join("sound.m4a");
+                    if mp3 && sound.is_file() {
+                        job_log(&opts.log_key, "the sound is already downloaded: converting it again");
+                        let len = tokio::fs::metadata(&sound).await.map(|m| m.len()).unwrap_or(0);
+                        shared.total.store(len, Ordering::SeqCst);
+                        shared.has_total.store(true, Ordering::SeqCst);
+                        shared.downloaded.store(len, Ordering::SeqCst);
+                    } else {
+                        download_adaptive(url.clone(), None, dest.clone(), connections, opts.clone(), shared.clone()).await?;
+                        if mp3 {
+                            hide_dir(&conv);
+                            tokio::fs::rename(&dest, &sound).await.map_err(|e| anyhow!("could not keep the sound for the MP3: {e}"))?;
+                        }
+                    }
                     if mp3 {
                         shared.set_phase("Converting to MP3");
-                        let out = conflict_free_mp3(&dest);
-                        ffmpeg_to_mp3(&dest, &out).await?;
-                        let _ = tokio::fs::remove_file(&dest).await;
+                        // The MP3 takes the name asked for ("<title>.mp3"),
+                        // never "<title> (1).mp3".
+                        let own_name = dest.extension().map(|e| e.eq_ignore_ascii_case("mp3")).unwrap_or(false);
+                        let out = if own_name && !dest.exists() { dest.clone() } else { conflict_free_mp3(&dest) };
+                        let work = conv.join("converting.mp3");
+                        job_log(&opts.log_key, "converting to MP3");
+                        ffmpeg_to_mp3(&sound, &work, Some(&shared)).await?;
+                        if let Err(e) = tokio::fs::rename(&work, &out).await {
+                            let _ = tokio::fs::remove_file(&work).await;
+                            return Err(anyhow!("could not name the MP3: {e}"));
+                        }
+                        let _ = tokio::fs::remove_dir_all(&conv).await;
+                        job_log(&opts.log_key, "MP3 ready");
                         if let Some(n) = out.file_name() {
                             mutex_guard(&shared.resolved_name).replace(n.to_string_lossy().into_owned());
                         }
@@ -5949,6 +6037,13 @@ fn is_video_codec(codec: &str) -> bool {
 /// codec and the frame count as well, and only a stream that is not an attached
 /// picture, not a still-image codec and not a single frame counts as video.
 pub async fn ffprobe_resolution(video: &std::path::Path) -> Option<String> {
+    // The app's own header reader answers for MP4/MOV/MKV/WebM; ffprobe
+    // (when installed) and then ffmpeg cover every other file.
+    match own_facts(video).await {
+        Some(f) => return f.moving_video().and_then(|v| resolution_label(Some(v.width as f64), Some(v.height as f64))),
+        None if ffprobe_path().is_none() => return ffmpeg_facts(video).await.and_then(|f| f.resolution()),
+        None => {}
+    }
     let exe = ffprobe_path()?;
     let mut cmd = tokio::process::Command::new(exe);
     cmd.kill_on_drop(true);
@@ -6770,15 +6865,8 @@ const FFMPEG_GZ_URL: &str = if cfg!(windows) {
 } else {
     "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffmpeg-linux-x64.gz"
 };
-const FFPROBE_GZ_URL: &str = if cfg!(windows) {
-    "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffprobe-win32-x64.gz"
-} else if cfg!(target_os = "macos") {
-    "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffprobe-darwin-arm64.gz"
-} else {
-    "https://github.com/eugeneware/ffmpeg-static/releases/latest/download/ffprobe-linux-x64.gz"
-};
+
 const FFMPEG_BIN: &str = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-const FFPROBE_BIN: &str = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
 
 /// How the user wants ffmpeg sourced — same three-way choice as yt-dlp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6878,21 +6966,16 @@ pub async fn ensure_ffmpeg(client: &reqwest::Client) -> Result<std::path::PathBu
     }
 }
 
-/// Fetch (or refresh) the app's own ffmpeg + ffprobe. ffprobe is best-effort:
-/// without it the file still plays, only the frame-size read-back is lost.
+/// Fetch (or refresh) the app's own ffmpeg.
 async fn fetch_ffmpeg(client: &reqwest::Client, force: bool) -> Result<std::path::PathBuf> {
     let dst = ffmpeg_local_path().ok_or_else(|| anyhow!("no LOCALAPPDATA to keep ffmpeg in"))?;
     fetch_gz_binary(client, FFMPEG_GZ_URL, &dst, "ffmpeg").await.map_err(|e| {
         anyhow!("{e:#} — check the connection, or pick a copy in Settings → Download Engine")
     })?;
-    if let Some(dir) = dst.parent() {
-        let probe = dir.join(FFPROBE_BIN);
-        // A refresh replaces the pair together; a lazy first fetch only needs
-        // ffprobe when it is not already there.
-        if force || !probe.is_file() {
-            let _ = fetch_gz_binary(client, FFPROBE_GZ_URL, &probe, "ffprobe").await;
-        }
-    }
+    // ffprobe is no longer fetched (about 79 MB): the app reads finished
+    // files itself (`mediainfo`) and asks ffmpeg for anything else. A copy
+    // already there is still used.
+    let _ = force;
     Ok(dst)
 }
 
@@ -7211,14 +7294,22 @@ fn hls_external_audio(text: &str) -> bool {
 
 fn completed_media_check(json: &str, expected_secs: u64, require_audio: bool) -> Result<()> {
     let value: serde_json::Value = serde_json::from_str(json)?;
-    if require_audio && !ffprobe_has_audio(json)? {
+    let has_audio = ffprobe_has_audio(json)?;
+    let number = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64());
+    let duration = value.get("format").and_then(|v| v.get("duration")).and_then(number)
+        .or_else(|| value.get("streams").and_then(|v| v.as_array()).and_then(|s|
+            s.iter().filter_map(|v| v.get("duration").and_then(number)).filter(|d| d.is_finite()).reduce(f64::max)));
+    completed_facts_check(duration, has_audio, expected_secs, require_audio)
+}
+
+/// The finished file against what the source promised: its sound, and a
+/// length no shorter than the player's (3 % / at least 2 s of slack).
+fn completed_facts_check(duration: Option<f64>, has_audio: bool, expected_secs: u64, require_audio: bool) -> Result<()> {
+    if require_audio && !has_audio {
         return Err(anyhow!("downloaded media has no audio track, although the source includes audio — capture the full master playlist or player page"));
     }
     if expected_secs > 0 {
-        let number = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64());
-        let duration = value.get("format").and_then(|v| v.get("duration")).and_then(number)
-            .or_else(|| value.get("streams").and_then(|v| v.as_array()).and_then(|s|
-                s.iter().filter_map(|v| v.get("duration").and_then(number)).filter(|d| d.is_finite()).reduce(f64::max)))
+        let duration = duration
             .filter(|d| d.is_finite() && *d > 0.0)
             .ok_or_else(|| anyhow!("could not verify the finished media duration"))?;
         let expected = expected_secs as f64;
@@ -7245,8 +7336,21 @@ async fn verify_completed_media(dest: &std::path::Path, shared: &Arc<SharedState
     let expected = shared.expected_duration.load(Ordering::SeqCst);
     let audio = shared.expects_audio.load(Ordering::SeqCst);
     if expected == 0 && !audio { return Ok(()); }
+    // The app's own reader first (MP4/MOV/MKV/WebM headers), when it knows
+    // everything this check needs.
+    if let Some(f) = own_facts(&actual).await.filter(|f| expected == 0 || f.duration.is_some()) {
+        return completed_facts_check(f.duration, f.has_audio, expected, audio);
+    }
     let Some(exe) = ffprobe_path() else {
-        shared.set_note("finished media could not be checked for duration/audio: ffprobe was not found".to_string());
+        // No ffprobe (new installs no longer fetch it): ffmpeg reads the
+        // same facts. Only a certain shortfall fails the download; an
+        // answer it cannot read leaves the file as it is, as before.
+        match ffmpeg_facts(&actual).await {
+            Some(f) if (!audio || f.audio_known) && (expected == 0 || f.duration.is_some()) => {
+                return completed_facts_check(f.duration, f.has_audio, expected, audio);
+            }
+            _ => shared.set_note("finished media could not be checked for duration/audio".to_string()),
+        }
         return Ok(());
     };
     let mut cmd = tokio::process::Command::new(exe);
@@ -7334,10 +7438,105 @@ fn ffprobe_has_audio(json: &str) -> Result<bool> {
     Ok(streams.iter().any(|s| s.get("codec_type").and_then(|v| v.as_str()) == Some("audio")))
 }
 
+/// The app's own header reader, off the async threads.
+async fn own_facts(path: &std::path::Path) -> Option<crate::mediainfo::MediaFacts> {
+    let p = path.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::mediainfo::read(&p)).await.ok().flatten()
+}
+
+/// What `ffmpeg -i` prints about a file (used when there is no ffprobe and
+/// the app's own reader does not know the file).
+#[derive(Debug, Default, PartialEq)]
+struct FfmpegFacts {
+    duration: Option<f64>,
+    has_audio: bool,
+    /// The stream list was read, so `has_audio` is an answer.
+    audio_known: bool,
+    /// The first video stream: codec, size, whether it is cover art.
+    video: Option<(String, Option<(f64, f64)>, bool)>,
+}
+
+impl FfmpegFacts {
+    fn resolution(&self) -> Option<String> {
+        let (codec, size, attached) = self.video.as_ref()?;
+        if *attached || is_still_image_codec(codec) {
+            return None;
+        }
+        let (w, h) = (*size)?;
+        resolution_label(Some(w), Some(h))
+    }
+}
+
+async fn ffmpeg_facts(path: &std::path::Path) -> Option<FfmpegFacts> {
+    let exe = ffmpeg_path()?;
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+    cmd.args(["-hide_banner", "-nostdin", "-i"]).arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    // `ffmpeg -i` alone exits with an error ("no output file"): the facts
+    // are in what it printed.
+    let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await.ok()?.ok()?;
+    parse_ffmpeg_facts(&String::from_utf8_lossy(&out.stderr))
+}
+
+/// Read `ffmpeg -i`'s report: "Duration: 00:12:34.56," and the
+/// "Stream #0:1...: Audio:/Video:" lines.
+fn parse_ffmpeg_facts(text: &str) -> Option<FfmpegFacts> {
+    let mut f = FfmpegFacts::default();
+    let mut saw_input = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with("Input #") {
+            saw_input = true;
+        }
+        if let Some(rest) = l.strip_prefix("Duration: ") {
+            let t = rest.split(',').next().unwrap_or("").trim();
+            let parts: Vec<f64> = t.split(':').filter_map(|p| p.parse::<f64>().ok()).collect();
+            if parts.len() == 3 {
+                let secs = parts[0] * 3600.0 + parts[1] * 60.0 + parts[2];
+                if secs.is_finite() && secs > 0.0 {
+                    f.duration = Some(secs);
+                }
+            }
+        }
+        if l.starts_with("Stream #") {
+            f.audio_known = true;
+            if l.contains(": Audio: ") {
+                f.has_audio = true;
+            }
+            if f.video.is_none() {
+                if let Some((_, rest)) = l.split_once(": Video: ") {
+                    let codec = rest.split(|c: char| c == ' ' || c == ',').next().unwrap_or("").to_ascii_lowercase();
+                    let size = rest.split(", ").find_map(|tok| {
+                        let word = tok.split_whitespace().next()?;
+                        let (w, h) = word.split_once('x')?;
+                        Some((w.parse::<f64>().ok()?, h.parse::<f64>().ok()?))
+                    });
+                    f.video = Some((codec, size, l.contains("(attached pic)")));
+                }
+            }
+        }
+    }
+    saw_input.then_some(f)
+}
+
 async fn verify_vimeo_audio(dest: &std::path::Path) -> Result<()> {
     // Strict format selection is always active; additionally inspect the
-    // finished file when the ffprobe companion is installed.
-    let Some(exe) = ffprobe_path() else { return Ok(()); };
+    // finished file: the app's own reader, else ffprobe, else ffmpeg.
+    let no_audio = || Err(anyhow!("Vimeo download has no audio track — capture the full master manifest or Vimeo player URL instead of a video-only playlist"));
+    if let Some(f) = own_facts(dest).await {
+        return if f.has_audio { Ok(()) } else { no_audio() };
+    }
+    let Some(exe) = ffprobe_path() else {
+        return match ffmpeg_facts(dest).await {
+            Some(f) if f.audio_known && !f.has_audio => no_audio(),
+            _ => Ok(()),
+        };
+    };
     let mut cmd = tokio::process::Command::new(exe);
     cmd.kill_on_drop(true);
     #[cfg(windows)]
@@ -7546,10 +7745,12 @@ impl MergedProgress {
 /// that runs after every byte has arrived.
 fn phase_for_line(line: &str) -> Option<&'static str> {
     let l = line.trim_start_matches(['\r', ' ']);
+    if l.starts_with("[ExtractAudio]") {
+        return Some("Converting to MP3");
+    }
     if l.starts_with("[Merger]")
         || l.starts_with("[ffmpeg]")
         || l.starts_with("[Fixup")
-        || l.starts_with("[ExtractAudio]")
         || l.starts_with("[Metadata]")
         || l.starts_with("[EmbedThumbnail]")
         || l.starts_with("[VideoRemuxer]")
@@ -7877,7 +8078,7 @@ async fn download_with_ytdlp(
         // Audio only: an MP3 (best VBR); without ffmpeg, or when M4A was
         // asked for, the m4a as served.
         if wants_audio_only(&opts.quality_pref) && !wants_m4a(&opts.quality_pref) {
-            cmd.arg("-x").arg("--audio-format").arg("mp3").arg("--audio-quality").arg("0");
+            cmd.arg("-x").arg("--audio-format").arg("mp3").arg("--audio-quality").arg(MP3_VBR_QUALITY);
         }
     }
     // Without a JS runtime yt-dlp cannot solve YouTube's player challenges:
@@ -12958,5 +13159,37 @@ mod recovery_tests {
         let o = EngineOpts { any_ip: true, ..Default::default() };
         assert!(o.build_client().is_ok());
         assert!(EngineOpts::default().build_client().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod ffmpeg_facts_tests {
+    use super::*;
+
+    #[test]
+    fn reads_ffmpeg_report() {
+        let video = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'a.mp4':\n  Duration: 00:00:12.50, start: 0.000000, bitrate: 7553 kb/s\n  Stream #0:0[0x1](und): Video: h264 (Constrained Baseline) (avc1 / 0x31637661), yuv420p(progressive), 1280x720 [SAR 1:1 DAR 16:9], 7476 kb/s, 30 fps (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp, 69 kb/s (default)\nAt least one output file must be specified\n";
+        let f = parse_ffmpeg_facts(video).unwrap();
+        assert_eq!(f.duration, Some(12.5));
+        assert!(f.has_audio && f.audio_known);
+        assert_eq!(f.resolution().as_deref(), Some("1280×720"));
+        // Cover art in an audio file is not video.
+        let cover = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'b.m4a':\n  Duration: 01:02:03.25, start: 0.000000, bitrate: 86 kb/s\n  Stream #0:0[0x1](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp, 69 kb/s (default)\n  Stream #0:1[0x0]: Video: mjpeg (Baseline), yuvj420p(pc, bt470bg/unknown/unknown), 600x600 [SAR 1:1 DAR 1:1], 90k tbr, 90k tbn (attached pic)\n";
+        let f = parse_ffmpeg_facts(cover).unwrap();
+        assert_eq!(f.duration, Some(3723.25));
+        assert_eq!(f.resolution(), None);
+        // Not a media file: no answer, so nothing is failed on it.
+        assert_eq!(parse_ffmpeg_facts("x.bin: Invalid data found when processing input\n"), None);
+        assert_eq!(parse_ffmpeg_facts("Input #0, mpegts, from 'c.ts':\n  Duration: N/A, bitrate: N/A\n").map(|f| f.duration), Some(None));
+    }
+
+    #[test]
+    fn length_and_sound_check() {
+        assert!(completed_facts_check(Some(600.0), true, 600, true).is_ok());
+        assert!(completed_facts_check(Some(590.0), true, 600, true).is_ok());
+        assert!(completed_facts_check(Some(300.0), true, 600, false).is_err());
+        assert!(completed_facts_check(Some(600.0), false, 600, true).is_err());
+        assert!(completed_facts_check(None, true, 600, false).is_err());
+        assert!(completed_facts_check(None, true, 0, false).is_ok());
     }
 }

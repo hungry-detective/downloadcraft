@@ -523,7 +523,11 @@ fn run_engine(
         let spd = if el > 0.0 { (dl.saturating_sub(last)) as f64 / el } else { 0.0 };
         last = dl;
         last_t = now;
-        if shared.has_total.load(Ordering::SeqCst) {
+        let finishing = shared.phase_now();
+        if crate::engine::phase_is_finishing(&finishing) {
+            // Every byte is in; a merge or an MP3 conversion is running.
+            eprint!("\r{}…  {}                    ", finishing, truncate(&name, 40));
+        } else if shared.has_total.load(Ordering::SeqCst) {
             let total = shared.total.load(Ordering::SeqCst);
             let pct = if total > 0 {
                 (dl as f64 / total as f64 * 100.0).min(100.0)

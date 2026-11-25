@@ -17,6 +17,7 @@ mod complete;
 mod confirm;
 mod dm;
 mod engine;
+mod mediainfo;
 mod fonts;
 mod ftp;
 mod gdrive;

@@ -542,11 +542,11 @@ function linkTextIsWeak(text) {
 // button does); the app fetches it whole, with its sound.
 function socialItem(v, pageUrl) {
   const stem = safeName(v.title || "video", "").replace(/[.]+$/, "") || "video";
-  const opts = [["best", "Best quality"], ["1080p", "1080p"], ["720p", "720p"], ["480p", "480p"], ["360p", "360p"], ["audio", "Audio (MP3)"]].map(([q, label]) => ({
+  const opts = [["best", "Best quality"], ["1080p", "1080p"], ["720p", "720p"], ["480p", "480p"], ["360p", "360p"], ["audio-m4a", "Audio (M4A) · fastest"], ["audio", "Audio (MP3)"]].map(([q, label]) => ({
     h: parseInt(q, 10) || 0, label, size: 0, url: v.post, browser: null,
     msg: { type: "download", url: v.post, pageUrl: pageUrl || v.post, dur: v.dur || undefined,
-      filename: q === "audio" ? `${stem}.mp3` : q === "best" ? `${stem}.mp4` : `${stem} [${q}].mp4`,
-      mime: q === "audio" ? "audio/mpeg" : "video/mp4", quality: q === "best" ? null : q },
+      filename: q === "audio" ? `${stem}.mp3` : q === "audio-m4a" ? `${stem}.m4a` : q === "best" ? `${stem}.mp4` : `${stem} [${q}].mp4`,
+      mime: q === "audio" ? "audio/mpeg" : q === "audio-m4a" ? "audio/mp4" : "video/mp4", quality: q === "best" ? null : q },
   }));
   const tag = String(v.site || "post").replace(/[.].*$/, "").toUpperCase();
   return { key: `social:${v.post}`, kind: "videos", title: v.title || "Video", thumb: v.thumb, dur: v.dur, tag, link: v.post, page: pageUrl, options: opts, viaApp: true };
@@ -914,8 +914,23 @@ function makeDraggable(el, opts) {
   el.classList.add("dragme");
   el.title = "Drag onto a page's upload box";
   if (opts.appId !== undefined) el.addEventListener("mouseenter", () => { loadAppFile(opts.appId).catch(() => {}); });
+  // A browser download can be dragged only while the browser still lists
+  // it (drag() on a cleared one raised "Invalid downloadId"): checked on
+  // the way in, since a drag must start at once.
+  let dlKnown = false;
+  if (opts.downloadId !== undefined && chrome.downloads && chrome.downloads.search) {
+    el.addEventListener("mouseenter", () => {
+      try {
+        chrome.downloads.search({ id: opts.downloadId }, (r) => {
+          void chrome.runtime.lastError;
+          dlKnown = !!(r && r[0] && r[0].exists !== false);
+        });
+      } catch (e) { dlKnown = false; }
+    });
+  }
   el.addEventListener("dragstart", (e) => {
     if (opts.downloadId !== undefined && chrome.downloads && chrome.downloads.drag) {
+      if (!dlKnown) { e.preventDefault(); return; }
       e.preventDefault();
       chrome.downloads.drag(opts.downloadId);
       return;
@@ -975,7 +990,7 @@ async function renderDownloads() {
       const acts = [];
       if (ok && Number.isInteger(h.downloadId)) {
         acts.push([SVG.open, "Open file", () => chrome.runtime.sendMessage({ type: "bdlOpen", downloadId: h.downloadId }, (r) => { if (!r || !r.ok) status("The file was moved or deleted.", "bad"); })]);
-        acts.push([SVG.folder, "Show in folder", () => chrome.runtime.sendMessage({ type: "bdlShow", downloadId: h.downloadId })]);
+        acts.push([SVG.folder, "Show in folder", () => chrome.runtime.sendMessage({ type: "bdlShow", downloadId: h.downloadId }, (r) => { void chrome.runtime.lastError; if (!r || !r.ok) status("The file was moved or deleted.", "bad"); })]);
       }
       acts.push([SVG.trash, "Remove from history", () => chrome.runtime.sendMessage({ type: "bdlForget", id: h.id }, () => renderDownloads())]);
       const card = jobCard({
@@ -1031,15 +1046,18 @@ async function activeTab() {
 }
 
 // A picture for cards the page gave none (Instagram reels): the video on
-// screen, cut out of a screenshot of the tab. Taken once per page.
-let shot = { page: "", url: "" };
+// screen, cut out of a screenshot of the tab. Taken again when another video
+// is on screen (a feed keeps one address while it scrolls, and kept showing
+// the first video's picture), at most once a second.
+let shot = { page: "", url: "", at: 0 };
 async function shotThumb(peek, tab) {
   const s = peek.shot;
   const bare = (peek.net || []).some((n) => !n.thumb) || (peek.fb || []).some((e) => !e.thumb);
   if (!s || !bare || !tab || !api.tabs.captureVisibleTab) return;
-  const page = String(peek.page || "").split("#")[0];
-  if (shot.page !== page) {
-    shot = { page, url: "" };
+  const top = (peek.fb && peek.fb[0] && peek.fb[0].id) || (peek.social && peek.social.post) || "";
+  const page = String(peek.page || "").split("#")[0] + "|" + top + "|" + Math.round(s.x) + "," + Math.round(s.y) + "," + Math.round(s.w) + "," + Math.round(s.h);
+  if (shot.page !== page && Date.now() - shot.at >= 1000) {
+    shot = { page, url: "", at: Date.now() };
     try {
       const full = await api.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
       const img = await createImageBitmap(await (await fetch(full)).blob());
@@ -1052,7 +1070,8 @@ async function shotThumb(peek, tab) {
       shot.url = c.toDataURL("image/jpeg", 0.75);
     } catch (e) { shot.url = ""; }
   }
-  if (!shot.url) return;
+  // Never another video's picture: none until this one's is taken.
+  if (shot.page !== page || !shot.url) return;
   for (const n of (peek.net || [])) if (!n.thumb) n.thumb = shot.url;
   for (const e of (peek.fb || [])) if (!e.thumb) e.thumb = shot.url;
 }
@@ -1065,7 +1084,12 @@ async function loadVideos(quiet) {
     try {
       // The top frame only: every iframe also answers (ad/account frames
       // replied first with an empty or foreign video list).
-      const peek = await api.tabs.sendMessage(tab.id, { type: "peekState" }, { frameId: 0 });
+      // A busy page (the Facebook feed) can be slow to answer: never wait
+      // on it for long. The first look falls back to the stored snapshot.
+      const peek = await Promise.race([
+        api.tabs.sendMessage(tab.id, { type: "peekState" }, { frameId: 0 }),
+        new Promise((resolve) => setTimeout(() => resolve(null), quiet ? 4000 : 6000)),
+      ]);
       if (peek && (peek.videos || peek.links || peek.net || peek.fb || peek.social)) {
         // The list at once; a picture cut from the tab follows (taking it
         // held the popup back, so it opened late).
@@ -1124,6 +1148,26 @@ chrome.storage.local.get({ dcQuality: "" }, (v) => {
 // While the popup stays open, the list follows the page: the next reel
 // scrolled to, a video that starts playing (it was missed until the popup
 // was opened again).
-setInterval(() => { if (!document.hidden && !$("viewVideos").hidden) loadVideos(true); }, 1500);
+// One refresh at a time, and a slow page is asked less often (three times
+// as long as its last answer took): overlapping refreshes piled up on the
+// Facebook feed and the popup stopped responding for a while.
+let liveBusy = false;
+let liveNext = 0;
+// The page says it learned something (see pageNews in content.js): look now.
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (!msg || msg.type !== "dcPageNews" || !sender || !sender.tab) return false;
+  activeTab().then((t) => { if (t && t.id === sender.tab.id) { liveNext = 0; liveTick(); } }, () => {});
+  return false;
+});
+setInterval(() => liveTick(), 1500);
+async function liveTick() {
+  if (document.hidden || $("viewVideos").hidden || liveBusy || Date.now() < liveNext) return;
+  liveBusy = true;
+  const t0 = Date.now();
+  try { await loadVideos(true); } catch (e) { /* next round */ } finally {
+    liveBusy = false;
+    liveNext = Date.now() + Math.min(10000, (Date.now() - t0) * 3);
+  }
+}
 updateDlCount();
 showTab(prefs.tab === "downloads" || prefs.tab === "settings" ? prefs.tab : "videos");

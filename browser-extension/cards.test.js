@@ -166,7 +166,7 @@ test('an Instagram reel is one card of qualities sent as the post link, not its 
   const it = items[0];
   assert.equal(it.tag, 'INSTAGRAM');
   assert.equal(it.title, 'NCP explained in 12 seconds');
-  assert.deepEqual(JSON.parse(JSON.stringify(it.options.map((o) => o.label))), ['Best quality', '1080p', '720p', '480p', '360p', 'Audio (MP3)']);
+  assert.deepEqual(JSON.parse(JSON.stringify(it.options.map((o) => o.label))), ['Best quality', '1080p', '720p', '480p', '360p', 'Audio (M4A) · fastest', 'Audio (MP3)']);
   const q720 = it.options.find((o) => o.label === '720p').msg;
   assert.equal(q720.url, 'https://www.instagram.com/reel/De7LaHnTe_T/');
   assert.equal(q720.quality, '720p');

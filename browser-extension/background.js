@@ -11,7 +11,7 @@ let lastFallbackError = "";
 // Must match manifest version + content.js EXT_VER. Tabs running an older
 // content script are rejected with a "reload the tab" error instead of
 // failing mysteriously (their extension APIs are gone after a reload).
-const EXT_VER = "0.11.20";
+const EXT_VER = "0.11.22";
 
 // Promise-style calls (the `await api.*` ones below) go through this handle so
 // one file serves both engines: Firefox exposes the promise-returning
@@ -1646,6 +1646,8 @@ try {
 
 // ---- popup / content-script messages ----
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // For an open popup only (it refreshes its list); nothing to do here.
+  if (msg && msg.type === "dcPageNews") return false;
   // A player frame asks for the page's name: the top frame answers.
   if (msg && msg.type === "topTitle" && sender && sender.id === chrome.runtime.id && sender.tab && sender.tab.id >= 0) {
     try {
@@ -1902,7 +1904,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return { ok: true };
     }
     if (msg.type === "bdlShow" && Number.isInteger(msg.downloadId)) {
-      try { api.downloads.show(msg.downloadId); return { ok: true }; } catch (e) { return { ok: false }; }
+      // Only a download the browser still lists: show() on one cleared from
+      // its history raised "Unchecked runtime.lastError: Invalid downloadId".
+      try {
+        const [d] = await api.downloads.search({ id: msg.downloadId });
+        if (!d || d.exists === false) return { ok: false };
+        api.downloads.show(msg.downloadId);
+        return { ok: true };
+      } catch (e) { return { ok: false }; }
     }
     if (msg.type === "bdlOpen" && Number.isInteger(msg.downloadId)) {
       try { await api.downloads.open(msg.downloadId); return { ok: true }; } catch (e) { return { ok: false, error: String(e && e.message) }; }

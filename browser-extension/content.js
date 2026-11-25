@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.11.20";
+  const EXT_VER = "0.11.22";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -51,10 +51,16 @@
 
   function collectLinks() {
     try {
-      const links = [...document.querySelectorAll("a[href]")]
-        .map((a) => ({ url: a.href, text: (a.textContent || "").trim().slice(0, 80) }))
-        .filter((l) => /^https?:\/\//i.test(l.url) && DL.test(l.url.split("?")[0]))
-        .slice(0, 30);
+      // The address is tested first and the text read only for a file
+      // link: reading every link's text on a long feed (Facebook has
+      // thousands) made each look at the page slow.
+      const links = [];
+      for (const a of document.querySelectorAll("a[href]")) {
+        const url = a.href;
+        if (!/^https?:\/\//i.test(url) || !DL.test(url.split("?")[0])) continue;
+        links.push({ url, text: (a.textContent || "").trim().slice(0, 80) });
+        if (links.length >= 30) break;
+      }
       const media = [];
       const posterOf = (el) => {
         try {
@@ -76,10 +82,15 @@
         }
       });
       const found = [...media, ...links].slice(0, 50);
-      if (IS_TOP) chrome.storage.local.set({
-        downloadCraftLinks: found,
-        downloadCraftPage: location.href,
-      });
+      // Stored only when it changed (the popup asks every 1.5 s).
+      const sig = location.href + "\n" + JSON.stringify(found);
+      if (IS_TOP && sig !== collectLinks.lastSig) {
+        collectLinks.lastSig = sig;
+        chrome.storage.local.set({
+          downloadCraftLinks: found,
+          downloadCraftPage: location.href,
+        });
+      }
       return found;
     } catch (e) {
       if (ctxInvalidated(e)) { markDead(); return; }
@@ -1058,7 +1069,13 @@
   // The embedded JSON and the metas describe the first load: once the reel
   // changes they name the reel the user came from.
   function fbJsonIsCurrent() {
-    try { return !!fbPageUrl && location.href === fbPageUrl; } catch (e) { return false; }
+    // The home feed (and other feeds) never describe one video: the
+    // page's metas and load-time JSON named a post that is not on screen.
+    // Only a video's own page (a reel, watch, video or post page) does.
+    try {
+      if (!/\/(reel|reels|watch|videos|share|posts|permalink\.php|story\.php|photo)\b/i.test(location.pathname + "/")) return false;
+      return !!fbPageUrl && location.href === fbPageUrl;
+    } catch (e) { return false; }
   }
 
   // A DASH audio leg arrives as a plain .mp4, so the sniffer's content type is
@@ -1143,10 +1160,21 @@
     return { list: all, known: false, missing: "" };
   }
 
+  // The page's HTML as text (its embedded JSON), kept for a few seconds:
+  // copying a long feed's whole page on every look (the popup looks every
+  // 1.5 s) made the popup hang on the Facebook home page.
+  let fbHtmlCache = { href: "", at: 0, text: "" };
+  function fbPageHtml() {
+    const now = Date.now();
+    if (fbHtmlCache.href === location.href && now - fbHtmlCache.at < 8000) return fbHtmlCache.text;
+    let text = "";
+    try { text = document.documentElement.innerHTML.slice(0, 1500000); } catch (e) { text = ""; }
+    fbHtmlCache = { href: location.href, at: now, text };
+    return text;
+  }
   function fbInfo(clicked) {
     fbSyncReel();
-    let html = "";
-    try { html = document.documentElement.innerHTML.slice(0, 1500000); } catch (e) {}
+    const html = fbPageHtml();
     // The video whose button was clicked; else the reel on screen, not the
     // first <video> the document happens to hold: Facebook keeps the
     // neighbours mounted and preloaded.
@@ -1296,6 +1324,21 @@
   // dozens of byte-range pieces the sniffer sees per reel. Filled from the
   // page's script tags on first use and from the GraphQL answers page-hook.js
   // relays as reels load. Newest data last (Map order), capped.
+  // An open popup refreshes at once when the page learns something (a
+  // video's length or picture, another video playing), instead of on its
+  // next round. At most every 400 ms.
+  let pageNewsT = 0;
+  function pageNews() {
+    if (pageNewsT || !IS_TOP) return;
+    pageNewsT = setTimeout(() => {
+      pageNewsT = 0;
+      try {
+        const p = api.runtime.sendMessage({ type: "dcPageNews" });
+        if (p && p.catch) p.catch(() => {});
+      } catch (e) { /* popup closed or extension reloaded */ }
+    }, 400);
+  }
+  try { document.addEventListener("playing", pageNews, true); } catch (e) { /* ignore */ }
   const fbStore = new Map();
   let fbDocScanned = false;
   function fbAddVideos(text) {
@@ -1313,6 +1356,7 @@
       } : v);
     }
     while (fbStore.size > 40) fbStore.delete(fbStore.keys().next().value);
+    pageNews();
   }
   function fbScanDocument() {
     if (fbDocScanned) return;
@@ -3197,15 +3241,16 @@
     // served, or an MP3 made from it. Sizes from the page's player data.
     const audioSize = info.audioSize || 0;
     const stem = fname.replace(/\.mp4$/i, "");
-    api.addChip({
-      label: "♪ MP3",
-      tip: `Audio only, as MP3${audioSize ? " · about " + fmtSize(Math.round(audioSize * 1.9)) : ""} — the app saves the sound and converts it`,
-      send: () => { rememberQuality("audio"); sendDownload(location.href, `${stem}.mp3`, "audio/mpeg", null, null, "audio", info.audioDur || null); },
-    });
+    // M4A first: ready at once and in the original quality.
     api.addChip({
       label: "♪ M4A",
-      tip: `Audio only, as M4A${audioSize ? " · " + fmtSize(audioSize) : ""} — YouTube's own sound track, no conversion`,
+      tip: `Audio only, as M4A${audioSize ? " · " + fmtSize(audioSize) : ""} — fastest and original quality: YouTube's own sound track, no conversion`,
       send: () => { rememberQuality("audio"); sendDownload(location.href, `${stem}.m4a`, "audio/mp4", audioSize || null, null, "audio-m4a", info.audioDur || null); },
+    });
+    api.addChip({
+      label: "♪ MP3",
+      tip: `Audio only, as MP3${audioSize ? " · about " + fmtSize(Math.round(audioSize * 1.5)) : ""} — the app saves the sound and converts it (takes a little longer)`,
+      send: () => { rememberQuality("audio"); sendDownload(location.href, `${stem}.mp3`, "audio/mpeg", null, null, "audio", info.audioDur || null); },
     });
     api.sync();
     enrichSizes(sizePairs);
@@ -3996,18 +4041,40 @@
         // the page JSON turned up) are what filled the list with a dozen
         // nameless, sizeless copies of one reel, so those are dropped.
         let fb = [];
+        let fbPost = null;
         try {
           if (isFacebookPage()) {
             const stored = fbStoredVideos(net);
+            // A reel or video page lists the video on screen only, like
+            // YouTube: the reels scrolled past (and the neighbours Facebook
+            // preloads) are not on this page any more.
+            const single = !!fbReelKeyOf(location.href) || /\/(reel|watch|share\/[rv])\b/i.test(location.pathname);
+            // The feed: the video in front of the user, told apart by its
+            // own post's links (as the player's button does). "The newest
+            // file fetched" was often a preloaded neighbour, so the top card
+            // had this post's title with another video's length and picture.
+            const video = single ? null : fbActiveVideo();
+            const ids = video ? fbIdsNear(video) : [];
+            let vdur = 0;
+            try { vdur = video && Number.isFinite(video.duration) ? video.duration : 0; } catch (e) { vdur = 0; }
+            const order = single ? { list: stored, known: true, missing: "" } : fbOrderFor(stored, ids, vdur);
+            const info = fbInfo(video || undefined);
+            const liveDur = vdur > 0 && vdur < 36000 ? Math.round(vdur) : 0;
+            if (order.missing && ids.length) {
+              // On screen, but Facebook has not described it yet: its post
+              // link, which the app downloads whole.
+              fbPost = { post: fbPermalink(ids[0].id, ids[0].href), title: info.title, thumb: info.thumb, dur: liveDur || null, site: "facebook.com" };
+            }
             if (stored.length) {
-              const info = fbInfo();
-              // A reel or video page lists the video on screen only, like
-              // YouTube: the reels scrolled past (and the neighbours Facebook
-              // preloads) are not on this page any more.
-              const single = !!fbReelKeyOf(location.href) || /\/(reel|watch|share\/[rv])\b/i.test(location.pathname);
-              fb = stored.slice(0, single ? 1 : 15).map((e, i) => ({
-                id: e.id, dur: e.dur, thumb: e.thumb || (i === 0 ? info.thumb : ""),
-                title: i === 0 ? info.title : "",
+              // Only a card known to be the video on screen takes the
+              // screen's title, picture and length; the others keep their own.
+              const list = order.known ? order.list : stored;
+              const mine = order.known && !order.missing;
+              fb = list.slice(0, single ? 1 : 15).map((e, i) => ({
+                id: e.id,
+                dur: e.dur || (mine && i === 0 ? liveDur : 0),
+                thumb: e.thumb || (mine && i === 0 ? info.thumb : ""),
+                title: mine && i === 0 ? info.title : "",
                 video: e.video, audio: e.audio, progressive: e.progressive,
               }));
               net = net.filter((n) => !/(^|\.)fbcdn\.net$/i.test((() => {
@@ -4020,9 +4087,9 @@
         // downloads in any quality with its sound. Their players fetch each
         // video in many byte-range pieces (video and audio apart): listed
         // one by one they made 25 "MP4" choices, none a whole video.
-        let social = null;
+        let social = fbPost;
         try {
-          if (isSocialPage()) {
+          if (!social && isSocialPage()) {
             const v = pageVideos().find((x) => { const r = x.getBoundingClientRect(); return r.width > 80 && r.bottom > 0 && r.top < window.innerHeight; });
             const post = v ? socialPostFor(v) : "";
             if (post) {

@@ -1,4 +1,72 @@
-# Download Craft 0.11.16
+# Download Craft 0.11.17
+
+## What's new
+
+- **MP3 conversion shows its progress.** After the download, the list and
+  the progress window say "Converting to MP3 · 43%" instead of a full bar
+  saying "Downloading". A long recording (two hours or more) takes a couple
+  of minutes to convert; a song takes seconds.
+- **Pause, Cancel and Resume while converting.** Pause or Cancel stops the
+  conversion at once; Resume converts again without downloading the sound
+  again. Nothing half-made is left in your folder.
+- **M4A is marked as the fastest audio choice** (Add download, the YouTube
+  player button, the popup): YouTube's own sound, ready at once and in its
+  original quality.
+- **MP3s are a little faster to make and smaller**, with no difference you
+  can hear (YouTube's sound is not better than the new setting).
+- **ffprobe is no longer downloaded** (about 79 MB). The app reads a
+  finished video's length, sound and frame size itself (MP4, MOV, MKV,
+  WebM) and asks FFmpeg for anything else. A copy you already have is still
+  used.
+- **Browser extension 0.11.22**, with the fixes below.
+
+## Fixes
+
+- **An MP3 was saved with "(1)" added to its name**: it now takes its own name.
+- **Facebook home feed**: the popup listed the post's title with another
+  video's length and picture. It now finds the video in front of you and
+  only that card takes its title, length and picture. It refreshes at once
+  when a video starts playing or its details arrive.
+- **The popup stopped responding for a while on the Facebook feed**: each
+  refresh copied the whole page; refreshes now take turns and never wait
+  long on a busy page.
+- **"Unchecked runtime.lastError: Invalid downloadId"** in the extension:
+  Show in folder and dragging no longer ask about a download the browser
+  has already cleared.
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.11.17-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.11.17-windows-x64-portable.zip` and run `download_craft.exe`.
+Already installed: About → Check again.
+
+**macOS 12+.** Unzip `DownloadCraft-0.11.17-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.11.17_amd64.deb`; Fedora: install
+`downloadcraft-0.11.17-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.17-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.11.22.xpi` from
+`about:debugging#/runtime/this-firefox`. Edge: install
+[Download Craft from Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/download-craft/bmjjepniglflidaclilkibodbkdogoio).
+Chrome and Brave: extract `DownloadCraft-Chrome-0.11.22.zip` and load the
+extracted folder in `chrome://extensions`. With the app running, the
+extension updates itself.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.17`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+# Earlier: Download Craft 0.11.16
 
 ## What's new
 
@@ -15,38 +83,6 @@
 - **"Small download button"** (#31): after a page loads or reloads, the full
   "Download" button no longer shows for a moment before turning small. The
   button now waits until the extension has read that setting.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.11.16-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.11.16-windows-x64-portable.zip` and run `download_craft.exe`.
-Already installed: About → Check again.
-
-**macOS 12+.** Unzip `DownloadCraft-0.11.16-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.16_amd64.deb`; Fedora: install
-`downloadcraft-0.11.16-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.16-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.11.20.xpi` from
-`about:debugging#/runtime/this-firefox`. Edge: install
-[Download Craft from Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/download-craft/bmjjepniglflidaclilkibodbkdogoio).
-Chrome and Brave: extract `DownloadCraft-Chrome-0.11.20.zip` and load the
-extracted folder in `chrome://extensions`. With the app running, the
-extension updates itself.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.16`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
 
 # Earlier: Download Craft 0.11.15
 

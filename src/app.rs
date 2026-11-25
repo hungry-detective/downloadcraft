@@ -8661,8 +8661,10 @@ const YT_QUALITIES: [(&str, &str); 9] = [
     ("720p", "720p"),
     ("480p", "480p"),
     ("360p", "360p"),
+    // M4A first: YouTube's own sound as served, so it is ready at once
+    // and keeps the original quality; MP3 is made from it afterwards.
+    ("m4a", "Audio (M4A) · fastest"),
     ("mp3", "Audio (MP3)"),
-    ("m4a", "Audio (M4A)"),
 ];
 
 /// A quality of `YT_QUALITIES` the video has: Best and the sound always;
@@ -10314,8 +10316,9 @@ impl eframe::App for CraftApp {
                                                     "LIVE".to_string()
                                                 }
                                                 Some(p)
-                                                    if d.downloaded_bytes == 0
-                                                        && !crate::engine::phase_is_downloading(p) =>
+                                                    if (d.downloaded_bytes == 0
+                                                        && !crate::engine::phase_is_downloading(p))
+                                                        || crate::engine::phase_is_finishing(p) =>
                                                 {
                                                     p.clone()
                                                 }
@@ -12391,7 +12394,12 @@ impl CraftApp {
                     let q = YT_QUALITIES
                         .iter()
                         .find(|(k, _)| k.eq_ignore_ascii_case(self.add_quality.trim()))
-                        .map(|(k, l)| if k.is_empty() { "Best" } else { l.split(' ').next().unwrap_or(l) })
+                        .map(|(k, l)| match *k {
+                            "" => "Best",
+                            "m4a" => "M4A",
+                            "mp3" => "MP3",
+                            _ => l.split(' ').next().unwrap_or(l),
+                        })
                         .unwrap_or("Best");
                     // The arrow is drawn as an icon: the font has no "▾"
                     // and showed a box.

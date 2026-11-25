@@ -939,7 +939,15 @@ impl ProgressApp {
         let frac = self.frac(item);
         let pct = (frac * 100.0).floor() as u64;
         // IDM's title: "<pct>%-<name>" (the design shows 39%-Stories-…).
-        let raw_title = if item.total_bytes.unwrap_or(0) > 0 || frac > 0.0 {
+        let finishing = self.snap.live && crate::engine::phase_is_finishing(&self.snap.phase);
+        let raw_title = if finishing {
+            // "MP3 43%-<name>" while converting, "Merging-<name>" for a merge.
+            let p = &self.snap.phase;
+            match p.rsplit_once(" · ") {
+                Some((_, n)) if p.starts_with("Converting to MP3") => format!("MP3 {n}-{}", item.filename),
+                _ => format!("{}-{}", p.split(" · ").next().unwrap_or(p), item.filename),
+            }
+        } else if item.total_bytes.unwrap_or(0) > 0 || frac > 0.0 {
             format!("{pct}%-{}", item.filename)
         } else {
             item.filename.clone()
@@ -1008,6 +1016,11 @@ impl ProgressApp {
             if at.elapsed() < std::time::Duration::from_secs(4) {
                 return Some(label.clone());
             }
+        }
+        // Every byte is in and a merge or an MP3 conversion runs: say so
+        // (with its percentage) instead of a full bar saying "Downloading".
+        if crate::engine::phase_is_finishing(&self.snap.phase) {
+            return Some(self.snap.phase.clone());
         }
         if self.snap.downloaded > 0 {
             return None;

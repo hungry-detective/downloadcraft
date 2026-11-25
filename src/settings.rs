@@ -6046,7 +6046,6 @@ impl SettingsApp {
                         });
                         if self.ytdlp_busy {ui.add(egui::Spinner::new().size(14.0));}
                         if !self.ytdlp_msg.is_empty(){wrapped(ui,&self.ytdlp_msg,reg(10.0),t.accent);}
-                        if let Some(info)=&ff { if info.path.is_some() && info.probe_path.is_none(){wrapped(ui,if cfg!(windows){"ffprobe is missing. Install it next to FFmpeg."}else{"ffprobe is missing. Download tools installs the matching pair."},reg(10.0),pl().warning);} }
                         if cfg!(target_os="macos"){hint(ui,"System alternative: brew install ffmpeg. Homebrew locations are detected automatically.");}
                         #[cfg(target_os="linux")]
                         hint(ui,"System alternatives: Ubuntu/Debian: sudo apt install ffmpeg; Fedora: sudo dnf install ffmpeg-free. Download tools needs no administrator access.");
