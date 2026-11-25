@@ -8503,6 +8503,10 @@ fn web_release_assets(html: &str, repo: &str, tag: &str) -> Vec<serde_json::Valu
 /// A failed download's toast: what went wrong, the next step, and Retry
 /// (and Open page, when it came from one) right on it.
 fn notify_failed(id: u64, name: &str, reason: &str, page: &str) {
+    let (name, reason, page) = (name.to_string(), reason.to_string(), page.to_string());
+    off_ui(move || notify_failed_now(id, &name, &reason, &page));
+}
+fn notify_failed_now(id: u64, name: &str, reason: &str, page: &str) {
     let step = crate::i18n::t(crate::model::failure_next_step(reason)).to_string();
     let short: String = reason.chars().take(140).collect();
     let body = format!("{name}\n{short}\n{step}");
@@ -8533,12 +8537,16 @@ fn notify_failed(id: u64, name: &str, reason: &str, page: &str) {
         }
     }
     let _ = page;
-    notify("Download Craft — download failed", &body);
+    notify_now("Download Craft — download failed", &body);
 }
 
 /// "Download Craft X is out": a desktop notification that opens About &
 /// Updates (where it installs with one click) when clicked.
 fn notify_update(version: &str) {
+    let version = version.to_string();
+    off_ui(move || notify_update_now(&version));
+}
+fn notify_update_now(version: &str) {
     let title = crate::i18n::t("A new version of Download Craft is ready");
     let body = format!("{version} — {}", crate::i18n::t("open About & Updates to install it. Your settings and downloads are kept."));
     let open_about = || {
@@ -8569,11 +8577,24 @@ fn notify_update(version: &str) {
         }
     }
     let _ = open_about;
-    notify(title, &body);
+    notify_now(title, &body);
 }
 
 /// Best-effort desktop toast (ignored when unsupported).
 fn notify(title: &str, body: &str) {
+    let (title, body) = (title.to_string(), body.to_string());
+    off_ui(move || notify_now(&title, &body));
+}
+
+/// Desktop notifications are shown from their own thread: on some Windows 10
+/// PCs showing one blocks for many seconds, which froze the window (#30).
+fn off_ui(f: impl FnOnce() + Send + 'static) {
+    if std::thread::Builder::new().name("notify".into()).spawn(f).is_err() {
+        // No thread to spare: skip the notice rather than block the window.
+    }
+}
+
+fn notify_now(title: &str, body: &str) {
     let _ = notify_rust::Notification::new()
         .summary(title)
         .body(body)
@@ -8620,6 +8641,8 @@ fn add_in_window() -> bool {
 /// Where the Add download window opens (screen points): the main window's
 /// centre the first time, then wherever the user left it.
 static ADD_WIN_POS: std::sync::Mutex<Option<egui::Pos2>> = std::sync::Mutex::new(None);
+/// Frames drawn since the Add window opened (it is shown after the first two).
+static ADD_WIN_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn is_youtube_video_link(url: &str) -> bool {
     let host = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase)).unwrap_or_default();
@@ -10631,6 +10654,15 @@ impl eframe::App for CraftApp {
                     .with_decorations(false)
                     .with_transparent(true)
                     .with_taskbar(true);
+                // Opened hidden and shown once its first frames are drawn:
+                // otherwise Windows shows an empty white window for a moment
+                // (#29).
+                let drawn = ADD_WIN_FRAMES.load(std::sync::atomic::Ordering::Relaxed);
+                vb = vb.with_visible(drawn >= 2);
+                if drawn < 3 {
+                    ADD_WIN_FRAMES.store(drawn + 1, std::sync::atomic::Ordering::Relaxed);
+                    ctx.request_repaint();
+                }
                 if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
                     vb = vb.with_icon(std::sync::Arc::new(icon));
                 }
@@ -10669,6 +10701,7 @@ impl eframe::App for CraftApp {
         if !self.show_add {
             self.add_recent_open = false;
             self.add_caret = None;
+            ADD_WIN_FRAMES.store(0, std::sync::atomic::Ordering::Relaxed);
         }
 
         // ================= site grabber (P3.1) =================

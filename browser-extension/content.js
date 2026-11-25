@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.11.19";
+  const EXT_VER = "0.11.20";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -2104,6 +2104,10 @@
     host.__dcMain=main;host.__dcClose=close;host.__dcLabel=label;host.__dcMore=more;
     host.setAttribute("data-dc-bar","1");
     if (smallBar) host.setAttribute("data-dc-small","1");
+    // Until the "Small download button" setting has been read, the bar stays
+    // invisible (it still takes its place), so a reload never flashes the
+    // full bar before it turns small (#31).
+    if (!barPrefsKnown) host.style.visibility = "hidden";
     paintBar(host);
     wakeBar(host);
     return host;
@@ -2114,6 +2118,18 @@
   // Settings → "Small download button": the player shows the round download
   // icon alone (no "Download" text, no grip). Off by default.
   var smallBar = false;
+  var barPrefsKnown = false;
+  function barPrefsReady() {
+    if (barPrefsKnown) return;
+    barPrefsKnown = true;
+    try {
+      document.querySelectorAll("[data-dc-bar]").forEach((h) => {
+        if (h.style.visibility === "hidden") { h.style.visibility = ""; wakeBar(h); }
+      });
+    } catch (e) { /* ignore */ }
+  }
+  // Storage that never answers must not hide the bar for good.
+  setTimeout(barPrefsReady, 2500);
   const BAR_AWAKE_MS = 3000;
   // Shorts: only the first one shows the bar fully; scrolling on to the
   // next ones leaves it see-through until pointed at.
@@ -3476,12 +3492,13 @@
   }
   try {
     chrome.storage.local.get({ dcQuality: "", oneClickQuality: true, smallButton: false }, (r) => {
-      if (chrome.runtime.lastError || !r) return;
+      if (chrome.runtime.lastError || !r) { barPrefsReady(); return; }
       prefQuality = String(r.dcQuality || "");
       oneClickOn = r.oneClickQuality !== false;
       smallBar = r.smallButton === true;
       refreshQuickBars();
       refreshSmallBars();
+      barPrefsReady();
     });
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area !== "local" || !alive()) return;

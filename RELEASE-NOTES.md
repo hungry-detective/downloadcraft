@@ -1,4 +1,54 @@
-# Download Craft 0.11.15
+# Download Craft 0.11.16
+
+## What's new
+
+- **Browser extension 0.11.20**, with the fix below.
+
+## Fixes
+
+- **A freeze of 15 s or more** (#30): the desktop notification for a new
+  version, a failed download or new subscription videos was shown from the
+  window itself, and on some Windows 10 PCs showing one takes many seconds.
+  They are now shown in the background, so the window keeps answering.
+- **Add download no longer flashes white** when it opens (#29): its window
+  stays hidden until its first picture is drawn.
+- **"Small download button"** (#31): after a page loads or reloads, the full
+  "Download" button no longer shows for a moment before turning small. The
+  button now waits until the extension has read that setting.
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.11.16-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.11.16-windows-x64-portable.zip` and run `download_craft.exe`.
+Already installed: About → Check again.
+
+**macOS 12+.** Unzip `DownloadCraft-0.11.16-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.11.16_amd64.deb`; Fedora: install
+`downloadcraft-0.11.16-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.16-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.11.20.xpi` from
+`about:debugging#/runtime/this-firefox`. Edge: install
+[Download Craft from Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/download-craft/bmjjepniglflidaclilkibodbkdogoio).
+Chrome and Brave: extract `DownloadCraft-Chrome-0.11.20.zip` and load the
+extracted folder in `chrome://extensions`. With the app running, the
+extension updates itself.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.16`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+# Earlier: Download Craft 0.11.15
 
 ## What's new
 
@@ -18,38 +68,6 @@
 - **Clear and Refresh**: Clear hides the cards and Refresh shows them again
   and looks for new videos. Clear used to forget what was caught, so Refresh
   found nothing until the page was reloaded.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.11.15-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.11.15-windows-x64-portable.zip` and run `download_craft.exe`.
-Already installed: About → Check again.
-
-**macOS 12+.** Unzip `DownloadCraft-0.11.15-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.15_amd64.deb`; Fedora: install
-`downloadcraft-0.11.15-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.15-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.11.19.xpi` from
-`about:debugging#/runtime/this-firefox`. Edge: install
-[Download Craft from Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/download-craft/bmjjepniglflidaclilkibodbkdogoio).
-Chrome and Brave: extract `DownloadCraft-Chrome-0.11.19.zip` and load the
-extracted folder in `chrome://extensions`. With the app running, the
-extension updates itself.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.15`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
 
 # Earlier: Download Craft 0.11.14
 
