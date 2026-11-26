@@ -5965,7 +5965,9 @@ async fn download_inner(
 
 /// Include common Unix tool locations when launched from a Dock or desktop.
 fn tool_dirs() -> Vec<std::path::PathBuf> {
-    let paths: Vec<_> = std::env::var_os("PATH").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
+    // Changed only on macOS/Linux (the extra folders below).
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut paths: Vec<_> = std::env::var_os("PATH").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
     #[cfg(unix)]
     {
         for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {

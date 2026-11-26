@@ -1,6 +1,8 @@
-# Download Craft 0.11.18
+# Download Craft 0.11.19
 
 ## What's new
+
+(0.11.18 was tagged but never published: its Linux and macOS builds failed. This is that release, fixed.)
 
 - **Record this video.** The player button's menu (⏺ Record) and the
   right-click menu record the video as it plays: only the player's own
@@ -42,19 +44,19 @@
 
 ## Install
 
-**Windows 10/11.** Run `DownloadCraft-0.11.18-windows-x64-setup.exe` (installs
+**Windows 10/11.** Run `DownloadCraft-0.11.19-windows-x64-setup.exe` (installs
 for your user, no administrator rights), or extract
-`DownloadCraft-0.11.18-windows-x64-portable.zip` and run `download_craft.exe`.
+`DownloadCraft-0.11.19-windows-x64-portable.zip` and run `download_craft.exe`.
 Already installed: About → Check again.
 
-**macOS 12+.** Unzip `DownloadCraft-0.11.18-macos-Universal.zip` and move
+**macOS 12+.** Unzip `DownloadCraft-0.11.19-macos-Universal.zip` and move
 `Download Craft.app` into Applications. This build is not notarized: right-click
 → Open the first time.
 
 **Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.18_amd64.deb`; Fedora: install
-`downloadcraft-0.11.18-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.18-x86_64.AppImage`.
+`downloadcraft_0.11.19_amd64.deb`; Fedora: install
+`downloadcraft-0.11.19-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.19-x86_64.AppImage`.
 
 **Browser extensions.** Firefox: install
 [Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
@@ -66,7 +68,7 @@ extracted folder in `chrome://extensions`. With the app running, the
 extension updates itself.
 
 **Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.18`, then
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.19`, then
 `docker logs` for the address and pairing code. Or run `download_craft --server`.
 
 Settings and queued downloads carry over between versions. Settings → Plugins
