@@ -207,10 +207,14 @@ jobs:
       # release raised it (the stores refuse a version they already have).
       - name: Extension changed?
         id: ext
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           ver() { python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])'; }
           now=$(ver < browser-extension/manifest.json)
-          prev_tag=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" | head -1 || true)
+          # The last PUBLISHED release, not the last tag: a tag whose build
+          # failed (never released) must not hide a new extension version.
+          prev_tag=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 20 --json tagName --jq '.[].tagName' | grep -vx "$GITHUB_REF_NAME" | head -1 || true)
           before=""
           if [ -n "$prev_tag" ]; then
             before=$(git show "$prev_tag:browser-extension/manifest.json" | ver || true)

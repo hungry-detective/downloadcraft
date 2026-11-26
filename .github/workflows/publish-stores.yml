@@ -1,0 +1,84 @@
+name: Publish extension to stores
+# Run by hand (Actions → Publish extension to stores → Run workflow) to send
+# a published release's extension to Firefox Add-ons and Edge Add-ons, for
+# example when the release run skipped the stores. Uses the same secrets
+# and steps as the release workflow (portable.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (for example v0.11.19)"
+        required: true
+jobs:
+  publish-stores:
+    runs-on: ubuntu-latest
+    env:
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+      EDGE_PRODUCT_ID: ${{ secrets.EDGE_PRODUCT_ID }}
+      EDGE_CLIENT_ID: ${{ secrets.EDGE_CLIENT_ID }}
+      EDGE_API_KEY: ${{ secrets.EDGE_API_KEY }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir dist
+          gh release download "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'DownloadCraft-Chrome-*.zip' --pattern 'DownloadCraft-Firefox-*.xpi'
+          ls -la dist
+      - name: Firefox Add-ons
+        if: env.AMO_JWT_ISSUER != '' && env.AMO_JWT_SECRET != ''
+        run: |
+          mkdir firefox
+          unzip -q dist/DownloadCraft-Firefox-*.xpi -d firefox
+          npx --yes web-ext@8.3.0 sign --source-dir firefox --artifacts-dir web-ext-artifacts \
+            --channel listed --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET" \
+            --approval-timeout 0
+      - name: Microsoft Edge Add-ons
+        if: env.EDGE_PRODUCT_ID != '' && env.EDGE_CLIENT_ID != '' && env.EDGE_API_KEY != ''
+        run: |
+          set -euo pipefail
+          # The store gives the extension its own ID: the pinned "key" that
+          # fixes the self-installed copy's ID does not go in.
+          mkdir edge
+          unzip -q dist/DownloadCraft-Chrome-*.zip -d edge
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('edge/manifest.json')
+          m = json.loads(p.read_text(encoding='utf-8'))
+          m.pop('key', None)
+          p.write_text(json.dumps(m, indent=2, ensure_ascii=False), encoding='utf-8')
+          PY
+          (cd edge && zip -qr ../edge.zip .)
+          api="https://api.addons.microsoftedge.microsoft.com/v1/products/$EDGE_PRODUCT_ID/submissions"
+          auth=(-H "Authorization: ApiKey $EDGE_API_KEY" -H "X-ClientID: $EDGE_CLIENT_ID")
+          wait_op() {
+            for _ in $(seq 1 40); do
+              body=$(curl -sS "${auth[@]}" "$1")
+              status=$(echo "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')
+              echo "  $status"
+              case "$status" in
+                Succeeded) return 0 ;;
+                Failed) echo "$body"; return 1 ;;
+              esac
+              sleep 15
+            done
+            echo "timed out"; return 1
+          }
+          echo "Uploading the package"
+          op=$(curl -sS -D - -o /dev/null "${auth[@]}" -H "Content-Type: application/zip" \
+            -X POST --data-binary @edge.zip "$api/draft/package" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
+          wait_op "$api/draft/package/operations/$op"
+          echo "Publishing"
+          # Edge's testers need to know the extension works with the desktop
+          # app (a submission without these notes was held back).
+          notes=$(python3 -c 'import json, os
+          v = os.environ["RELEASE_TAG"].lstrip("v")
+          print(json.dumps({"notes": "Download Craft " + v + ". Certification notes: this extension is the companion of the free, open-source Download Craft desktop app (https://github.com/hungry-detective/downloadcraft/releases). It talks to the app through native messaging (com.download_craft). Without the app the popup still lists the videos on a page and offers Download in browser. To test fully: install the Windows app from the link above, open a page with a video (for example a YouTube watch page), click the extension and press Download."}))')
+          op=$(curl -sS -D - -o /dev/null "${auth[@]}" -H "Content-Type: application/json" \
+            -X POST -d "$notes" "$api" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
+          wait_op "$api/operations/$op"
