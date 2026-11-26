@@ -7,7 +7,7 @@
   // Must match manifest version + background.js EXT_VER. The background
   // rejects messages from any other version with a "reload this tab"
   // error, so a stale script can never fail mysteriously.
-  const EXT_VER = "0.11.22";
+  const EXT_VER = "0.11.31";
   // Promise-style calls (the `await api.*` one below) go through this handle
   // so one file serves both engines: Firefox exposes the promise-returning
   // `browser` namespace, Chrome only has `chrome` (promise-capable under MV3).
@@ -3252,6 +3252,20 @@
       tip: `Audio only, as MP3${audioSize ? " · about " + fmtSize(Math.round(audioSize * 1.5)) : ""} — the app saves the sound and converts it (takes a little longer)`,
       send: () => { rememberQuality("audio"); sendDownload(location.href, `${stem}.mp3`, "audio/mpeg", null, null, "audio", info.audioDur || null); },
     });
+    api.addChip({
+      label: "⏺ " + dcT("chipRecord", "Record"),
+      tip: dcT("chipRecordTip", "Record this video as it plays: only the player's picture and sound (no mouse, no buttons), saved as MP4"),
+      send: () => { try { api.hide(); } catch (e) {} startRecording(document.querySelector("video.html5-main-video") || biggestVideo()); },
+    });
+    api.addChip({
+      label: "✂ " + dcT("chipPart", "Part"),
+      tip: dcT("chipPartTip", "Download only a part of this video (From–To), cut exactly"),
+      send: () => { try { api.hide(); } catch (e) {} const v = document.querySelector("video.html5-main-video") || biggestVideo();
+        pickPart(v, (part, suffix, secs) => {
+          const q = /^\d{3,4}p/.test(prefQuality || "") ? prefQuality : "";
+          sendDownload(location.href, `${stem}${suffix}.mp4`, "video/mp4", null, null, q + part, secs);
+        }); },
+    });
     api.sync();
     enrichSizes(sizePairs);
     markQueuedRows(sizePairs);
@@ -3756,6 +3770,20 @@
     }
     api.bar = pill;
     api.addChip({ label: "♪ MP3", tip: dcT("chipAudioOnly", "Audio only, as MP3"), send: () => pick("audio") });
+    api.addChip({
+      label: "⏺ " + dcT("chipRecord", "Record"),
+      tip: dcT("chipRecordTip", "Record this video as it plays: only the player's picture and sound (no mouse, no buttons), saved as MP4"),
+      send: () => { try { api.hide(); } catch (e) {} startRecording(video); },
+    });
+    api.addChip({
+      label: "✂ " + dcT("chipPart", "Part"),
+      tip: dcT("chipPartTip", "Download only a part of this video (From–To), cut exactly"),
+      send: () => { try { api.hide(); } catch (e) {} pickPart(video, (part, suffix, secs) => {
+          const title = instaCaption(video) || String(document.title || "video").trim().slice(0, 90) || "video";
+          const st = title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/\.+$/, "").trim() || "video";
+          sendDownload(post, `${st}${suffix}.mp4`, "video/mp4", null, null, part, secs);
+        }); },
+    });
     installDcCloser();
     api.show();
     placePanelBy(pill, api.panel);
@@ -3791,6 +3819,19 @@
       },
     });
     api.panel.id = "dc-fb-panel";
+    api.addChip({
+      label: "⏺ " + dcT("chipRecord", "Record"),
+      tip: dcT("chipRecordTip", "Record this video as it plays: only the player's picture and sound (no mouse, no buttons), saved as MP4"),
+      send: () => { try { api.hide(); } catch (e) {} startRecording((pill.__dcVideo && pill.__dcVideo.isConnected ? pill.__dcVideo : fbActiveVideo())); },
+    });
+    api.addChip({
+      label: "✂ " + dcT("chipPart", "Part"),
+      tip: dcT("chipPartTip", "Download only a part of this video (From–To), cut exactly"),
+      send: () => { try { api.hide(); } catch (e) {} const v = pill.__dcVideo && pill.__dcVideo.isConnected ? pill.__dcVideo : fbActiveVideo();
+        const ids = v ? fbIdsNear(v) : [];
+        const target = ids.length ? fbPermalink(ids[0].id, ids[0].href) : location.href;
+        pickPart(v, (part, suffix, secs) => sendDownload(target, fname.replace(/\.mp4$/i, "") + suffix + ".mp4", "video/mp4", null, null, part, secs)); },
+    });
     pill.__dcFbPanel=api.panel;
     const sizePairs = [];
     (rows || []).forEach((st) => {
@@ -3914,6 +3955,313 @@
     } catch (e) { /* background unreachable */ }
   }
 
+  // ---------- Record this video ----------
+  // Records the player's own picture and sound (HTMLMediaElement
+  // .captureStream), never the screen: the mouse, the site's buttons and
+  // anything over the player stay out of the file. It records only while
+  // the video plays (a pause pauses the recording), stops at the end, and
+  // saves an MP4 where the browser can make one (WebM otherwise); the app
+  // then tidies the file so its length and seeking work in every player.
+  // Protected (DRM) videos cannot be captured, by design: they say so.
+  let dcRec = null;
+  function recMime() {
+    const MR = typeof MediaRecorder !== "undefined" ? MediaRecorder : null;
+    if (!MR || !MR.isTypeSupported) return "";
+    for (const t of ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4;codecs=avc1,mp4a", "video/mp4",
+      "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]) {
+      if (MR.isTypeSupported(t)) return t;
+    }
+    return "";
+  }
+  function recClock(ms) {
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return (h ? h + ":" + String(m).padStart(2, "0") : String(m)) + ":" + String(x).padStart(2, "0");
+  }
+  function recBadge(onStop) {
+    const host = document.createElement("div");
+    host.setAttribute("data-dc-rec", "1");
+    host.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:16px;top:16px;";
+    const root = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = ".b{display:flex;align-items:center;gap:8px;height:30px;padding:0 6px 0 10px;border-radius:15px;"
+      + "background:rgba(17,17,20,.86);color:#fff;font:600 12px/1 system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35)}"
+      + ".d{width:9px;height:9px;border-radius:50%;background:#ef4444;animation:p 1.6s ease-in-out infinite}"
+      + ".d.paused{animation:none;background:#f59e0b}"
+      + "@keyframes p{0%,100%{opacity:1}50%{opacity:.35}}"
+      + "button{all:unset;cursor:pointer;height:22px;padding:0 10px;border-radius:11px;background:#ef4444;color:#fff;font:600 12px/22px system-ui,sans-serif}"
+      + "button:hover{background:#dc2626}";
+    const bar = document.createElement("div"); bar.className = "b";
+    const dot = document.createElement("span"); dot.className = "d";
+    const txt = document.createElement("span"); txt.className = "t"; txt.textContent = "REC 0:00";
+    const stop = document.createElement("button"); stop.type = "button"; stop.textContent = "Stop";
+    bar.append(dot, txt, stop);
+    root.append(style, bar);
+    root.querySelector("button").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); onStop(); }, true);
+    (document.body || document.documentElement).appendChild(host);
+    return {
+      host,
+      set(text, paused) {
+        root.querySelector(".t").textContent = text;
+        root.querySelector(".d").classList.toggle("paused", !!paused);
+      },
+      place(video) {
+        try {
+          const r = video.getBoundingClientRect();
+          const top = Math.max(8, Math.min(window.innerHeight - 40, r.top + 10));
+          const left = Math.max(8, Math.min(window.innerWidth - 160, r.left + 10));
+          host.style.top = top + "px";
+          host.style.left = left + "px";
+        } catch (e) { /* keep where it is */ }
+      },
+    };
+  }
+  // "m:ss" / "h:mm:ss" / seconds -> seconds (NaN when unreadable).
+  function recParse(text) {
+    const t = String(text || "").trim();
+    if (!t) return NaN;
+    const parts = t.split(":").map((x) => Number(x));
+    if (parts.some((x) => !Number.isFinite(x) || x < 0)) return NaN;
+    return parts.reduce((a, x) => a * 60 + x, 0);
+  }
+  // The choice before recording: the whole video, or a part of it.
+  function startRecording(video) {
+    if (!video) { toast("No video to record on this page.", { kind: "info" }); return; }
+    if (dcRec) { toast("A video is already being recorded in this tab.", { kind: "info" }); return; }
+    openRangePanel(video, {
+      title: dcT("recTitle", "Record this video"),
+      note: dcT("recNote", "Only the player's picture and sound are recorded. The video plays while it records; pauses are left out."),
+      whole: dcT("recWhole", "Whole video"),
+      part: dcT("recPart", "Record part"),
+      live: dcT("recStart", "Start recording"),
+      color: "#ef4444",
+      onWhole: () => beginRecording(video, { from: 0, to: 0 }),
+      onLive: () => beginRecording(video, {}),
+      onPart: (a, b, dur) => beginRecording(video, { from: Math.min(a, dur), to: b >= dur - 0.25 ? 0 : b }),
+    });
+  }
+  // The From/To panel (recording and "download a part"): cfg.title, note,
+  // whole/part/live labels, color, onWhole(), onPart(from, to, dur),
+  // onLive() for a stream with no end. cfg.whole = "" hides that button.
+  function openRangePanel(video, cfg) {
+    try { document.querySelectorAll("[data-dc-recpick]").forEach((x) => x.remove()); } catch (e) {}
+    const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+    const host = document.createElement("div");
+    host.setAttribute("data-dc-recpick", "1");
+    host.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:16px;top:16px;";
+    const root = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = ".p{width:292px;padding:12px;border-radius:12px;background:rgba(20,20,24,.96);color:#f4f4f5;"
+      + "font:13px/1.35 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.45)}"
+      + ".h{display:flex;align-items:center;gap:8px;font-weight:700;margin-bottom:4px}.d{width:9px;height:9px;border-radius:50%;background:#ef4444}"
+      + ".n{color:#a1a1aa;font-size:11.5px;margin:0 0 10px}.r{display:flex;align-items:center;gap:6px;margin:6px 0}"
+      + ".l{width:38px;color:#d4d4d8}input{all:unset;box-sizing:border-box;width:88px;height:26px;padding:0 8px;border-radius:7px;"
+      + "background:#2a2a30;color:#fff;font:13px system-ui,sans-serif}input:focus{outline:2px solid #3b82f6}"
+      + "button{all:unset;cursor:pointer;height:26px;padding:0 10px;border-radius:7px;background:#2a2a30;color:#e4e4e7;font:600 12px/26px system-ui,sans-serif}"
+      + "button:hover{background:#3a3a42}.a{display:flex;gap:8px;margin-top:10px}.a button{flex:1;text-align:center}"
+      + ".go{background:" + (cfg.color || "#ef4444") + ";color:#fff}.go:hover{filter:brightness(.9)}.x{margin-left:auto;background:transparent;padding:0 6px}"
+      + ".e{color:#fca5a5;font-size:11.5px;min-height:14px;margin-top:6px}";
+    const panel = document.createElement("div"); panel.className = "p";
+    const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
+    const head = el("div", "h"); head.append(el("span", "d"), el("span", "", cfg.title));
+    const close = el("button", "x", "✕"); close.type = "button"; head.append(close);
+    const note = el("div", "n", cfg.note);
+    const row = (label, value) => {
+      const r = el("div", "r"); const inp = el("input"); inp.value = value; inp.spellcheck = false;
+      const now = el("button", "", dcT("recNow", "Now")); now.type = "button";
+      now.title = dcT("recNowTip", "The video's current position");
+      now.addEventListener("click", () => { inp.value = recClock((video.currentTime || 0) * 1000); });
+      r.append(el("span", "l", label), inp, now);
+      return { r, inp };
+    };
+    const from = row(dcT("recFrom", "From"), recClock(0));
+    const to = row(dcT("recTo", "To"), dur ? recClock(dur * 1000) : "");
+    const err = el("div", "e");
+    const acts = el("div", "a");
+    const whole = el("button", "", cfg.whole || ""); whole.type = "button";
+    if (!cfg.whole) whole.style.display = "none";
+    const part = el("button", "go", cfg.part); part.type = "button";
+    acts.append(whole, part);
+    panel.append(head, note, from.r, to.r, err, acts);
+    if (!dur) {
+      // A live stream has no end: record from now until Stop.
+      from.r.style.display = "none"; to.r.style.display = "none";
+      whole.style.display = "none"; part.textContent = cfg.live || cfg.part;
+    }
+    root.append(style, panel);
+    (document.body || document.documentElement).appendChild(host);
+    try {
+      const r = video.getBoundingClientRect();
+      host.style.top = Math.max(8, Math.min(window.innerHeight - 260, r.top + 12)) + "px";
+      host.style.left = Math.max(8, Math.min(window.innerWidth - 310, r.left + 12)) + "px";
+    } catch (e) { /* top-left */ }
+    // Keys typed here are not the player's shortcuts (space, k, f, arrows).
+    panel.addEventListener("keydown", (e) => e.stopPropagation(), true);
+    const done = () => { try { host.remove(); } catch (e) {} };
+    close.addEventListener("click", done);
+    whole.addEventListener("click", () => { done(); if (cfg.onWhole) cfg.onWhole(); });
+    part.addEventListener("click", () => {
+      if (!dur) { done(); if (cfg.onLive) cfg.onLive(); return; }
+      const a = recParse(from.inp.value), b = to.inp.value.trim() ? recParse(to.inp.value) : dur;
+      if (!Number.isFinite(a) || !Number.isFinite(b)) { err.textContent = dcT("recBadTime", "Write times like 1:30 or 1:02:30."); return; }
+      if (b <= a + 0.5) { err.textContent = dcT("recBadRange", "The end must come after the start."); return; }
+      done();
+      cfg.onPart(a, Math.min(b, dur), dur);
+    });
+  }
+  // "Download a part": pick From-To, and the app downloads only that part
+  // (yt-dlp fetches the section and cuts it exactly; nothing has to play).
+  // send(quality, filenameSuffix, seconds) sends it the way the panel's own
+  // rows do; the part rides on the quality as "@part=from-to".
+  function pickPart(video, send) {
+    if (!video) { toast("No video on this page.", { kind: "info" }); return; }
+    openRangePanel(video, {
+      title: dcT("partTitle", "Download a part"),
+      note: dcT("partNote", "Only this part is downloaded, cut exactly. The video does not need to play."),
+      whole: "",
+      part: dcT("partGo", "Download part"),
+      color: "#3b82f6",
+      onPart: (a, b) => {
+        const tag = (x) => recClock(x * 1000).replace(/:/g, "-");
+        send(`@part=${a.toFixed(3)}-${b.toFixed(3)}`, ` [part ${tag(a)} to ${tag(b)}]`, Math.max(1, Math.round(b - a)));
+      },
+      onLive: () => toast("A live stream has no parts to pick: record it instead.", { kind: "info" }),
+    });
+  }
+  // opts.from: seconds to start at (seek first); opts.to: seconds to stop
+  // at (0 = the end). No opts.from: record from where it is now.
+  function beginRecording(video, opts) {
+    opts = opts || {};
+    if (!video) { toast("No video to record on this page.", { kind: "info" }); return; }
+    if (dcRec) { toast("A video is already being recorded in this tab.", { kind: "info" }); return; }
+    const mime = recMime();
+    if (!mime) { toast("This browser cannot record videos."); return; }
+    let stream = null;
+    try {
+      stream = video.captureStream ? video.captureStream() : (video.mozCaptureStream ? video.mozCaptureStream() : null);
+    } catch (e) {
+      toast("This video can't be recorded: the site protects it.");
+      return;
+    }
+    if (!stream) { toast("This browser cannot record videos."); return; }
+    const h = video.videoHeight || 720;
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, {
+        mimeType: mime,
+        videoBitsPerSecond: h >= 1440 ? 16e6 : h >= 1080 ? 8e6 : h >= 720 ? 5e6 : 2.5e6,
+        audioBitsPerSecond: 160000,
+      });
+    } catch (e) {
+      toast("This video can't be recorded: the site protects it.");
+      return;
+    }
+    const chunks = [];
+    const st = { video, rec, chunks, mime, ms: 0, lastTick: 0, timer: 0, badge: null, stopped: false, listeners: [] };
+    dcRec = st;
+    const on = (ev, fn) => { video.addEventListener(ev, fn); st.listeners.push([ev, fn]); };
+    const playing = () => !video.paused && !video.ended;
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onerror = () => { toast("The recording stopped: the video can't be recorded."); stopRecording(true); };
+    rec.onstop = () => finishRecording(st);
+    st.badge = recBadge(() => stopRecording(false));
+    st.badge.place(video);
+    on("pause", () => { try { if (rec.state === "recording") rec.pause(); } catch (e) {} });
+    on("waiting", () => { try { if (rec.state === "recording") rec.pause(); } catch (e) {} });
+    on("playing", () => { try { if (rec.state === "paused") rec.resume(); } catch (e) {} });
+    on("ended", () => stopRecording(false));
+    st.lastTick = Date.now();
+    const stopAt = Number(opts.to) > 0 ? Number(opts.to) : 0;
+    if (stopAt) {
+      // The chosen end: checked often, so the part ends where asked.
+      st.endTimer = setInterval(() => { if ((video.currentTime || 0) >= stopAt) stopRecording(false); }, 50);
+    }
+    st.timer = setInterval(() => {
+      const now = Date.now();
+      if (rec.state === "recording") st.ms += now - st.lastTick;
+      st.lastTick = now;
+      if (!video.isConnected) { stopRecording(false); return; }
+      st.badge.set((rec.state === "paused" ? "Paused " : "REC ") + recClock(st.ms), rec.state === "paused");
+      st.badge.place(video);
+    }, 500);
+    const go = () => {
+      try {
+        rec.start(1000);
+        if (!playing()) {
+          rec.pause();
+          const p = video.play();
+          if (p && p.catch) p.catch(() => { /* the user presses play */ });
+        }
+      } catch (e) {
+        toast("This video can't be recorded: the site protects it.");
+        stopRecording(true);
+      }
+    };
+    if (Number.isFinite(Number(opts.from)) && opts.from !== undefined && Math.abs((video.currentTime || 0) - Number(opts.from)) > 0.3) {
+      // Jump to the start first (paused, so nothing before it is recorded).
+      try { video.pause(); } catch (e) {}
+      const seeked = () => {
+        video.removeEventListener("seeked", seeked);
+        if (st.stopped) return;
+        // A player that cannot jump there (some refuse to seek) must not
+        // record the wrong part.
+        if (Math.abs((video.currentTime || 0) - Number(opts.from)) > 1.5) {
+          toast("This player can't jump to the start you chose. Move the video there yourself, then record from \"Now\".");
+          stopRecording(true);
+          return;
+        }
+        go();
+      };
+      video.addEventListener("seeked", seeked);
+      try { video.currentTime = Number(opts.from); } catch (e) { video.removeEventListener("seeked", seeked); go(); }
+    } else {
+      go();
+    }
+    toast("Recording this video: only the player's picture and sound. Press Stop when you're done.", { kind: "info", title: "Download Craft · Recording" });
+  }
+  function stopRecording(discard) {
+    const st = dcRec;
+    if (!st || st.stopped) return;
+    st.stopped = true;
+    st.discard = !!discard;
+    clearInterval(st.timer);
+    clearInterval(st.endTimer);
+    // A part that ended at its chosen time: the video stops there too.
+    if (!discard) { try { if (st.video && !st.video.paused && st.endTimer) st.video.pause(); } catch (e) {} }
+    for (const [ev, fn] of st.listeners) { try { st.video.removeEventListener(ev, fn); } catch (e) {} }
+    try { st.badge.host.remove(); } catch (e) {}
+    try { if (st.rec.state !== "inactive") st.rec.stop(); else finishRecording(st); } catch (e) { finishRecording(st); }
+  }
+  function finishRecording(st) {
+    if (st.finished) return;
+    st.finished = true;
+    if (dcRec === st) dcRec = null;
+    try { st.rec.stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
+    if (st.discard || !st.chunks.length) {
+      if (!st.discard) toast("Nothing was recorded: the video did not play.", { kind: "info" });
+      return;
+    }
+    const ext = /mp4/i.test(st.mime) ? "mp4" : "webm";
+    const blob = new Blob(st.chunks, { type: st.mime.split(";")[0] });
+    const base = String(pageTitle() || document.title || "video").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/\s+/g, " ").trim().slice(0, 80) || "video";
+    const name = `${base} [recording].${ext}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.style.display = "none";
+    (document.body || document.documentElement).appendChild(a);
+    // The app tidies the saved file (length, seeking) once the browser has it.
+    try {
+      const p = api.runtime.sendMessage({ type: "dcRecorded", name, size: blob.size });
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) { /* the browser keeps the file as it is */ }
+    a.click();
+    setTimeout(() => { try { a.remove(); URL.revokeObjectURL(url); } catch (e) {} }, 120000);
+    toast(`Saved the recording (${recClock(st.ms)}) as "${name}".`, { kind: "info", title: "Download Craft · Recording" });
+  }
+  // ---------- end Record this video ----------
+
   // Right-click → "Download video with Download Craft": the video under the
   // pointer (sites cover it with their own layers, so the click target is
   // rarely the <video> itself), else the biggest one on screen. It does what
@@ -3973,6 +4321,13 @@
       // The page's own name, for a player in another site's frame.
       if (msg && msg.type === "dcPageTitle" && window.top === window) {
         sendResponse({ title: pageTitle() });
+        return false;
+      }
+      if (msg && msg.type === "ctxRecordVideo" && alive()) {
+        const v = (lastCtxVideo && lastCtxVideo.isConnected) ? lastCtxVideo : biggestVideo();
+        lastCtxVideo = null;
+        if (v) { try { startRecording(v); } catch (e) { /* ignore */ } }
+        sendResponse({ ok: !!v });
         return false;
       }
       if (msg && msg.type === "ctxDownloadVideo" && alive()) {
@@ -4251,7 +4606,10 @@
     mo.observe(document.documentElement, { childList: true, subtree: true });
     __dcObservers.push(mo);
   } catch (e) { /* observer optional */ }
-  __dcTimers.push(setInterval(() => { if (__dcDead || !alive()) return; try { pullNetworkMedia(); } catch (x) { if (ctxInvalidated(x)) markDead(); } }, 8000));
+  // Only the top frame keeps what the sniffer caught (ad and embed frames
+  // asked the background every 8 s and threw the answer away), and not
+  // while the tab is in the background.
+  if (IS_TOP) __dcTimers.push(setInterval(() => { if (__dcDead || !alive() || document.hidden) return; try { pullNetworkMedia(); } catch (x) { if (ctxInvalidated(x)) markDead(); } }, 8000));
   if (!refreshYouTube()) {
     let tries = 0;
     const timer = setInterval(() => {
@@ -4272,6 +4630,9 @@
   try { if (isFacebookPage()) lastReel = fbSyncReel(); } catch (e) { lastReel = ""; }
   const watcher = setInterval(() => {
     if (__dcDead || !alive()) { clearInterval(watcher); return; } // superseded: stop
+    // A tab in the background needs no checking; it catches up within a
+    // second of coming back.
+    if (document.hidden) return;
     // The reels feed also changes the player without changing the URL (the
     // overlay keeps "/"), so the reel key is part of the change test.
     let reel = "";

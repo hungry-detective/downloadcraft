@@ -422,7 +422,7 @@ fn button(ui: &egui::Ui, p: &egui::Painter, r: egui::Rect, id: &str, label: &str
         if hov {
             p.rect_filled(r, 8.0, t.surface_lt);
         }
-        p.rect_stroke(r, 8.0, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+        p.rect_stroke(r, 8.0, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
         p.stext(r.center(), egui::Align2::CENTER_CENTER, label, semi(12.5), t.txt);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
@@ -454,7 +454,7 @@ impl CrashApp {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
         let p = ui.painter().clone();
-        p.rect(full.shrink(0.5), 14.0, t.modal_bg, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+        p.rect(full.shrink(0.5), 14.0, t.modal_bg, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
         let o = full.min;
         let x0 = o.x + 24.0;
         let w = full.width() - 48.0;
@@ -476,7 +476,7 @@ impl CrashApp {
         if cr.clicked() {
             close_soon(&ctx);
         }
-        p.hline(full.x_range(), bar.max.y, egui::Stroke::new(1.0, t.card_bd));
+        p.hline(full.x_range(), bar.max.y, egui::Stroke::new(1.0_f32, t.card_bd));
 
         // ---- headline: a warning mark and what went wrong ----
         let mut y = bar.max.y + 20.0;
@@ -496,13 +496,13 @@ impl CrashApp {
         };
         let galley = p.layout(err, reg(12.0), t.txt, w - 24.0);
         let card = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(w, galley.size().y + 20.0));
-        p.rect(card, 8.0, t.surface_lt, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+        p.rect(card, 8.0, t.surface_lt, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
         p.galley(egui::pos2(card.min.x + 12.0, card.min.y + 10.0), galley, t.txt);
         y = card.max.y + 16.0;
 
         // ---- why reporting matters: three steps, drawn ----
         let banner = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(w, 132.0));
-        p.rect(banner, 10.0, t.primary.gamma_multiply(0.10), egui::Stroke::new(1.0, t.primary.gamma_multiply(0.35)), egui::StrokeKind::Inside);
+        p.rect(banner, 10.0, t.primary.gamma_multiply(0.10), egui::Stroke::new(1.0_f32, t.primary.gamma_multiply(0.35)), egui::StrokeKind::Inside);
         p.stext(egui::pos2(banner.min.x + 16.0, banner.min.y + 14.0), egui::Align2::LEFT_TOP, "Every report makes Download Craft stronger", semi(14.0), t.txt);
         p.stext(
             egui::pos2(banner.min.x + 16.0, banner.min.y + 34.0),
@@ -518,7 +518,7 @@ impl CrashApp {
             let cx = banner.min.x + 16.0 + step_w * (i as f32 + 0.5);
             let c = egui::pos2(cx, sy - 8.0);
             p.circle_filled(c, 17.0, t.primary.gamma_multiply(0.22));
-            let ink = egui::Stroke::new(1.8, t.primary);
+            let ink = egui::Stroke::new(1.8_f32, t.primary);
             match kind {
                 // A paper plane.
                 0 => {
@@ -529,7 +529,7 @@ impl CrashApp {
                 // A magnifying glass.
                 1 => {
                     p.circle_stroke(c + egui::vec2(-2.0, -2.0), 6.0, ink);
-                    p.line_segment([c + egui::vec2(2.5, 2.5), c + egui::vec2(8.0, 8.0)], egui::Stroke::new(2.4, t.primary));
+                    p.line_segment([c + egui::vec2(2.5, 2.5), c + egui::vec2(8.0, 8.0)], egui::Stroke::new(2.4_f32, t.primary));
                 }
                 // A tick: fixed for everyone.
                 _ => dm_icon(&p, egui::Rect::from_center_size(c, egui::vec2(16.0, 16.0)), DmIcon::Check, t.primary, 2.2),
@@ -538,9 +538,9 @@ impl CrashApp {
             if i < 2 {
                 // An arrow to the next step.
                 let ax = cx + step_w / 2.0;
-                p.line_segment([egui::pos2(ax - 8.0, c.y), egui::pos2(ax + 6.0, c.y)], egui::Stroke::new(1.4, t.dim));
-                p.line_segment([egui::pos2(ax + 2.0, c.y - 4.0), egui::pos2(ax + 6.0, c.y)], egui::Stroke::new(1.4, t.dim));
-                p.line_segment([egui::pos2(ax + 2.0, c.y + 4.0), egui::pos2(ax + 6.0, c.y)], egui::Stroke::new(1.4, t.dim));
+                p.line_segment([egui::pos2(ax - 8.0, c.y), egui::pos2(ax + 6.0, c.y)], egui::Stroke::new(1.4_f32, t.dim));
+                p.line_segment([egui::pos2(ax + 2.0, c.y - 4.0), egui::pos2(ax + 6.0, c.y)], egui::Stroke::new(1.4_f32, t.dim));
+                p.line_segment([egui::pos2(ax + 2.0, c.y + 4.0), egui::pos2(ax + 6.0, c.y)], egui::Stroke::new(1.4_f32, t.dim));
             }
         }
         y = banner.max.y + 14.0;
@@ -564,7 +564,7 @@ impl CrashApp {
         // ---- details (the full report) ----
         if self.details {
             let area = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(w, 220.0));
-            p.rect(area, 8.0, t.surface_lt, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+            p.rect(area, 8.0, t.surface_lt, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area.shrink(10.0)));
             egui::ScrollArea::vertical().id_salt("crash-details").show(&mut child, |ui| {
                 ui.add(egui::Label::new(egui::RichText::new(&self.report).font(egui::FontId::monospace(11.0)).color(t.txt)).wrap());

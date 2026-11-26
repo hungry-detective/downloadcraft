@@ -11,27 +11,31 @@
 body { width:430px; margin:0; background:var(--bg); color:var(--text);
   font:13px/1.35 system-ui,-apple-system,"Segoe UI",sans-serif; }
 button, input, select { font:inherit; color:inherit; }
-.top { display:flex; align-items:center; gap:8px; padding:12px 12px 8px; }
-.logo { width:22px; height:22px; border-radius:6px; background:var(--accent); display:grid; place-items:center; flex:none; }
-.logo svg { width:14px; height:14px; }
-.brand { font-weight:700; font-size:14px; flex:1; }
-.conn { font-size:11px; padding:2px 8px; border-radius:99px; background:var(--card); color:var(--dim); white-space:nowrap; }
-.conn.ok { color:var(--ok); } .conn.bad { color:var(--bad); }
-.tabs { display:flex; gap:4px; margin:0 12px 8px; padding:3px; background:var(--card); border-radius:10px; }
-.tab { all:unset; flex:1; text-align:center; padding:6px 0; border-radius:8px; cursor:pointer; color:var(--dim); font-weight:600; }
-.tab.on { background:var(--accent); color:#fff; }
-.tab .n { display:inline-block; min-width:18px; padding:0 5px; margin-left:4px; border-radius:99px; font-size:11px; background:rgba(255,255,255,.22); }
-.tab:not(.on) .n { background:var(--accent-soft); color:var(--accent); }
+.top { display:flex; align-items:center; gap:8px; padding:10px 12px 6px; }
+.logo { width:20px; height:20px; flex:none; display:block; border-radius:5px; }
+.brand { font-weight:650; font-size:13px; letter-spacing:.01em; flex:1; }
+.conn { display:flex; align-items:center; gap:5px; font-size:11px; padding:0; background:none; color:var(--muted); white-space:nowrap; }
+.conn::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--muted); }
+.conn.ok { color:var(--dim); } .conn.ok::before { background:var(--ok); }
+.conn.bad { color:var(--bad); } .conn.bad::before { background:var(--bad); }
+.tabs { display:flex; gap:2px; margin:0 12px 8px; padding:0; background:none; border-bottom:1px solid var(--line); }
+.tab { all:unset; flex:1; text-align:center; padding:7px 0 8px; cursor:pointer; color:var(--muted); font-weight:600; font-size:12.5px;
+  border-bottom:2px solid transparent; margin-bottom:-1px; transition:color .12s, border-color .12s; }
+.tab:hover { color:var(--text); }
+.tab.on { background:none; color:var(--text); border-bottom-color:var(--accent); }
+.tab .n { display:inline-block; min-width:16px; padding:0 5px; margin-left:5px; border-radius:99px; font-size:10.5px; line-height:16px; background:var(--accent-soft); color:var(--accent); }
+.tab:not(.on) .n { background:var(--card); color:var(--dim); }
 .tab .n:empty { display:none; }
 /* toolbar: filter menu, title search, quick actions */
 .tools { display:flex; gap:5px; align-items:center; margin:0 12px 8px; }
-.ib { all:unset; box-sizing:border-box; width:30px; height:30px; flex:none; border-radius:99px; display:grid; place-items:center;
-  background:var(--card); border:1px solid var(--line); cursor:pointer; color:var(--dim); position:relative; }
-.ib:hover { background:var(--hover); color:var(--text); }
-.ib.on { background:#facc15; border-color:#facc15; color:#1e1e1e; }
+.ib { all:unset; box-sizing:border-box; width:28px; height:28px; flex:none; border-radius:8px; display:grid; place-items:center;
+  background:none; border:0; cursor:pointer; color:var(--dim); position:relative; transition:background .12s, color .12s; }
+.ib:hover { background:var(--card); color:var(--text); }
+.ib.on { background:var(--accent-soft); color:var(--accent); }
 .ib.off { color:var(--bad); }
 .ib svg { width:15px; height:15px; }
-.search { flex:1; min-width:0; display:flex; align-items:center; gap:6px; height:30px; padding:0 10px; border-radius:99px; background:var(--card); border:1px solid var(--line); }
+.search { flex:1; min-width:0; display:flex; align-items:center; gap:6px; height:28px; padding:0 10px; border-radius:8px; background:var(--card); border:1px solid transparent; }
+.search:focus-within { border-color:var(--accent); }
 .search svg { width:14px; height:14px; color:var(--muted); flex:none; }
 .search input { all:unset; flex:1; min-width:0; font-size:12px; }
 .view { padding:0 12px 12px; max-height:440px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
@@ -62,16 +66,23 @@ html, body { overflow:hidden; }
 .meta { display:flex; align-items:center; gap:6px; color:var(--dim); font-size:11px; }
 .tag { padding:0 6px; border-radius:5px; background:var(--accent-soft); color:var(--accent); font-weight:700; font-size:10px; letter-spacing:.02em; }
 .queued { color:var(--ok); font-weight:600; }
-.row { display:flex; gap:6px; align-items:center; }
-select { flex:1; min-width:0; height:30px; padding:0 8px; background:var(--bg); border:1px solid var(--line); border-radius:7px; cursor:pointer; }
-.dl { all:unset; box-sizing:border-box; height:30px; padding:0 10px; border-radius:7px; background:var(--accent); color:#fff; font-weight:700; cursor:pointer; display:flex; align-items:center; gap:5px; white-space:nowrap; }
+.row { display:flex; gap:0; align-items:center; }
+/* The quality and Download read as one split button: a flat picker with a
+   thin arrow joined to the button; ⋮ sits apart. */
+select { flex:1; min-width:0; height:30px; padding:0 28px 0 10px; appearance:none; -webkit-appearance:none;
+  background:var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b95a5' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right 9px center / 12px; border:1px solid var(--line); border-right:0;
+  border-radius:8px 0 0 8px; cursor:pointer; font-size:12.5px; transition:border-color .12s; }
+select:hover, select:focus { border-color:var(--accent); outline:none; }
+select:disabled { cursor:default; opacity:.8; }
+.dl { all:unset; box-sizing:border-box; height:30px; padding:0 12px; border-radius:0 8px 8px 0; background:var(--accent); color:#fff; font-weight:600; font-size:12.5px; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap; }
 .dl.br { background:var(--ok); color:#06210f; }
 .dl:hover { filter:brightness(1.08); }
 .dl[disabled] { opacity:.5; cursor:default; }
 .dl svg { width:13px; height:13px; }
-.more { all:unset; box-sizing:border-box; width:26px; height:30px; border-radius:7px; display:grid; place-items:center; cursor:pointer; color:var(--dim); position:relative; }
+.more { all:unset; box-sizing:border-box; width:28px; height:30px; margin-left:4px; border-radius:8px; display:grid; place-items:center; cursor:pointer; color:var(--muted); position:relative; }
 .more:hover { background:var(--hover); }
 .menu { position:absolute; right:0; top:32px; z-index:5; min-width:170px; padding:4px; background:var(--card); border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+.menu.up { top:auto; bottom:32px; }
 .menu button { all:unset; display:block; width:100%; box-sizing:border-box; padding:6px 8px; border-radius:6px; cursor:pointer; color:var(--text); font-size:12px; text-align:left; }
 .menu button:hover { background:var(--hover); }
 .menu button.sel { color:var(--accent); font-weight:700; }
@@ -121,10 +132,56 @@ input[type=text] { flex:1; min-width:0; height:32px; padding:0 9px; background:v
 label.fl { display:block; color:var(--dim); font-size:11px; margin:2px 0 4px; }
 #status { min-height:16px; padding:0 12px 10px; color:var(--dim); font-size:11px; }
 #status.ok { color:var(--ok); } #status.bad { color:var(--bad); }
+
+/* ---- Designs (Settings → Design). The cards are the same; one class on
+   <body> changes how they look. "classic" is the original. ---- */
+.chips { display:none; flex-wrap:wrap; gap:4px; }
+.chip { all:unset; box-sizing:border-box; height:24px; padding:0 8px; border-radius:99px; background:var(--bg); border:1px solid var(--line); color:var(--dim); font-size:11px; font-weight:600; cursor:pointer; white-space:nowrap; }
+.chip:hover { color:var(--text); border-color:var(--accent); }
+.chip.on { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+.chip[disabled] { opacity:.45; cursor:default; }
+/* Compact list: smaller pictures, one-line titles, tighter rows. */
+body.d-compact .card { padding:6px; gap:8px; margin-bottom:6px; }
+body.d-compact .thumb { width:64px; height:38px; }
+body.d-compact .title { -webkit-line-clamp:1; font-size:12px; }
+body.d-compact .body { gap:4px; }
+body.d-compact select, body.d-compact .dl, body.d-compact .more { height:26px; }
+body.d-compact .body > .meta + .meta { display:none; }
+/* Now playing: the first video as a big picture card, the rest compact. */
+body.d-hero .card { padding:6px; gap:8px; margin-bottom:6px; }
+body.d-hero .thumb { width:64px; height:38px; }
+body.d-hero .title { -webkit-line-clamp:1; font-size:12px; }
+body.d-hero .card.first { flex-direction:column; padding:0; gap:0; }
+/* Rounded on top only: the card itself does not clip (its ⋮ menu opens
+   below the card and was cut off). */
+body.d-hero .card.first .thumb { width:100%; height:auto; aspect-ratio:16/9; max-height:150px; border-radius:9px 9px 0 0; }
+body.d-hero .card.first .body { padding:10px; }
+body.d-hero .card.first .title { -webkit-line-clamp:1; font-size:14px; }
+/* Title and its tag (YOUTUBE · size) share one line; the controls below. */
+body.d-hero .card.first .body { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; column-gap:10px; row-gap:8px; }
+/* The tag (YOUTUBE · size) first, then the title, on one line. */
+body.d-hero .card.first .body > .meta { grid-column:1; grid-row:1; justify-self:start; }
+body.d-hero .card.first .body > .title { grid-column:2; grid-row:1; }
+body.d-hero .card.first .body > .chips, body.d-hero .card.first .body > .row,
+body.d-hero .card.first .body > .meta + .meta { grid-column:1 / -1; grid-row:auto; justify-self:stretch; }
+/* Quality chips: tap a quality instead of opening a list. */
+body.d-chips .chips { display:flex; }
+body.d-chips .row select { display:none; }
+body.d-chips .row { justify-content:flex-end; }
+body.d-chips .dl { border-radius:8px; }
+/* The picker */
+.designs { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:8px; }
+.design { all:unset; box-sizing:border-box; padding:7px 4px; border-radius:8px; border:1px solid var(--line); background:var(--bg); text-align:center; font-size:11px; font-weight:600; color:var(--dim); cursor:pointer; }
+.design:hover { color:var(--text); }
+.design.on { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+.design svg { display:block; margin:0 auto 4px; width:34px; height:22px; }
+#designPreview { margin-top:10px; pointer-events:none; }
+#designPreview .card { margin-bottom:6px; }
+#designPreview .card.first .thumb { max-height:110px; }
 </style></head>
 <body>
 <div class="top">
-  <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></div>
+  <img class="logo" src="icons/icon.png" alt="">
   <div class="brand">Download Craft</div>
   <div class="conn" id="conn" data-i18n="popChecking">Checking…</div>
 </div>
@@ -158,6 +215,11 @@ label.fl { display:block; color:var(--dim); font-size:11px; margin:2px 0 4px; }
 </div>
 
 <div class="view" id="viewSettings" hidden>
+  <div class="opt" style="display:block">
+    <div class="txt"><b data-i18n="popDesign">Design</b><span data-i18n="popDesignHint">How the video list looks. It changes at once; Now playing is the default.</span></div>
+    <div class="designs" id="designs"></div>
+    <div id="designPreview"></div>
+  </div>
   <div class="opt"><div class="txt"><b data-i18n="popCapture">Capture browser downloads</b><span data-i18n="popCaptureHint">Hand every download to Download Craft.</span></div>
     <label class="sw"><input type="checkbox" id="auto"><i></i></label></div>
   <div class="opt"><div class="txt"><b data-i18n="popVideoDetection">Video detection</b><span data-i18n="popVideoHint">Find videos on pages and show the download bar on players.</span></div>

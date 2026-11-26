@@ -119,7 +119,7 @@ chrome.runtime.sendMessage({ type: "getState" }, (res) => {
     return;
   }
   hostOk = !!res.hostOk;
-  $("conn").textContent = res.hostOk ? "● App connected" : "● Browser only";
+  $("conn").textContent = res.hostOk ? "App connected" : "Browser only";
   $("conn").className = res.hostOk ? "conn ok" : "conn bad";
   $("conn").title = res.hostOk ? "Download Craft is ready" : (res.hostError || "Download Craft is not running — videos can still be downloaded in the browser.");
   $("auto").checked = !!res.autoCapture;
@@ -150,6 +150,55 @@ try {
   chrome.storage.local.get({ smallButton: false }, (r) => { if (!chrome.runtime.lastError) $("small").checked = !!(r && r.smallButton === true); });
 } catch (e) { /* ignore */ }
 $("small").onchange = () => { try { chrome.storage.local.set({ smallButton: $("small").checked }); } catch (e) {} };
+
+// ---- Design: how the video list looks (one class on <body>), with a live
+// sample card under the choices. Saved as popupDesign. ----
+const DESIGNS = [
+  ["classic", "Classic", '<rect x="1" y="3" width="12" height="8" rx="1.5"/><path d="M16 4h17M16 8h12M1 15h12M16 15h17M16 19h12"/>'],
+  ["compact", "Compact", '<rect x="1" y="2" width="7" height="4" rx="1"/><path d="M11 4h22"/><rect x="1" y="9" width="7" height="4" rx="1"/><path d="M11 11h22"/><rect x="1" y="16" width="7" height="4" rx="1"/><path d="M11 18h22"/>'],
+  ["hero", "Now playing", '<rect x="1" y="1" width="32" height="12" rx="1.5"/><path d="M1 17h32M1 21h20"/>'],
+  ["chips", "Chips", '<rect x="1" y="3" width="10" height="6" rx="3"/><rect x="13" y="3" width="10" height="6" rx="3"/><rect x="25" y="3" width="8" height="6" rx="3"/><path d="M1 15h32M1 19h22"/>'],
+];
+function applyDesign(name) {
+  const known = DESIGNS.some(([k]) => k === name) ? name : "hero";
+  DESIGNS.forEach(([k]) => document.body.classList.toggle("d-" + k, k === known && k !== "classic"));
+  [...document.querySelectorAll(".design")].forEach((b) => b.classList.toggle("on", b.dataset.d === known));
+  return known;
+}
+function designSample() {
+  const box = $("designPreview");
+  if (!box) return;
+  box.textContent = "";
+  const sample = {
+    title: "Sample video: how a card looks in this design", thumb: "", dur: 754, tag: "YOUTUBE", page: "", link: "",
+    options: [
+      { label: "1080p · MP4 + audio", size: 0, h: 1080, msg: null, browser: null },
+      { label: "720p · MP4 + audio", size: 0, h: 720, msg: null, browser: null },
+      { label: "Audio · M4A", size: 0, h: -1, msg: null, browser: null },
+    ],
+  };
+  const a = card({ ...sample }, "app");
+  const b = card({ ...sample, title: "Another video on the page", dur: 95, tag: "STREAM" }, "app");
+  if (a) { a.classList.add("first"); box.appendChild(a); }
+  if (b) box.appendChild(b);
+}
+(() => {
+  const wrap = $("designs");
+  if (!wrap) return;
+  for (const [k, label, icon] of DESIGNS) {
+    const b = document.createElement("button");
+    b.className = "design"; b.dataset.d = k; b.type = "button";
+    b.innerHTML = `<svg viewBox="0 0 34 22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">${icon}</svg>`;
+    b.appendChild(document.createTextNode(label));
+    b.onclick = () => {
+      const d = applyDesign(k);
+      try { chrome.storage.local.set({ popupDesign: d }); } catch (e) { /* this popup only */ }
+    };
+    wrap.appendChild(b);
+  }
+  // "Now playing" unless the user picked another design.
+  chrome.storage.local.get({ popupDesign: "hero" }, (r) => { applyDesign((r && r.popupDesign) || "hero"); designSample(); });
+})();
 $("hideUI").onchange = () => {
   chrome.runtime.sendMessage({ type: "setBrowserUI", value: $("hideUI").checked }, (res) => {
     status(res && res.ok ? "Browser download UI preference saved" : "This browser could not change its download UI.", res && res.ok ? "ok" : "bad");
@@ -295,10 +344,19 @@ function card(item, mode) {
   const row = document.createElement("div");
   row.className = "row";
   const sel = document.createElement("select");
+  // Each choice with its resolution (when the name has none) and size, so
+  // the list says what each file is ("720p · MP4 · 12.3 MB").
+  const optText = (o) => {
+    let t = String(o.label || "");
+    if (o.h > 0 && !/\d{3,4}p/i.test(t)) t = `${o.h}p · ${t}`;
+    if (o.size > 0) t += ` · ${o.approx ? "~" : ""}${fmtSize(o.size)}`;
+    if (mode === "browser" && !viaApp && !o.browser) t += " — needs app";
+    return t;
+  };
   options.forEach((o, i) => {
     const op = document.createElement("option");
     op.value = String(i);
-    op.textContent = mode === "browser" && !viaApp && !o.browser ? `${o.label} — needs app` : o.label;
+    op.textContent = optText(o);
     if (mode === "browser" && !viaApp && !o.browser) op.disabled = true;
     sel.appendChild(op);
   });
@@ -314,6 +372,8 @@ function card(item, mode) {
   if (options.length < 2) sel.disabled = true;
   const showSize = () => {
     const o = options[Number(sel.value)] || {};
+    // Sizes measured after the card was drawn reach the list too.
+    [...sel.options].forEach((op, i) => { const t = options[i] ? optText(options[i]) : op.textContent; if (op.textContent !== t) op.textContent = t; });
     // A stream (HLS/DASH) has no size until it is downloaded: say how long
     // it is instead, as IDM does.
     size.textContent = o.size > 0 ? (o.approx ? "~" : "") + fmtSize(o.size) : (d ? `⏱ ${d}` : "");
@@ -365,9 +425,32 @@ function card(item, mode) {
     if (item.page && mode === "app") add("Send page link instead", () => send({ type: "download", url: item.page, pageUrl: item.page }));
     more.appendChild(m);
     openMenu = m;
+    // No room below inside the scrolling list (the last card, or the big
+    // "Now playing" card): open upward instead of being cut off.
+    try {
+      const box = (more.closest(".view") || document.body).getBoundingClientRect();
+      const r = m.getBoundingClientRect();
+      if (r.bottom > box.bottom - 4 && r.height + 36 < more.getBoundingClientRect().top - box.top) m.classList.add("up");
+    } catch (e) { /* stays below */ }
   };
   row.append(sel, dl, more);
-  body.append(title, meta, row);
+  // "Quality chips" design: the same choices as buttons (the list stays,
+  // hidden, and stays the one source of the choice).
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  const syncChips = () => { [...chips.children].forEach((c) => c.classList.toggle("on", c.dataset.i === sel.value)); };
+  options.forEach((o, i) => {
+    const c = document.createElement("button");
+    c.className = "chip"; c.dataset.i = String(i);
+    c.textContent = String(o.label).replace(/ · (MP4|WEBM|M4A)( \+ audio)?$/i, "");
+    c.title = o.label;
+    if (sel.options[i] && sel.options[i].disabled) c.disabled = true;
+    c.onclick = (e) => { e.stopPropagation(); if (c.disabled) return; sel.value = String(i); sel.dispatchEvent(new Event("change")); };
+    chips.appendChild(c);
+  });
+  sel.addEventListener("change", syncChips);
+  syncChips();
+  body.append(title, meta, chips, row);
   if (viaApp) {
     const hint = document.createElement("div");
     hint.className = "meta";
@@ -1171,3 +1254,15 @@ async function liveTick() {
 }
 updateDlCount();
 showTab(prefs.tab === "downloads" || prefs.tab === "settings" ? prefs.tab : "videos");
+
+// "Now playing" design: the first video in the list gets the big card.
+(() => {
+  const list = document.getElementById("viewVideos");
+  if (!list || typeof MutationObserver === "undefined") return;
+  const mark = () => {
+    const cards = list.querySelectorAll(".card");
+    cards.forEach((c, i) => c.classList.toggle("first", i === 0));
+  };
+  new MutationObserver(mark).observe(list, { childList: true, subtree: true });
+  mark();
+})();

@@ -11,7 +11,7 @@ let lastFallbackError = "";
 // Must match manifest version + content.js EXT_VER. Tabs running an older
 // content script are rejected with a "reload the tab" error instead of
 // failing mysteriously (their extension APIs are gone after a reload).
-const EXT_VER = "0.11.22";
+const EXT_VER = "0.11.31";
 
 // Promise-style calls (the `await api.*` ones below) go through this handle so
 // one file serves both engines: Firefox exposes the promise-returning
@@ -1046,6 +1046,13 @@ chrome.runtime.onInstalled.addListener((details) => {
       contexts: ["page", "frame"],
       documentUrlPatterns: VIDEO_SITE_PATTERNS,
     });
+    // Record the video under the pointer (its own picture and sound only).
+    chrome.contextMenus.create({
+      id: "record-video",
+      title: msg("menuRecordVideo", "Record this video with Download Craft"),
+      contexts: ["video", "page", "frame"],
+      documentUrlPatterns: ["http://*/*", "https://*/*"],
+    });
     // IDM's "Download all links": every link on the page (or in the
     // selection) into the app's pick-and-queue list.
     chrome.contextMenus.create({
@@ -1185,6 +1192,12 @@ async function sendAllLinks(tab, selectionOnly) {
 }
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "record-video") {
+    if (tab && tab.id >= 0) {
+      api.tabs.sendMessage(tab.id, { type: "ctxRecordVideo" }, { frameId: info.frameId || 0 }).catch(() => {});
+    }
+    return;
+  }
   if (info.menuItemId === "download-video" || info.menuItemId === "download-video-page") {
     const fallback = () => {
       const src = /^https?:\/\//i.test(info.srcUrl || "") ? info.srcUrl : null;
@@ -1644,8 +1657,35 @@ try {
   });
 } catch (e) { /* downloads API unavailable */ }
 
+// Recordings ("<title> [recording].mp4") the page saved: once the browser
+// has the whole file, the app rewrites it with its length and seeking
+// index (FFmpeg, no re-encoding). Without the app the file stays as it is.
+const recordings = new Map(); // name -> time asked
+try {
+  chrome.downloads.onChanged.addListener(async (delta) => {
+    if (!recordings.size || !delta.state || delta.state.current !== "complete") return;
+    let d = null;
+    try { [d] = await api.downloads.search({ id: delta.id }); } catch (e) { return; }
+    const path = (d && d.filename) || "";
+    const file = path.split(/[\\/]/).pop() || "";
+    for (const [name, at] of recordings) {
+      if (Date.now() - at > 600000) { recordings.delete(name); continue; }
+      const stem = name.replace(/\.(mp4|webm)$/i, "");
+      if (file === name || (file.startsWith(stem) && /\[recording\]( \(\d+\))?\.(mp4|webm)$/i.test(file))) {
+        recordings.delete(name);
+        try { await hostSend({ type: "remux", filename: path }); } catch (e) { /* app not installed */ }
+        break;
+      }
+    }
+  });
+} catch (e) { /* downloads API unavailable */ }
+
 // ---- popup / content-script messages ----
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.type === "dcRecorded" && typeof msg.name === "string") {
+    recordings.set(msg.name, Date.now());
+    return false;
+  }
   // For an open popup only (it refreshes its list); nothing to do here.
   if (msg && msg.type === "dcPageNews") return false;
   // A player frame asks for the page's name: the top frame answers.

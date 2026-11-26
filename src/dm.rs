@@ -70,7 +70,7 @@ pub fn dm_box(p: &egui::Painter, r: egui::Rect) {
         r,
         DM_RAD,
         pl().dm_line,
-        egui::Stroke::new(1.0, pl().dm_box_bd),
+        egui::Stroke::new(1.0_f32, pl().dm_box_bd),
         egui::StrokeKind::Inside,
     );
 }
@@ -454,7 +454,7 @@ pub fn icon_btn_box(
         rect,
         DM_RAD,
         if hovered { pl().dm_hover2 } else { pl().dm_line },
-        egui::Stroke::new(1.0, pl().dm_box_bd),
+        egui::Stroke::new(1.0_f32, pl().dm_box_bd),
         egui::StrokeKind::Inside,
     );
     dm_icon(
@@ -486,7 +486,7 @@ pub fn btn_flat_c(
     p.rect_stroke(
         r,
         DM_RAD,
-        egui::Stroke::new(1.0, pl().dm_box_bd),
+        egui::Stroke::new(1.0_f32, pl().dm_box_bd),
         egui::StrokeKind::Inside,
     );
     p.stext(
@@ -618,7 +618,7 @@ pub fn dm_check(p: &egui::Painter, r: egui::Rect, checked: bool) {
             r,
             4.0,
             pl().dm_card,
-            egui::Stroke::new(1.0, pl().dm_box_bd),
+            egui::Stroke::new(1.0_f32, pl().dm_box_bd),
             egui::StrokeKind::Inside,
         );
     }

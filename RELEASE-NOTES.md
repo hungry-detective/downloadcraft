@@ -1,4 +1,78 @@
-# Download Craft 0.11.17
+# Download Craft 0.11.18
+
+## What's new
+
+- **Record this video.** The player button's menu (⏺ Record) and the
+  right-click menu record the video as it plays: only the player's own
+  picture and sound, so your mouse, the play button and anything over the
+  player are never in the file. Choose the whole video or From–To; pauses
+  are left out, it stops on its own at the end time, and it saves an MP4
+  that the app then tidies so its length and seeking work everywhere.
+  Protected (DRM) videos cannot be recorded.
+- **Download only a part.** ✂ Part in the player button's menu, or Part
+  from / to in Add download (gear), fetches only that part of the video,
+  starting and ending on the second you chose, with nothing re-encoded.
+  Works for YouTube, other video pages, direct video links and streams.
+- **A new look for the extension.** Settings → Design: Now playing (the
+  default: the video on screen as a big card), Classic, Compact and Chips.
+  A slimmer header with the Download Craft icon, underlined tabs, a quieter
+  toolbar, and the quality and Download joined into one clean button. The
+  quality list now shows each file's size.
+- **Progress windows use half the memory.** All of them now run in one
+  program instead of one program each (about 200 MB per extra window
+  saved, more on Windows 10).
+- **Slow, smooth highlights.** The update arrow and Add URL (a link on the
+  clipboard) glow gently instead of blinking fast; Add URL lights its
+  background instead of its border.
+- **Browser extension 0.11.31**, with the fixes below.
+
+## Fixes
+
+- **Video details from yt-dlp were ignored** for most videos (it marks
+  missing values in a way that was not read), so the checks that the
+  finished file has its sound, and on YouTube its full length, did not run.
+  They do now.
+- **The ⋮ menu was cut off** at the bottom of the list (and inside the big
+  card): it now opens upward when there is no room below.
+- **The extension worked harder than needed on every page**: frames inside
+  pages (ads, embeds) no longer ask for updates, and nothing runs while a
+  tab is in the background.
+- **The progress file** is written much smaller during downloads (it was
+  rewritten in full ten times a second).
+
+## Install
+
+**Windows 10/11.** Run `DownloadCraft-0.11.18-windows-x64-setup.exe` (installs
+for your user, no administrator rights), or extract
+`DownloadCraft-0.11.18-windows-x64-portable.zip` and run `download_craft.exe`.
+Already installed: About → Check again.
+
+**macOS 12+.** Unzip `DownloadCraft-0.11.18-macos-Universal.zip` and move
+`Download Craft.app` into Applications. This build is not notarized: right-click
+→ Open the first time.
+
+**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
+`downloadcraft_0.11.18_amd64.deb`; Fedora: install
+`downloadcraft-0.11.18-1.x86_64.rpm`; other distributions can use
+`DownloadCraft-0.11.18-x86_64.AppImage`.
+
+**Browser extensions.** Firefox: install
+[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
+or load `DownloadCraft-Firefox-0.11.31.xpi` from
+`about:debugging#/runtime/this-firefox`. Edge: install
+[Download Craft from Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/download-craft/bmjjepniglflidaclilkibodbkdogoio).
+Chrome and Brave: extract `DownloadCraft-Chrome-0.11.31.zip` and load the
+extracted folder in `chrome://extensions`. With the app running, the
+extension updates itself.
+
+**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
+-v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.18`, then
+`docker logs` for the address and pairing code. Or run `download_craft --server`.
+
+Settings and queued downloads carry over between versions. Settings → Plugins
+provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
+
+# Earlier: Download Craft 0.11.17
 
 ## What's new
 
@@ -33,38 +107,6 @@
 - **"Unchecked runtime.lastError: Invalid downloadId"** in the extension:
   Show in folder and dragging no longer ask about a download the browser
   has already cleared.
-
-## Install
-
-**Windows 10/11.** Run `DownloadCraft-0.11.17-windows-x64-setup.exe` (installs
-for your user, no administrator rights), or extract
-`DownloadCraft-0.11.17-windows-x64-portable.zip` and run `download_craft.exe`.
-Already installed: About → Check again.
-
-**macOS 12+.** Unzip `DownloadCraft-0.11.17-macos-Universal.zip` and move
-`Download Craft.app` into Applications. This build is not notarized: right-click
-→ Open the first time.
-
-**Linux (x86-64, glibc 2.28+).** Ubuntu/Debian/Mint: install
-`downloadcraft_0.11.17_amd64.deb`; Fedora: install
-`downloadcraft-0.11.17-1.x86_64.rpm`; other distributions can use
-`DownloadCraft-0.11.17-x86_64.AppImage`.
-
-**Browser extensions.** Firefox: install
-[Download Craft from addons.mozilla.org](https://addons.mozilla.org/firefox/addon/download-craft/),
-or load `DownloadCraft-Firefox-0.11.22.xpi` from
-`about:debugging#/runtime/this-firefox`. Edge: install
-[Download Craft from Edge Add-ons](https://microsoftedge.microsoft.com/addons/detail/download-craft/bmjjepniglflidaclilkibodbkdogoio).
-Chrome and Brave: extract `DownloadCraft-Chrome-0.11.22.zip` and load the
-extracted folder in `chrome://extensions`. With the app running, the
-extension updates itself.
-
-**Server (NAS, home server).** `docker run -d -p 8765:8765 -p 6881:6881 -v dc-data:/data
--v /path/to/downloads:/downloads ghcr.io/hungry-detective/downloadcraft:0.11.17`, then
-`docker logs` for the address and pairing code. Or run `download_craft --server`.
-
-Settings and queued downloads carry over between versions. Settings → Plugins
-provides yt-dlp, FFmpeg and the JavaScript runtime when needed.
 
 # Earlier: Download Craft 0.11.16
 

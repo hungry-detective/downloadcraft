@@ -361,6 +361,7 @@ pub fn play_sound_file(event: &str, file: &str) {
     }
 }
 
+#[cfg_attr(windows, allow(unused_variables))]
 pub fn power(action: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let mut command = {
@@ -925,6 +926,36 @@ pub fn guard_borderless() {
     });
 }
 
+/// The progress host's invisible root (1x1, off the screen): out of
+/// Alt+Tab, where it showed as an empty "Download Craft" entry. Marks this
+/// process's visible windows of at most 2x2 pixels as tool windows.
+#[cfg(windows)]
+pub fn hide_tiny_windows() {
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    unsafe extern "system" fn each(hwnd: HWND, _: LPARAM) -> i32 {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid != std::process::id() || IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let mut r: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut r) == 0 || r.right - r.left > 2 || r.bottom - r.top > 2 {
+            return 1;
+        }
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if ex & WS_EX_TOOLWINDOW == 0 {
+            SetWindowLongW(hwnd, GWL_EXSTYLE, ((ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW) as i32);
+        }
+        1
+    }
+    // SAFETY: enumerates and adjusts only this process's own tiny windows.
+    unsafe { EnumWindows(Some(each), 0) };
+}
+
+#[cfg(not(windows))]
+pub fn hide_tiny_windows() {}
+
 /// This process shows a window that keeps Windows' frame (Settings…).
 #[cfg(windows)]
 static FRAMED_PROCESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1028,13 +1059,13 @@ unsafe fn hook_frame_off(hwnd: windows_sys::Win32::Foundation::HWND) {
         return;
     }
     let old = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-    if old == 0 || old == proc as usize as isize {
+    if old == 0 || old == proc as *const () as usize as isize {
         return;
     }
     // Recorded before the swap, so the first message already finds it.
     hooks.push((hwnd as usize, old));
     drop(hooks);
-    if SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as usize as isize) == 0 {
+    if SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as *const () as usize as isize) == 0 {
         if let Ok(mut h) = FRAME_HOOKS.lock() {
             h.retain(|(w, _)| *w != hwnd as usize);
         }

@@ -102,7 +102,7 @@ pub fn extract_file_links(html: &str, base_url: &str, exts: &[String]) -> Vec<Gr
     };
     let mut out: Vec<GrabLink> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut push = |url: String, out: &mut Vec<GrabLink>, seen: &mut std::collections::HashSet<String>| {
+    let push = |url: String, out: &mut Vec<GrabLink>, seen: &mut std::collections::HashSet<String>| {
         if !is_download_url(&url) || !wanted(&url) || !seen.insert(url.clone()) {
             return;
         }

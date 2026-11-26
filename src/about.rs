@@ -297,7 +297,7 @@ fn button(ui: &egui::Ui, p: &egui::Painter, r: egui::Rect, id: &str, label: &str
         if hov {
             p.rect_filled(r, 8.0, t.surface_lt);
         }
-        p.rect_stroke(r, 8.0, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+        p.rect_stroke(r, 8.0, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
         p.stext(r.center(), egui::Align2::CENTER_CENTER, label, semi(12.5), t.txt);
     }
     enabled && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
@@ -318,7 +318,7 @@ impl AboutApp {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
         let p = ui.painter().clone();
-        p.rect(full.shrink(0.5), 14.0, t.modal_bg, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+        p.rect(full.shrink(0.5), 14.0, t.modal_bg, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
         let o = full.min;
         let x0 = o.x + 26.0;
         let w = full.width() - 52.0;
@@ -340,18 +340,18 @@ impl AboutApp {
         if cr.clicked() {
             close_soon(&ctx);
         }
-        p.hline(full.x_range(), bar.max.y, egui::Stroke::new(1.0, t.card_bd));
+        p.hline(full.x_range(), bar.max.y, egui::Stroke::new(1.0_f32, t.card_bd));
 
         // ---- the app ----
         // Compact, so the window stays shorter than the main one.
         let mut y = bar.max.y + 14.0;
         let tile = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(50.0, 50.0));
-        p.rect(tile, 16.0, t.primary.gamma_multiply(0.14), egui::Stroke::new(1.0, t.primary.gamma_multiply(0.45)), egui::StrokeKind::Inside);
+        p.rect(tile, 16.0, t.primary.gamma_multiply(0.14), egui::Stroke::new(1.0_f32, t.primary.gamma_multiply(0.45)), egui::StrokeKind::Inside);
         let c = tile.center();
-        p.circle_stroke(c, 13.5, egui::Stroke::new(2.4, t.primary));
-        p.line_segment([egui::pos2(c.x, c.y - 7.0), egui::pos2(c.x, c.y + 5.0)], egui::Stroke::new(2.4, t.primary));
-        p.line_segment([egui::pos2(c.x - 5.0, c.y), egui::pos2(c.x, c.y + 5.5)], egui::Stroke::new(2.4, t.primary));
-        p.line_segment([egui::pos2(c.x + 5.0, c.y), egui::pos2(c.x, c.y + 5.5)], egui::Stroke::new(2.4, t.primary));
+        p.circle_stroke(c, 13.5, egui::Stroke::new(2.4_f32, t.primary));
+        p.line_segment([egui::pos2(c.x, c.y - 7.0), egui::pos2(c.x, c.y + 5.0)], egui::Stroke::new(2.4_f32, t.primary));
+        p.line_segment([egui::pos2(c.x - 5.0, c.y), egui::pos2(c.x, c.y + 5.5)], egui::Stroke::new(2.4_f32, t.primary));
+        p.line_segment([egui::pos2(c.x + 5.0, c.y), egui::pos2(c.x, c.y + 5.5)], egui::Stroke::new(2.4_f32, t.primary));
         p.stext(egui::pos2(tile.max.x + 16.0, y + 15.0), egui::Align2::LEFT_CENTER, "Download Craft", semi(20.0), t.txt);
         p.stext(
             egui::pos2(tile.max.x + 16.0, y + 37.0),
@@ -377,13 +377,13 @@ impl AboutApp {
             "ready" => (ok.gamma_multiply(0.08), ok.gamma_multiply(0.40)),
             _ => (t.surface, t.card_bd),
         };
-        p.rect(card, 12.0, fill, egui::Stroke::new(1.0, bd), egui::StrokeKind::Inside);
+        p.rect(card, 12.0, fill, egui::Stroke::new(1.0_f32, bd), egui::StrokeKind::Inside);
         let ix = card.min.x + 18.0;
         let ic = egui::pos2(ix + 18.0, card.min.y + 36.0);
         let title_x = ix + 48.0;
         let spin = |p: &egui::Painter, c: egui::Pos2| {
             let a = ui.input(|i| i.time) as f32 * 300.0;
-            dm_arc(p, c, 9.0, a, a + 260.0, egui::Stroke::new(2.4, t.primary));
+            dm_arc(p, c, 9.0, a, a + 260.0, egui::Stroke::new(2.4_f32, t.primary));
         };
         match phase.as_str() {
             "available" => {
@@ -445,7 +445,7 @@ impl AboutApp {
                     } else if k == current {
                         spin(&p, dc);
                     } else {
-                        p.circle_stroke(dc, 6.0, egui::Stroke::new(1.5, t.dim.gamma_multiply(0.6)));
+                        p.circle_stroke(dc, 6.0, egui::Stroke::new(1.5_f32, t.dim.gamma_multiply(0.6)));
                     }
                     p.stext(egui::pos2(ix + 24.0, sy), egui::Align2::LEFT_CENTER, *label, reg(12.5), if *done || k == current { t.txt } else { t.dim });
                 }
@@ -489,7 +489,7 @@ impl AboutApp {
                     p.circle_filled(ic, 18.0, ok.gamma_multiply(0.18));
                     dm_icon(&p, egui::Rect::from_center_size(ic, egui::vec2(16.0, 16.0)), DmIcon::Check, ok, 2.8);
                 } else {
-                    p.circle_stroke(ic, 16.0, egui::Stroke::new(1.6, t.dim));
+                    p.circle_stroke(ic, 16.0, egui::Stroke::new(1.6_f32, t.dim));
                 }
                 let (title, sub) = if failed {
                     ("Update failed".to_string(), self.state.status.clone())
@@ -520,11 +520,11 @@ impl AboutApp {
             self.helpers.clone()
         };
         let box_r = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(w, HELPER_ROW * rows.len() as f32));
-        p.rect_stroke(box_r, 12.0, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+        p.rect_stroke(box_r, 12.0, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
         for (k, (name, detail, ready)) in rows.iter().enumerate() {
             let ry = y + HELPER_ROW / 2.0 + k as f32 * HELPER_ROW;
             if k > 0 {
-                p.hline(box_r.x_range(), y + k as f32 * HELPER_ROW, egui::Stroke::new(1.0, t.card_bd));
+                p.hline(box_r.x_range(), y + k as f32 * HELPER_ROW, egui::Stroke::new(1.0_f32, t.card_bd));
             }
             p.stext(egui::pos2(x0 + 16.0, ry), egui::Align2::LEFT_CENTER, *name, reg(13.0), t.txt);
             let (txt, col) = if *ready { (detail.clone(), ok) } else if detail == "Checking…" { (detail.clone(), t.dim) } else { ("Not installed — Help → Get ready".to_string(), DM_YEL) };
@@ -559,7 +559,7 @@ impl AboutApp {
 
         // ---- footer ----
         let fy = full.max.y - 32.0;
-        p.hline(full.x_range(), fy - 24.0, egui::Stroke::new(1.0, t.card_bd));
+        p.hline(full.x_range(), fy - 24.0, egui::Stroke::new(1.0_f32, t.card_bd));
         p.stext(egui::pos2(x0, fy), egui::Align2::LEFT_CENTER, "Made with Rust + egui", reg(11.5), t.dim);
         if button(ui, &p, egui::Rect::from_min_size(egui::pos2(full.max.x - 26.0 - 96.0, fy - 17.0), egui::vec2(96.0, 34.0)), "close", "Close", true, true) {
             close_soon(&ctx);
@@ -570,7 +570,7 @@ impl AboutApp {
     fn auto_row(&mut self, ui: &egui::Ui, p: &egui::Painter, card: egui::Rect) {
         let t = pl();
         let ix = card.min.x + 18.0;
-        p.hline(egui::Rangef::new(ix, card.max.x - 18.0), card.min.y + 72.0, egui::Stroke::new(1.0, t.card_bd));
+        p.hline(egui::Rangef::new(ix, card.max.x - 18.0), card.min.y + 72.0, egui::Stroke::new(1.0_f32, t.card_bd));
         let row = egui::Rect::from_min_max(egui::pos2(ix, card.min.y + 76.0), egui::pos2(card.max.x - 18.0, card.max.y - 6.0));
         let resp = ui.interact(row, egui::Id::new("about-auto"), egui::Sense::click());
         p.stext(egui::pos2(ix, row.center().y - 8.0), egui::Align2::LEFT_CENTER, "Update automatically", reg(13.0), t.txt);

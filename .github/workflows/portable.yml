@@ -59,6 +59,8 @@ jobs:
           path: dist/*.zip
   windows:
     runs-on: windows-latest
+    env:
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -78,6 +80,24 @@ jobs:
         shell: bash
       - run: cargo test --locked --release --workspace
       - run: cargo build --locked --release
+      # Code signing (optional): with a certificate saved as the secrets
+      # WINDOWS_CERT_PFX_BASE64 (the .pfx file, base64) and
+      # WINDOWS_CERT_PASSWORD, the app and its installer are signed, so
+      # Windows SmartScreen shows the publisher instead of "Unknown
+      # publisher". Without them these steps are skipped.
+      - name: Sign the app
+        if: env.WINDOWS_CERT_PFX_BASE64 != ''
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Where-Object { $_.FullName -like "*\x64\*" } | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /d "Download Craft" target\release\download_craft.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "SIGNTOOL=$($signtool.FullName)" >> $env:GITHUB_ENV
+          "SIGN_PFX=$pfx" >> $env:GITHUB_ENV
       - run: python scripts/package.py --platform windows --arch x64
       - name: Windows installer (Inno Setup)
         shell: pwsh
@@ -88,6 +108,16 @@ jobs:
           Expand-Archive $zip.FullName -DestinationPath stage -Force
           $src = (Get-ChildItem stage -Directory | Select-Object -First 1).FullName
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DSourceDir=$src" "/O$PWD\dist" installer\downloadcraft.iss
+      - name: Sign the installer
+        if: env.SIGNTOOL != ''
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $setup = Get-ChildItem dist -Filter "*-setup.exe" | Select-Object -First 1
+          & $env:SIGNTOOL sign /f $env:SIGN_PFX /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /d "Download Craft" $setup.FullName
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Remove-Item $env:SIGN_PFX -Force
       - uses: actions/upload-artifact@v4
         with:
           name: DownloadCraft-Windows
@@ -241,6 +271,11 @@ jobs:
             -X POST --data-binary @edge.zip "$api/draft/package" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
           wait_op "$api/draft/package/operations/$op"
           echo "Publishing"
+          # Edge's testers need to know the extension works with the desktop
+          # app (a submission without these notes was held back).
+          notes=$(python3 -c 'import json, os
+          v = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          print(json.dumps({"notes": "Download Craft " + v + ". Certification notes: this extension is the companion of the free, open-source Download Craft desktop app (https://github.com/hungry-detective/downloadcraft/releases). It talks to the app through native messaging (com.download_craft). Without the app the popup still lists the videos on a page and offers Download in browser. To test fully: install the Windows app from the link above, open a page with a video (for example a YouTube watch page), click the extension and press Download."}))')
           op=$(curl -sS -D - -o /dev/null "${auth[@]}" -H "Content-Type: application/json" \
-            -X POST -d "{\"notes\":\"Download Craft ${GITHUB_REF_NAME#v}\"}" "$api" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
+            -X POST -d "$notes" "$api" | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}')
           wait_op "$api/operations/$op"

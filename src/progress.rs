@@ -211,7 +211,6 @@ fn send_cmd_kv(action: &str, k: &str, v: serde_json::Value) {
 }
 /// Set once the user has closed the window, so the Close it sends is not
 /// intercepted again.
-static CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn send_cmd(id: u64, action: &str) {
     let Some(p) = cmd_path() else { return };
@@ -482,6 +481,19 @@ fn kv_row(
 
 struct ProgressApp {
     id: u64,
+    /// The user (or a finished download) closed this window: it no longer
+    /// reacts to a second close.
+    closing: bool,
+    /// Gone: the host drops it (and with it the window and its slot).
+    closed: bool,
+    /// This download's window slot (`claim_window("progress_<id>")`): a
+    /// second request for the same download is ignored while it is open.
+    _slot: Option<std::fs::File>,
+    /// Extra windows open a little lower-right of the first, not on top.
+    cascade: f32,
+    cascaded: bool,
+    /// Frames drawn: shown once the first ones are drawn (no white flash).
+    frames: u32,
     /// Speed samples for the Speed tab graph (newest last).
     speed_hist: std::collections::VecDeque<f64>,
     /// Tail of this download's log (Log tab), re-read once a second.
@@ -580,15 +592,11 @@ impl ProgressApp {
         self.handoff = finished && (self.saw_live || crate::model::ui_pref_bool("show_complete", true));
     }
 
-    /// Close bulletproofing: viewport Close is async and has been observed
-    /// to no-op; back it with a delayed process exit (harmless if the
-    /// window already closed).
-    fn close_soon(ctx: &egui::Context) {
+    /// Close this window: the host stops showing it (which is what closes
+    /// it); the process ends with its last window (see `Host`).
+    fn close_soon(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(400));
-            std::process::exit(0);
-        });
+        self.closed = true;
     }
 
     /// The user closed the window (its X, Close, Alt+F4): the view goes away,
@@ -596,11 +604,12 @@ impl ProgressApp {
     /// the download is doing — Pause and Cancel are the explicit actions for
     /// that. The automatic close after completion goes through `close_soon`
     /// directly.
-    fn close_by_user(&self, ctx: &egui::Context) {
-        if CLOSING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    fn close_by_user(&mut self, ctx: &egui::Context) {
+        if self.closing {
             return;
         }
-        Self::close_soon(ctx);
+        self.closing = true;
+        self.close_soon(ctx);
     }
 
     /// Progress as a 0..1 fraction: bytes of the size, or fragments of a
@@ -626,6 +635,11 @@ impl ProgressApp {
 }
 
 /// Entry point for `--progress <id>`.
+///
+/// Every progress window lives in one process (the "host"): each process
+/// costs about 200 MB for its graphics driver, so five downloads used to
+/// cost a gigabyte. The first `--progress` becomes the host; later ones hand
+/// their download to it (a file in `<config>/progress-open/`) and exit.
 pub fn run() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let id: u64 = args
@@ -637,16 +651,98 @@ pub fn run() -> eframe::Result<()> {
             eprintln!("--progress needs <id>");
             std::process::exit(2);
         });
+    let mut host_slot = crate::model::claim_window("progress_host");
+    if host_slot.is_none() {
+        if hand_to_host(id) {
+            return Ok(());
+        }
+        // The host did not take it (it was just closing): become the host.
+        host_slot = crate::model::claim_window("progress_host");
+    }
+    let mut host = Host { windows: Vec::new(), root_frames: 0, _slot: host_slot, last_scan: Instant::now(), ended: false };
+    host.open(id);
+    if host.windows.is_empty() {
+        return Ok(());
+    }
+    // The root window is never seen: 1x1, clear, with no taskbar button and
+    // far off the screen. Every progress window is a viewport of its own,
+    // so any of them can close while the others stay. (A hidden root gets
+    // no frames, and the progress windows are drawn from its frame.)
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id(crate::platform::app_id())
+        .with_title("Download Craft")
+        .with_inner_size([1.0, 1.0])
+        .with_position([-32000.0, -32000.0])
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_taskbar(false)
+        .with_mouse_passthrough(true);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+    eframe::run_native(
+        "Download Craft",
+        crate::platform::native_options(viewport),
+        Box::new(|cc| {
+            crate::platform::guard_gpu(cc);
+            // `true`: this whole window is the concept, so Segoe UI also
+            // becomes its default proportional face.
+            crate::fonts::install(cc, true);
+            // Standalone process: follow the theme saved in `ui.json`.
+            crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());
+            Ok(Box::new(host))
+        }),
+    )
+}
+
+/// Where other processes ask the host for a window: one empty file per
+/// download id.
+fn open_requests_dir() -> Option<std::path::PathBuf> {
+    config_dir().map(|p| p.join("progress-open"))
+}
+
+/// Ask the running host to open `id`'s window. True when it did (or the
+/// window is already open); false when no host picked it up in time.
+fn hand_to_host(id: u64) -> bool {
+    // Already open in the host: its slot is held.
+    match crate::model::claim_window(&format!("progress_{id}")) {
+        None => return true,
+        Some(slot) => drop(slot),
+    }
+    let Some(dir) = open_requests_dir() else { return false };
+    let _ = std::fs::create_dir_all(&dir);
+    let req = dir.join(id.to_string());
+    if std::fs::write(&req, b"").is_err() {
+        return false;
+    }
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        if !req.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = std::fs::remove_file(&req);
+    false
+}
+
+/// A new window for download `id`, or `None` when its window is already
+/// open somewhere.
+fn new_window(id: u64, cascade: f32) -> Option<ProgressApp> {
     // One window per download: a second start (Resume, Retry, a Redownload
     // while one is open) must not stack duplicates, while a window the user
     // closed must be replaceable straight away. Windows drops the claim the
-    // moment this process ends, so nothing has to clean up after a crash.
-    let Some(_slot) = crate::model::claim_window(&format!("progress_{id}")) else {
-        return Ok(());
-    };
+    // moment the window's slot is released or the process ends.
+    let slot = crate::model::claim_window(&format!("progress_{id}"))?;
     // Seed controls from shared settings (global limit + finish action).
     let (limit_input, finish_sel) = read_ui_prefs();
     let mut app = ProgressApp {
+        closing: false,
+        closed: false,
+        _slot: Some(slot),
+        cascade,
+        cascaded: false,
+        frames: 0,
         speed_hist: Default::default(),
         log_lines: Vec::new(),
         log_at: Instant::now().checked_sub(Duration::from_secs(5)).unwrap_or_else(Instant::now),
@@ -672,39 +768,46 @@ pub fn run() -> eframe::Result<()> {
         theme_check: Instant::now(),
     };
     app.refresh();
-    let title = app
-        .item
-        .as_ref()
-        .map(|d| d.filename.clone())
-        .unwrap_or_else(|| format!("Download #{id}"));
-
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_app_id(crate::platform::app_id())
-        .with_title(title)
-        .with_inner_size([PG_W, PG_MIN_H - os_hdr()])
-        .with_resizable(false)
-        .with_decorations(crate::platform::system_title_bar())
-        .with_transparent(!crate::platform::system_title_bar())
-        .with_always_on_top();
-    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
-        viewport = viewport.with_icon(std::sync::Arc::new(icon));
-    }
-    eframe::run_native(
-        "Download Craft",
-        crate::platform::native_options(viewport),
-        Box::new(|cc| {
-            crate::platform::guard_gpu(cc);
-            // `true`: this whole window is the concept, so Segoe UI also
-            // becomes its default proportional face.
-            crate::fonts::install(cc, true);
-            // Standalone process: follow the theme saved in `ui.json`.
-            crate::app::apply_theme(&cc.egui_ctx, &crate::app::stored_theme());
-            Ok(Box::new(app))
-        }),
-    )
+    Some(app)
 }
 
-impl eframe::App for ProgressApp {
+/// The process that shows every progress window.
+struct Host {
+    windows: Vec<ProgressApp>,
+    /// Frames the root has drawn (it is hidden again on the first ones:
+    /// eframe shows a window after its first frame).
+    root_frames: u32,
+    _slot: Option<std::fs::File>,
+    last_scan: Instant,
+    ended: bool,
+}
+
+impl Host {
+    fn open(&mut self, id: u64) {
+        if self.windows.iter().any(|w| w.id == id && !w.closed) {
+            return;
+        }
+        let cascade = 28.0 * (self.windows.len() % 8) as f32;
+        if let Some(w) = new_window(id, cascade) {
+            self.windows.push(w);
+        }
+    }
+
+    /// Windows other processes asked for.
+    fn take_requests(&mut self) {
+        let Some(dir) = open_requests_dir() else { return };
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let _ = std::fs::remove_file(e.path());
+            if let Ok(id) = name.parse::<u64>() {
+                self.open(id);
+            }
+        }
+    }
+}
+
+impl eframe::App for Host {
     /// Transparent and frameless: the concept's rounded card is painted by
     /// hand, so the surface behind it must stay clear.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -712,6 +815,78 @@ impl eframe::App for ProgressApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.ended {
+            return;
+        }
+        // The invisible root: out of Alt+Tab (it is "shown", off the screen).
+        if self.root_frames < 20 {
+            self.root_frames += 1;
+            crate::platform::hide_tiny_windows();
+        }
+        if self.last_scan.elapsed() >= Duration::from_millis(200) {
+            self.last_scan = Instant::now();
+            self.take_requests();
+        }
+        let system_bar = crate::platform::system_title_bar();
+        for w in self.windows.iter_mut().filter(|w| !w.closed) {
+            let title = w.item.as_ref().map(|d| d.filename.clone()).unwrap_or_else(|| format!("Download #{}", w.id));
+            let mut vb = egui::ViewportBuilder::default()
+                .with_app_id(crate::platform::app_id())
+                .with_title(title)
+                .with_inner_size([PG_W, PG_MIN_H - os_hdr()])
+                .with_resizable(false)
+                .with_decorations(system_bar)
+                .with_transparent(!system_bar)
+                .with_always_on_top();
+            // Created hidden and shown once its first frames are drawn (no
+            // white flash). Only the first builder says "hidden": a
+            // visibility in every frame's builder made egui re-apply it,
+            // and another window blinked when one closed.
+            if w.frames == 0 {
+                vb = vb.with_visible(false);
+            }
+            if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+                vb = vb.with_icon(std::sync::Arc::new(icon));
+            }
+            if w.frames < 3 {
+                w.frames += 1;
+                ctx.request_repaint();
+            }
+            let vid = egui::ViewportId::from_hash_of(("progress_window", w.id));
+            let show_now = w.frames == 2;
+            ctx.show_viewport_immediate(vid, vb, |wctx, _| {
+                if show_now {
+                    wctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                }
+                w.frame_ui(wctx)
+            });
+        }
+        // Closed windows go (their slots with them).
+        self.windows.retain(|w| !w.closed);
+        if self.windows.is_empty() {
+            // The last window closed: the process ends. A request that came
+            // in meanwhile is taken first.
+            self.take_requests();
+            if self.windows.is_empty() {
+                self.ended = true;
+                self._slot = None;
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                // Viewport Close is async and has been seen to no-op: back
+                // it with a process exit (harmless if already closed).
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(400));
+                    std::process::exit(0);
+                });
+                return;
+            }
+        }
+        ctx.request_repaint_after(Duration::from_millis(200));
+    }
+}
+
+impl ProgressApp {
+    /// One frame of this download's window (`ctx` is its own viewport).
+    fn frame_ui(&mut self, ctx: &egui::Context) {
         if let Some(text) = crate::i18n::take_font_text() {
             crate::fonts::ensure_text(ctx, &text);
         }
@@ -721,7 +896,7 @@ impl eframe::App for ProgressApp {
         // Alt+F4 / the taskbar's Close: same as the window's own X.
         if ctx.input(|i| i.viewport().close_requested())
             && !self.handoff
-            && !CLOSING.load(std::sync::atomic::Ordering::SeqCst)
+            && !self.closing
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.close_by_user(ctx);
@@ -744,7 +919,7 @@ impl eframe::App for ProgressApp {
             self.refresh();
         }
         if self.handoff {
-            Self::close_soon(ctx);
+            self.close_soon(ctx);
         }
         // The app republishes progress ~4 times a second: no point drawing
         // more often than that.
@@ -788,6 +963,12 @@ impl eframe::App for ProgressApp {
         // window where it is (it used to snap back to the middle, issue #27),
         // only nudged up to stay above the taskbar.
         let placed = self.spot.tick(ctx, egui::vec2(PG_W, want_h));
+        if placed && !self.cascaded {
+            self.cascaded = true;
+            if self.cascade > 0.0 {
+                self.spot.nudge(ctx, egui::vec2(self.cascade, self.cascade));
+            }
+        }
         if placed && self.resized {
             self.resized = false;
             if self.spot.has_spot() {
@@ -795,6 +976,9 @@ impl eframe::App for ProgressApp {
             } else if !self.spot.center(ctx, egui::vec2(PG_W, want_h)) {
                 // Never moved by the user: stays in the middle as it grows.
                 self.resized = true;
+            } else if self.cascade > 0.0 {
+                // A second window: beside the first, not on top of it.
+                self.spot.nudge(ctx, egui::vec2(self.cascade, self.cascade));
             }
         }
 
@@ -820,7 +1004,7 @@ impl ProgressApp {
             ui.max_rect(),
             8.0,
             pl().dm_card,
-            egui::Stroke::new(1.0, pl().dm_line),
+            egui::Stroke::new(1.0_f32, pl().dm_line),
             egui::StrokeKind::Inside,
         );
         dm_mark(&p, at(o, MARK_X, MARK_Y, MARK_S, MARK_S));
@@ -987,7 +1171,7 @@ impl ProgressApp {
             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         if b.clicked() {
-            Self::close_soon(&ctx);
+            self.close_soon(&ctx);
         }
     }
 
@@ -1253,11 +1437,11 @@ impl ProgressApp {
         // ---- speed over the last half minute ----
         let g = at(o, PAD_X, 192.0, PROG_W, 66.0);
         p.rect_filled(g, 6.0, pl().dm_trough);
-        p.rect_stroke(g, 6.0, egui::Stroke::new(1.0, pl().dm_line), egui::StrokeKind::Inside);
+        p.rect_stroke(g, 6.0, egui::Stroke::new(1.0_f32, pl().dm_line), egui::StrokeKind::Inside);
         let plot = egui::Rect::from_min_max(egui::pos2(g.left() + 8.0, g.top() + 18.0), egui::pos2(g.right() - 8.0, g.bottom() - 6.0));
         for k in 1..=2 {
             let y = plot.top() + plot.height() * k as f32 / 3.0;
-            p.hline(plot.x_range(), y, egui::Stroke::new(1.0, pl().dm_line.gamma_multiply(0.7)));
+            p.hline(plot.x_range(), y, egui::Stroke::new(1.0_f32, pl().dm_line.gamma_multiply(0.7)));
         }
         p.stext(egui::pos2(g.left() + 8.0, g.top() + 9.0), egui::Align2::LEFT_CENTER, "Speed · last 30 s", reg(9.5), pl().dm_dim);
         let peak = self.speed_hist.iter().cloned().fold(0.0_f64, f64::max);
@@ -1289,10 +1473,10 @@ impl ProgressApp {
                 mesh.add_triangle(base, base + 2, base + 3);
             }
             p.add(egui::Shape::mesh(mesh));
-            p.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.8, DM_ACC())));
+            p.add(egui::Shape::line(pts.clone(), egui::Stroke::new(1.8_f32, DM_ACC())));
             if let Some(last) = pts.last() {
                 p.circle_filled(*last, 3.5, DM_ACC());
-                p.circle_stroke(*last, 5.5, egui::Stroke::new(1.0, DM_ACC().gamma_multiply(0.4)));
+                p.circle_stroke(*last, 5.5, egui::Stroke::new(1.0_f32, DM_ACC().gamma_multiply(0.4)));
             }
             let now = self.speed_hist.back().copied().unwrap_or(0.0);
             p.stext(
@@ -1488,7 +1672,7 @@ impl ProgressApp {
                 if i > 0 {
                     p.line_segment(
                         [egui::pos2(l, track.min.y + 1.0), egui::pos2(l, track.max.y - 1.0)],
-                        egui::Stroke::new(1.0, pl().dm_trough),
+                        egui::Stroke::new(1.0_f32, pl().dm_trough),
                     );
                 }
                 let w = (r - l) * f;
@@ -1630,7 +1814,7 @@ impl ProgressApp {
                 egui::pos2(o.x + 1.0, o.y + PART_Y + 0.5),
                 egui::pos2(o.x + PG_W - 1.0, o.y + PART_Y + 0.5),
             ],
-            egui::Stroke::new(1.0, pl().dm_line),
+            egui::Stroke::new(1.0_f32, pl().dm_line),
         );
         let chev = egui::Rect::from_center_size(
             egui::pos2(o.x + 25.0, o.y + HEAD_Y + HEAD_H / 2.0),
@@ -1751,8 +1935,8 @@ impl ProgressApp {
                     "cancel" => send_cmd(self.id, "cancel"),
                     "stop" => {
                         send_cmd(self.id, "cancel");
-                        CLOSING.store(true, std::sync::atomic::Ordering::SeqCst);
-                        Self::close_soon(&ctx);
+                        self.closing = true;
+                        self.close_soon(&ctx);
                     }
                     "close" => self.close_by_user(&ctx),
                     "file" => open_path(&item.dest_path()),
@@ -1874,7 +2058,7 @@ impl ProgressApp {
                 egui::pos2(o.x + PAD_X, o.y + TBL_HDR_Y + TBL_HDR_H - 0.5),
                 egui::pos2(o.x + IN_R, o.y + TBL_HDR_Y + TBL_HDR_H - 0.5),
             ],
-            egui::Stroke::new(1.0, pl().dm_line),
+            egui::Stroke::new(1.0_f32, pl().dm_line),
         );
         let rows_top = o.y + TBL_Y;
         let rows_bottom = (ui.max_rect().max.y - 1.0 - FOOT_PAD).max(rows_top);
@@ -1953,7 +2137,7 @@ impl ProgressApp {
                         egui::pos2(o.x + 1.0, y + TBL_STEP - 0.5),
                         egui::pos2(o.x + PG_W - 1.0, y + TBL_STEP - 0.5),
                     ],
-                    egui::Stroke::new(1.0, pl().dm_trough),
+                    egui::Stroke::new(1.0_f32, pl().dm_trough),
                 );
             }
         }
@@ -1991,7 +2175,7 @@ impl ProgressApp {
             }
             // A hairline between files.
             if i > 0 {
-                p.line_segment([seg.left_top(), seg.left_bottom()], egui::Stroke::new(1.0, pl().dm_card));
+                p.line_segment([seg.left_top(), seg.left_bottom()], egui::Stroke::new(1.0_f32, pl().dm_card));
             }
             x += w;
         }
@@ -2015,7 +2199,7 @@ impl ProgressApp {
                 egui::pos2(o.x + PAD_X, o.y + TBL_HDR_Y + TBL_HDR_H - 0.5),
                 egui::pos2(o.x + IN_R, o.y + TBL_HDR_Y + TBL_HDR_H - 0.5),
             ],
-            egui::Stroke::new(1.0, pl().dm_line),
+            egui::Stroke::new(1.0_f32, pl().dm_line),
         );
         let rows_top = o.y + TBL_Y;
         let rows_bottom = (ui.max_rect().max.y - 1.0 - FOOT_PAD).max(rows_top);
@@ -2081,7 +2265,7 @@ impl ProgressApp {
             if i + 1 < n {
                 pc.line_segment(
                     [egui::pos2(o.x + 1.0, y + TBL_STEP - 0.5), egui::pos2(o.x + PG_W - 1.0, y + TBL_STEP - 0.5)],
-                    egui::Stroke::new(1.0, pl().dm_trough),
+                    egui::Stroke::new(1.0_f32, pl().dm_trough),
                 );
             }
         }
@@ -2124,7 +2308,7 @@ impl ProgressApp {
                 egui::pos2(o.x + PAD_X, o.y + TBL_HDR_Y + TBL_HDR_H - 0.5),
                 egui::pos2(o.x + IN_R, o.y + TBL_HDR_Y + TBL_HDR_H - 0.5),
             ],
-            egui::Stroke::new(1.0, pl().dm_line),
+            egui::Stroke::new(1.0_f32, pl().dm_line),
         );
         let y = o.y + TBL_Y;
         let (status, col) = if i >= n {

@@ -95,20 +95,6 @@ fn loose_hidden() -> bool {
     CARD_ONLY.with(|c| c.borrow().is_some()) && IN_CARD.with(|c| c.get()) == 0
 }
 
-/// Classic's tabs, in a classic download manager's order: (label, pane).
-/// Its "File types" is where capture is set (which types the browser hands
-/// over); "Save to" is the categories and their folders.
-const CLASSIC_TABS: &[(&str, usize)] = &[
-    ("General", 0),
-    ("File types", 3),
-    ("Save to", 5),
-    ("Downloads", 1),
-    ("Proxy / Socks", 4),
-    ("Helpers", PANE_YTDLP),
-    ("Sounds", 6),
-    ("Updates", 7),
-];
-
 /// Rail index of the Plugins pane (the helper's status is probed when it is
 /// first shown, not at startup: asking a frozen build for its version costs
 /// about a second).
@@ -1020,7 +1006,7 @@ fn own_title_bar(ctx: &egui::Context) {
         .show(ctx, |ui| {
             let bar = ui.max_rect();
             let p = ui.painter().clone();
-            p.hline(bar.x_range(), bar.max.y - 0.5, Stroke::new(1.0, t.border));
+            p.hline(bar.x_range(), bar.max.y - 0.5, Stroke::new(1.0_f32, t.border));
             crate::dm::dm_mark(&p, Rect::from_center_size(egui::pos2(bar.min.x + 20.0, bar.center().y), egui::vec2(16.0, 16.0)));
             p.stext(egui::pos2(bar.min.x + 36.0, bar.center().y), Align2::LEFT_CENTER, crate::i18n::t("Download Craft Settings"), semi(12.5), t.text);
             let btn_w = 40.0;
@@ -1284,8 +1270,8 @@ impl eframe::App for SettingsApp {
 
                 let p = ui.painter();
                 p.rect_filled(full, 0.0, t.bg);
-                p.vline(rail.right(), rail.y_range(), Stroke::new(1.0, t.border));
-                p.hline(full.x_range(), foot.top(), Stroke::new(1.0, t.border));
+                p.vline(rail.right(), rail.y_range(), Stroke::new(1.0_f32, t.border));
+                p.hline(full.x_range(), foot.top(), Stroke::new(1.0_f32, t.border));
 
                 // ---- rail ----
                 let mut rail_ui = ui.new_child(
@@ -1476,9 +1462,9 @@ impl SettingsApp {
                     x += w + 2.0;
                 }
                 let tabs_bottom = y + tab_h;
-                p.hline(full.x_range(), tabs_bottom + 0.5, Stroke::new(1.0, t.border));
+                p.hline(full.x_range(), tabs_bottom + 0.5, Stroke::new(1.0_f32, t.border));
                 let foot = Rect::from_min_max(egui::pos2(full.left(), full.bottom() - foot_h), full.max);
-                p.hline(full.x_range(), foot.top() + 0.5, Stroke::new(1.0, t.border));
+                p.hline(full.x_range(), foot.top() + 0.5, Stroke::new(1.0_f32, t.border));
 
                 // ---- the page ----
                 let inner = Rect::from_min_max(egui::pos2(full.left() + 14.0, tabs_bottom + 8.0), egui::pos2(full.right() - 10.0, foot.top() - 2.0));
@@ -2384,9 +2370,6 @@ const IDM_PAGES: &[(&str, &str, &str)] = &[
     ("Dial Up / VPN", "\u{e62f}", "Dial up / VPN settings"),
     ("Sounds", "\u{e050}", "Sound settings"),
 ];
-/// The front and back rows of tabs (indexes into `IDM_PAGES`).
-const IDM_FRONT: &[usize] = &[0, 1, 2, 3, 4];
-const IDM_BACK: &[usize] = &[5, 6, 7, 8];
 /// Pages opened from buttons on the others: (subject, picture).
 const IDM_SUBS: &[(&str, &str)] = &[
     ("Look, language and interface size", "\u{e3b7}"),
@@ -2558,8 +2541,8 @@ fn classic_widgets(ui: &mut Ui) {
         w.weak_bg_fill = c_field();
         w.bg_fill = c_field();
         w.corner_radius = egui::CornerRadius::same(4);
-        w.bg_stroke = Stroke::new(1.0, bd);
-        w.fg_stroke = Stroke::new(1.0, t.text);
+        w.bg_stroke = Stroke::new(1.0_f32, bd);
+        w.fg_stroke = Stroke::new(1.0_f32, t.text);
         w.expansion = 0.0;
     }
 }
@@ -2588,7 +2571,7 @@ fn c_btn_face(ui: &mut Ui, label: &str, enabled: bool, min_w: f32, main: bool) -
     } else {
         (if hov { blend(t.btn, t.accent, 0.10) } else { t.btn }, if hov { t.accent } else { t.btn_bd }, t.text)
     };
-    p.rect(rect, 5.0, fill, Stroke::new(1.0, edge), StrokeKind::Inside);
+    p.rect(rect, 5.0, fill, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
     if !enabled {
         p.rect_filled(rect, 5.0, c_field().gamma_multiply(0.45));
     }
@@ -2613,7 +2596,7 @@ fn c_row_btn(ui: &mut Ui, label: &str, button: &str, enabled: bool) -> bool {
     let first = ui.min_rect().height() < 2.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
     if !first {
-        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, t.border));
+        ui.painter().hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0_f32, t.border));
     }
     crate::shaped::paint(ui.painter(), egui::pos2(rect.left(), rect.center().y - tsz.y / 2.0), label, &font, col, Some(room));
     let br = Rect::from_min_size(egui::pos2(rect.right() - C_ROW_BTN_W, rect.center().y - C_H / 2.0), Vec2::new(C_ROW_BTN_W, C_H));
@@ -2637,7 +2620,7 @@ fn c_check_w(ui: &mut Ui, on: &mut bool, label: &str, enabled: bool, w: f32) -> 
     let p = ui.painter();
     let bx = Rect::from_min_size(egui::pos2(rect.min.x + 1.0, rect.min.y + 2.0 + (tsz.y.min(17.0) - 13.0).max(0.0) / 2.0), Vec2::splat(13.0));
     let fill = if !enabled { t.bg } else if *on { t.accent } else { c_field() };
-    p.rect(bx, 2.0, fill, Stroke::new(1.0, if *on && enabled { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+    p.rect(bx, 2.0, fill, Stroke::new(1.0_f32, if *on && enabled { t.accent } else { t.btn_bd }), StrokeKind::Inside);
     if *on {
         crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, if enabled { Color32::WHITE } else { t.muted }, 1.8);
     }
@@ -2658,7 +2641,7 @@ fn c_radio(ui: &mut Ui, on: bool, label: &str) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), tsz.y.max(16.0) + 4.0), Sense::click());
     let p = ui.painter();
     let c = egui::pos2(rect.min.x + 7.5, rect.center().y);
-    p.circle(c, 6.5, c_field(), Stroke::new(1.0, if on { t.accent } else { t.btn_bd }));
+    p.circle(c, 6.5, c_field(), Stroke::new(1.0_f32, if on { t.accent } else { t.btn_bd }));
     if on {
         p.circle_filled(c, 3.5, t.accent);
     }
@@ -2670,7 +2653,7 @@ fn c_radio(ui: &mut Ui, on: bool, label: &str) -> bool {
 fn c_edit(ui: &mut Ui, id: &str, buf: &mut String, w: f32, enabled: bool, password: bool) -> Response {
     let t = tok();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w.max(20.0), C_H), Sense::hover());
-    ui.painter().rect(rect, 4.0, if enabled { c_field() } else { t.bg }, Stroke::new(1.0, t.border), StrokeKind::Inside);
+    ui.painter().rect(rect, 4.0, if enabled { c_field() } else { t.bg }, Stroke::new(1.0_f32, t.border), StrokeKind::Inside);
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("c_edit", id)).max_rect(rect.shrink2(Vec2::new(5.0, 3.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     child.add_enabled(
         enabled,
@@ -2684,7 +2667,7 @@ fn c_multi(ui: &mut Ui, id: &str, buf: &mut String, rows: usize) -> Response {
     let w = ui.available_width();
     let h = rows as f32 * 15.0 + 8.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
-    ui.painter().rect(rect, 4.0, c_field(), Stroke::new(1.0, t.border), StrokeKind::Inside);
+    ui.painter().rect(rect, 4.0, c_field(), Stroke::new(1.0_f32, t.border), StrokeKind::Inside);
     let inner = rect.shrink2(Vec2::new(5.0, 4.0));
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("c_multi", id)).max_rect(inner));
     // Long text scrolls inside the box, never over what follows it.
@@ -2700,7 +2683,7 @@ fn c_multi(ui: &mut Ui, id: &str, buf: &mut String, rows: usize) -> Response {
 fn c_sep(ui: &mut Ui) {
     ui.add_space(2.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().hline(rect.x_range(), rect.center().y, Stroke::new(1.0, tok().border));
+    ui.painter().hline(rect.x_range(), rect.center().y, Stroke::new(1.0_f32, tok().border));
     ui.add_space(2.0);
 }
 
@@ -2716,10 +2699,10 @@ fn c_chip(ui: &mut Ui, label: &str, on: Option<bool>) -> bool {
     let p = ui.painter();
     let hov = resp.hovered();
     let edge = if hov { t.accent } else { t.btn_bd };
-    p.rect(rect, C_H / 2.0, if hov { blend(c_field(), t.accent, 0.06) } else { c_field() }, Stroke::new(1.0, edge), StrokeKind::Inside);
+    p.rect(rect, C_H / 2.0, if hov { blend(c_field(), t.accent, 0.06) } else { c_field() }, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
     if let Some(v) = on {
         let bx = Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.center().y - 6.5), Vec2::splat(13.0));
-        p.rect(bx, 2.0, if v { t.accent } else { c_field() }, Stroke::new(1.0, if v { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+        p.rect(bx, 2.0, if v { t.accent } else { c_field() }, Stroke::new(1.0_f32, if v { t.accent } else { t.btn_bd }), StrokeKind::Inside);
         if v {
             crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 1.8);
         }
@@ -2742,7 +2725,7 @@ fn c_group(ui: &mut Ui, title: &str, check: Option<&mut bool>, body: impl FnOnce
         let p = ui.painter();
         if let Some(on) = check {
             let bx = Rect::from_min_size(egui::pos2(rect.min.x + 1.0, rect.center().y - 6.5), Vec2::splat(13.0));
-            p.rect(bx, 2.0, if *on { t.accent } else { c_field() }, Stroke::new(1.0, if *on { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+            p.rect(bx, 2.0, if *on { t.accent } else { c_field() }, Stroke::new(1.0_f32, if *on { t.accent } else { t.btn_bd }), StrokeKind::Inside);
             if *on {
                 crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 1.8);
             }
@@ -2767,7 +2750,7 @@ fn c_list(ui: &mut Ui, id: &str, cols: &[(&str, f32)], rows: &[Vec<String>], sel
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
     let p = ui.painter().clone();
-    p.rect(rect, 4.0, c_field(), Stroke::new(1.0, t.border), StrokeKind::Inside);
+    p.rect(rect, 4.0, c_field(), Stroke::new(1.0_f32, t.border), StrokeKind::Inside);
     let head_h = if cols.is_empty() { 0.0 } else { 20.0 };
     let inner = rect.shrink(1.0);
     let xs: Vec<f32> = {
@@ -2782,7 +2765,7 @@ fn c_list(ui: &mut Ui, id: &str, cols: &[(&str, f32)], rows: &[Vec<String>], sel
     if head_h > 0.0 {
         let hr = Rect::from_min_size(inner.min, Vec2::new(inner.width(), head_h));
         p.rect_filled(hr, 0.0, t.bg);
-        p.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0, t.border));
+        p.hline(hr.x_range(), hr.bottom() - 0.5, Stroke::new(1.0_f32, t.border));
         for (i, (name, _)) in cols.iter().enumerate() {
             let name = crate::i18n::t(name);
             let (font, _) = legible(name, reg(C_FONT), t.text);
@@ -2790,7 +2773,7 @@ fn c_list(ui: &mut Ui, id: &str, cols: &[(&str, f32)], rows: &[Vec<String>], sel
             let cp = p.with_clip_rect(Rect::from_min_max(egui::pos2(xs[i], hr.top()), egui::pos2(xs[i + 1] - 4.0, hr.bottom())));
             crate::shaped::paint(&cp, egui::pos2(xs[i] + 6.0, hr.center().y - tsz.y / 2.0), name, &font, t.text, None);
             if i + 1 < cols.len() {
-                p.vline(xs[i + 1], hr.y_range(), Stroke::new(1.0, t.border));
+                p.vline(xs[i + 1], hr.y_range(), Stroke::new(1.0_f32, t.border));
             }
         }
     }
@@ -2812,7 +2795,7 @@ fn c_list(ui: &mut Ui, id: &str, cols: &[(&str, f32)], rows: &[Vec<String>], sel
             if let Some(c) = checks.as_deref_mut() {
                 let bx = Rect::from_min_size(egui::pos2(x0, r.center().y - 6.5), Vec2::splat(13.0));
                 let v = c.get(i).copied().unwrap_or(false);
-                pp.rect(bx, 2.0, if v { t.accent } else { c_field() }, Stroke::new(1.0, if v { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+                pp.rect(bx, 2.0, if v { t.accent } else { c_field() }, Stroke::new(1.0_f32, if v { t.accent } else { t.btn_bd }), StrokeKind::Inside);
                 if v {
                     crate::dm::dm_icon(pp, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 1.8);
                 }
@@ -3017,7 +3000,7 @@ fn button(ui: &mut Ui, label: &str, primary: bool) -> Response {
         // A Windows push button: square, light face, a 1 px frame; the
         // default one (primary) framed in the accent.
         let face = if hov { blend(t.btn, t.accent, 0.10) } else { t.btn };
-        p.rect(rect, 2.0, face, Stroke::new(1.0, if primary { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+        p.rect(rect, 2.0, face, Stroke::new(1.0_f32, if primary { t.accent } else { t.btn_bd }), StrokeKind::Inside);
         let fg = if enabled { t.text } else { t.muted };
         crate::shaped::paint(p, rect.center() - label_size / 2.0, label, &reg(11.0), fg, None);
         return resp;
@@ -3026,7 +3009,7 @@ fn button(ui: &mut Ui, label: &str, primary: bool) -> Response {
         rect,
         5.0,
         bg,
-        Stroke::new(1.0, bd),
+        Stroke::new(1.0_f32, bd),
         StrokeKind::Inside,
     );
     crate::shaped::paint(p, rect.center() - label_size / 2.0, label, &reg(11.0), fg, None);
@@ -3043,7 +3026,7 @@ fn icon_sq(ui: &mut Ui, glyph: &str, size: f32, radius: f32) -> Response {
         rect,
         radius,
         if resp.hovered() { t.btn_hover } else { t.btn },
-        Stroke::new(1.0, t.btn_bd),
+        Stroke::new(1.0_f32, t.btn_bd),
         StrokeKind::Inside,
     );
     p.stext(
@@ -3079,7 +3062,7 @@ fn rule_btn(ui: &mut Ui, glyph: &str, danger: bool) -> Response {
             rect,
             4.0,
             if resp.hovered() { t.btn_hover } else { t.btn },
-            Stroke::new(1.0, t.btn_bd),
+            Stroke::new(1.0_f32, t.btn_bd),
             StrokeKind::Inside,
         );
         p.stext(
@@ -3101,7 +3084,7 @@ fn field(ui: &mut Ui, buf: &mut String, width: Option<f32>, hint: &str) -> Respo
     let text_w = (total - 20.0).max(20.0);
     let out = egui::Frame::new()
         .fill(t.input)
-        .stroke(Stroke::new(1.0, t.border))
+        .stroke(Stroke::new(1.0_f32, t.border))
         .corner_radius(5.0)
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
@@ -3121,7 +3104,7 @@ fn field(ui: &mut Ui, buf: &mut String, width: Option<f32>, hint: &str) -> Respo
         ui.painter().rect_stroke(
             out.response.rect,
             5.0,
-            Stroke::new(1.0, t.accent),
+            Stroke::new(1.0_f32, t.accent),
             StrokeKind::Inside,
         );
     }
@@ -3172,13 +3155,13 @@ fn checkbox(
         br,
         3.0,
         if *on { t.accent } else { t.input },
-        Stroke::new(1.5, border),
+        Stroke::new(1.5_f32, border),
         StrokeKind::Inside,
     );
     if *on {
         let c = br.center();
         let s = box_size / 14.0;
-        let tick = Stroke::new(1.8, Color32::WHITE);
+        let tick = Stroke::new(1.8_f32, Color32::WHITE);
         p.line_segment(
             [c + Vec2::new(-4.5, 0.0) * s, c + Vec2::new(-1.5, 3.0) * s],
             tick,
@@ -3370,7 +3353,7 @@ fn look_tile(ui: &mut Ui, salt: &str, w: f32, h: f32, pal: &crate::app::Palette,
     let p = ui.painter();
     let pad = 4.0;
     let edge = if active { t.accent } else if resp.hovered() { t.muted } else { t.border };
-    p.rect(rect, 8.0, t.input, Stroke::new(1.0, edge), StrokeKind::Inside);
+    p.rect(rect, 8.0, t.input, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
     let prev = Rect::from_min_size(
         egui::pos2(rect.min.x + pad, rect.min.y + pad),
         Vec2::new(w - pad * 2.0, (h - pad * 2.0 - 19.0).max(24.0)),
@@ -3383,7 +3366,7 @@ fn look_tile(ui: &mut Ui, salt: &str, w: f32, h: f32, pal: &crate::app::Palette,
     let side = Rect::from_min_size(egui::pos2(prev.min.x + 3.0, head.max.y + 3.0), Vec2::new(prev.width() * 0.26, prev.height() - 15.0));
     p.rect_filled(side, r * 0.6, pal.surface);
     let list = Rect::from_min_max(egui::pos2(side.max.x + 3.0, side.min.y), egui::pos2(prev.max.x - 3.0, side.max.y));
-    p.rect(list, r * 0.6, pal.central_bg, Stroke::new(1.0, pal.card_bd), StrokeKind::Inside);
+    p.rect(list, r * 0.6, pal.central_bg, Stroke::new(1.0_f32, pal.card_bd), StrokeKind::Inside);
     let row_h = ((list.height() - 6.0) / 4.0).max(3.0);
     for i in 0..4 {
         let rr = Rect::from_min_size(egui::pos2(list.min.x + 3.0, list.min.y + 3.0 + row_h * i as f32), Vec2::new(list.width() - 6.0, row_h - 2.0));
@@ -3397,11 +3380,11 @@ fn look_tile(ui: &mut Ui, salt: &str, w: f32, h: f32, pal: &crate::app::Palette,
     p.rect_filled(Rect::from_min_size(egui::pos2(head.max.x - 18.0, head.min.y + 2.0), Vec2::new(14.0, 5.0)), r * 0.5, pal.acc);
     let bar = Rect::from_min_size(egui::pos2(side.min.x + 3.0, side.min.y + 4.0), Vec2::new(side.width() - 6.0, 2.5));
     p.rect_filled(bar, 1.0, pal.primary);
-    p.rect_stroke(prev, r, Stroke::new(1.0, t.border), StrokeKind::Inside);
+    p.rect_stroke(prev, r, Stroke::new(1.0_f32, t.border), StrokeKind::Inside);
     if active {
         let bc = egui::pos2(prev.max.x - 8.0, prev.max.y - 8.0);
         p.circle_filled(bc, 7.5, t.accent);
-        let s = Stroke::new(1.6, Color32::WHITE);
+        let s = Stroke::new(1.6_f32, Color32::WHITE);
         p.line_segment([bc + Vec2::new(-3.2, -0.2), bc + Vec2::new(-1.0, 2.2)], s);
         p.line_segment([bc + Vec2::new(-1.0, 2.2), bc + Vec2::new(3.4, -2.6)], s);
     }
@@ -3438,7 +3421,7 @@ fn theme_tile(
         8.0,
         t.input,
         Stroke::new(
-            1.0,
+            1.0_f32,
             if active {
                 t.accent
             } else if resp.hovered() {
@@ -3450,7 +3433,7 @@ fn theme_tile(
         StrokeKind::Inside,
     );
     if active {
-        p.rect_stroke(rect, 8.0, Stroke::new(1.0, t.accent), StrokeKind::Inside);
+        p.rect_stroke(rect, 8.0, Stroke::new(1.0_f32, t.accent), StrokeKind::Inside);
     }
     // Preview box (`.tp`): a dark base so a clipped corner never flashes white.
     let prev = Rect::from_min_size(
@@ -3475,11 +3458,11 @@ fn theme_tile(
         }
         TileKind::Light => draw_face(p, inner, true, None),
     }
-    p.rect_stroke(prev, 5.0, Stroke::new(1.0, t.border), StrokeKind::Inside);
+    p.rect_stroke(prev, 5.0, Stroke::new(1.0_f32, t.border), StrokeKind::Inside);
     if active {
         let bc = egui::pos2(prev.max.x - 8.0, prev.min.y + 8.0);
         p.circle_filled(bc, 7.5, t.accent);
-        let s = Stroke::new(1.6, Color32::WHITE);
+        let s = Stroke::new(1.6_f32, Color32::WHITE);
         p.line_segment([bc + Vec2::new(-3.2, -0.2), bc + Vec2::new(-1.0, 2.2)], s);
         p.line_segment([bc + Vec2::new(-1.0, 2.2), bc + Vec2::new(3.4, -2.6)], s);
     }
@@ -3530,7 +3513,7 @@ fn switch_row(ui: &mut Ui, salt: &str, on: &mut bool, label: &str, hint: &str) -
         // A check box: the square before its label, the hint under it.
         let bx = Rect::from_min_size(egui::pos2(rect.min.x, top + (lsz.y - 14.0) / 2.0), Vec2::splat(14.0));
         let click = ui.interact(rect, id.with("cb"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-        p.rect(bx, 2.0, if *on { t.accent } else { t.input }, Stroke::new(1.0, if *on { t.accent } else { t.btn_bd }), StrokeKind::Inside);
+        p.rect(bx, 2.0, if *on { t.accent } else { t.input }, Stroke::new(1.0_f32, if *on { t.accent } else { t.btn_bd }), StrokeKind::Inside);
         if *on {
             crate::dm::dm_icon(p, bx.shrink(2.5), crate::dm::DmIcon::Check, Color32::WHITE, 2.0);
         }
@@ -3609,7 +3592,7 @@ fn card(
         let (tfont, tcol) = legible(title, reg(11.5), t.text);
         let tsz = crate::shaped::measure(scope.painter(), title, &tfont, None);
         let resp = egui::Frame::new()
-            .stroke(Stroke::new(1.0, t.border))
+            .stroke(Stroke::new(1.0_f32, t.border))
             .corner_radius(2.0)
             .inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 10 })
             .outer_margin(egui::Margin { top: 8, bottom: 8, ..Default::default() })
@@ -3628,7 +3611,7 @@ fn card(
     }
     let framed = egui::Frame::new()
         .fill(t.card)
-        .stroke(Stroke::new(1.0, t.border))
+        .stroke(Stroke::new(1.0_f32, t.border))
         .corner_radius(9.0)
         .inner_margin(egui::Margin::ZERO)
         .outer_margin(egui::Margin {
@@ -3668,7 +3651,7 @@ fn card(
                     chip,
                     6.5,
                     t.input,
-                    Stroke::new(1.0, t.border),
+                    Stroke::new(1.0_f32, t.border),
                     StrokeKind::Inside,
                 );
                 p.galley(chip.center() - bg.size() / 2.0, bg, t.muted);
@@ -3688,7 +3671,7 @@ fn card(
                 ui.painter().hline(
                     ui.max_rect().x_range(),
                     top,
-                    Stroke::new(1.0, soft_line(&t)),
+                    Stroke::new(1.0_f32, soft_line(&t)),
                 );
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -3713,7 +3696,7 @@ fn card(
                 scope.ctx().request_repaint();
             }
             Some(t0) if t0.elapsed().as_secs_f32() < 1.8 => {
-                scope.painter().rect_stroke(r, 9.0, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+                scope.painter().rect_stroke(r, 9.0, Stroke::new(2.0_f32, t.accent), StrokeKind::Inside);
                 scope.ctx().request_repaint_after(std::time::Duration::from_millis(60));
             }
             Some(_) => JUMP.with(|j| *j.borrow_mut() = None),
@@ -3764,7 +3747,7 @@ fn field_row(
             chip,
             6.5,
             t.input,
-            Stroke::new(1.0, t.border),
+            Stroke::new(1.0_f32, t.border),
             StrokeKind::Inside,
         );
         p.galley(chip.center() - bg.size() / 2.0, bg, t.muted);
@@ -3804,7 +3787,7 @@ fn input_box(
     let text_w = (w - 18.0).max(16.0);
     let out = egui::Frame::new()
         .fill(t.input)
-        .stroke(Stroke::new(1.0, t.border))
+        .stroke(Stroke::new(1.0_f32, t.border))
         .corner_radius(6.0)
         .inner_margin(egui::Margin::symmetric(9, 5))
         .show(ui, |ui| {
@@ -3830,7 +3813,7 @@ fn input_box(
         ui.painter().rect_stroke(
             out.response.rect,
             6.0,
-            Stroke::new(1.0, t.accent),
+            Stroke::new(1.0_f32, t.accent),
             StrokeKind::Inside,
         );
     }
@@ -3887,7 +3870,7 @@ fn slider_row(ui: &mut Ui, salt: &str, value: &mut f64, min: f64, max: f64) -> b
         p.circle_filled(knob, 9.0, wash(t.accent, 36));
     }
     p.circle_filled(knob, 7.0, t.accent);
-    p.circle_stroke(knob, 7.0, Stroke::new(2.0, t.card));
+    p.circle_stroke(knob, 7.0, Stroke::new(2.0_f32, t.card));
     // An editable box, so a big jump needs no dragging.
     let mut buf = format!("{}", *value as i64);
     let mut box_ui = ui.new_child(
@@ -3930,7 +3913,7 @@ fn segmented(ui: &mut Ui, salt: &str, options: &[&str], current: &mut String) ->
         rect,
         8.0,
         t.input,
-        Stroke::new(1.0, t.border),
+        Stroke::new(1.0_f32, t.border),
         StrokeKind::Inside,
     );
     let mut changed = false;
@@ -3993,7 +3976,7 @@ fn btn_dashed(ui: &mut Ui, glyph: &str, label: &str) -> Response {
         p,
         rect,
         6.0,
-        Stroke::new(1.0, if hov { t.accent } else { t.btn_bd }),
+        Stroke::new(1.0_f32, if hov { t.accent } else { t.btn_bd }),
     );
     let ig = p.layout_no_wrap(glyph.to_owned(), crate::fonts::icon(12.0), fg);
     let tg = p.layout_no_wrap(label.to_owned(), reg(11.0), fg);
@@ -4140,7 +4123,7 @@ fn platform_grid(ui: &mut Ui) {
             let tile = Rect::from_center_size(egui::pos2(cx, y + 15.0), Vec2::splat(30.0));
             if i == PLATFORMS.len() {
                 // Dashed outline + plus: the extractor list does not stop here.
-                dashed_rect(p, tile, 8.0, Stroke::new(1.0, t.btn_bd));
+                dashed_rect(p, tile, 8.0, Stroke::new(1.0_f32, t.btn_bd));
                 p.stext(
                     tile.center(),
                     Align2::CENTER_CENTER,
@@ -4252,7 +4235,7 @@ fn capabilities(ui: &mut Ui, caps: &[&str]) {
             };
             let x = rect.left() + c as f32 * (col_w + gap);
             // The check is a polyline, not a glyph: nothing can go .notdef.
-            let tick = Stroke::new(1.4, green);
+            let tick = Stroke::new(1.4_f32, green);
             let ty = y + 2.0;
             p.line_segment(
                 [egui::pos2(x + 1.0, ty + 4.0), egui::pos2(x + 3.6, ty + 6.6)],
@@ -4305,7 +4288,7 @@ fn code_chip(ui: &mut Ui, s: &str) {
         rect,
         4.0,
         t.input,
-        Stroke::new(1.0, t.border),
+        Stroke::new(1.0_f32, t.border),
         StrokeKind::Inside,
     );
     p.galley(rect.center() - g.size() / 2.0, g, t.text2);
@@ -4341,7 +4324,7 @@ fn btn_icon(ui: &mut Ui, glyph: &str, label: &str, primary: bool) -> Response {
         (t.btn, t.btn_bd)
     };
     let p = ui.painter();
-    p.rect(rect, 6.0, bg, Stroke::new(1.0, bd), StrokeKind::Inside);
+    p.rect(rect, 6.0, bg, Stroke::new(1.0_f32, bd), StrokeKind::Inside);
     let ig = p.layout_no_wrap(glyph.to_owned(), crate::fonts::icon(12.0), fg);
     let tg = p.layout_no_wrap(label.to_owned(), reg(11.0), fg);
     let x = rect.center().x - (iw + gap + tw) / 2.0;
@@ -4372,7 +4355,7 @@ fn btn_mini(ui: &mut Ui, label: &str) -> Response {
         rect,
         5.0,
         if hov { t.btn_hover } else { t.btn },
-        Stroke::new(1.0, t.btn_bd),
+        Stroke::new(1.0_f32, t.btn_bd),
         StrokeKind::Inside,
     );
     let g = p.layout_no_wrap(label.to_owned(), reg(10.0), fg);
@@ -4404,7 +4387,7 @@ fn plugin_head(
         egui::pos2(rect.left() + 13.0, rect.center().y - 17.0),
         Vec2::splat(34.0),
     );
-    p.rect(tile, 9.0, wash(t.text, 10), Stroke::new(1.0, t.border), StrokeKind::Inside);
+    p.rect(tile, 9.0, wash(t.text, 10), Stroke::new(1.0_f32, t.border), StrokeKind::Inside);
     crate::app::line_icon(p, tile.center(), 18.0, icon, if open { t.accent } else { t.text });
     // name, with the version chip right after it
     let name_g = p.layout_no_wrap(name.to_owned(), semi(13.0), t.text);
@@ -4423,7 +4406,7 @@ fn plugin_head(
         chip,
         9.0,
         wash(t.accent, 30),
-        Stroke::new(1.0, t.border),
+        Stroke::new(1.0_f32, t.border),
         StrokeKind::Inside,
     );
     p.galley(chip.center() - ver_g.size() / 2.0, ver_g, t.accent);
@@ -4464,7 +4447,7 @@ fn loc_option(
     let mut action_hit = false;
     let frame = egui::Frame::new()
         .fill(if selected { wash(t.accent, 26) } else { t.bg })
-        .stroke(Stroke::new(1.0, if selected { t.accent } else { t.border }))
+        .stroke(Stroke::new(1.0_f32, if selected { t.accent } else { t.border }))
         .corner_radius(8.0)
         .inner_margin(egui::Margin {
             left: 10,
@@ -4483,7 +4466,7 @@ fn loc_option(
                 p.circle_stroke(
                     c,
                     6.0,
-                    Stroke::new(1.4, if selected { t.accent } else { t.btn_bd }),
+                    Stroke::new(1.4_f32, if selected { t.accent } else { t.btn_bd }),
                 );
                 if selected {
                     p.circle_filled(c, 3.2, t.accent);
@@ -4881,7 +4864,7 @@ impl SettingsApp {
                         rect,
                         14.0,
                         if on { wash(t.accent, 46) } else if resp.hovered() { t.btn_hover } else { t.btn },
-                        Stroke::new(1.0, if on { t.accent } else { t.btn_bd }),
+                        Stroke::new(1.0_f32, if on { t.accent } else { t.btn_bd }),
                         StrokeKind::Inside,
                     );
                     crate::shaped::paint(p, rect.center() - tsz / 2.0, name, &font, if on { t.text } else { t.text2 }, None);
@@ -5579,7 +5562,7 @@ impl SettingsApp {
         };
         egui::Frame::new()
             .fill(t.card)
-            .stroke(Stroke::new(1.0, edge))
+            .stroke(Stroke::new(1.0_f32, edge))
             .corner_radius(12.0)
             .inner_margin(egui::Margin::ZERO)
             .show(ui, |ui| {
@@ -5606,7 +5589,7 @@ impl SettingsApp {
                 ui.painter().hline(
                     inner.left()..=inner.right(),
                     y,
-                    Stroke::new(1.0, blend(t.card, t.border, 0.6)),
+                    Stroke::new(1.0_f32, blend(t.card, t.border, 0.6)),
                 );
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -5893,7 +5876,7 @@ impl SettingsApp {
         };
         egui::Frame::new()
             .fill(t.card)
-            .stroke(Stroke::new(1.0, edge))
+            .stroke(Stroke::new(1.0_f32, edge))
             .corner_radius(12.0)
             .inner_margin(egui::Margin::ZERO)
             .show(ui, |ui| {
@@ -5919,7 +5902,7 @@ impl SettingsApp {
                 ui.painter().hline(
                     inner.left()..=inner.right(),
                     y,
-                    Stroke::new(1.0, blend(t.card, t.border, 0.6)),
+                    Stroke::new(1.0_f32, blend(t.card, t.border, 0.6)),
                 );
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -6285,7 +6268,7 @@ impl SettingsApp {
         let edge = if open { blend(t.border, t.accent, 0.5) } else { t.border };
         egui::Frame::new()
             .fill(t.card)
-            .stroke(Stroke::new(1.0, edge))
+            .stroke(Stroke::new(1.0_f32, edge))
             .corner_radius(12.0)
             .inner_margin(egui::Margin::ZERO)
             .show(ui, |ui| {
@@ -6302,7 +6285,7 @@ impl SettingsApp {
                 ui.painter().hline(
                     inner.left()..=inner.right(),
                     y,
-                    Stroke::new(1.0, blend(t.card, t.border, 0.6)),
+                    Stroke::new(1.0_f32, blend(t.card, t.border, 0.6)),
                 );
                 egui::Frame::new()
                     .inner_margin(egui::Margin { left: 13, right: 13, top: 12, bottom: 16 })

@@ -352,7 +352,7 @@ impl SetupApp {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
         let p = ui.painter().clone();
-        p.rect(full.shrink(0.5), 12.0, t.modal_bg, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+        p.rect(full.shrink(0.5), 12.0, t.modal_bg, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
         let o = full.min;
         let x0 = o.x + 22.0;
         let w = full.width() - 44.0;
@@ -393,7 +393,7 @@ impl SetupApp {
             // under them (they sat over step 3 at 128 px).
             let h = if tall { 146.0 } else { 44.0 };
             let card = egui::Rect::from_min_size(egui::pos2(x0, y), egui::vec2(w, h));
-            p.rect(card, 10.0, t.surface, egui::Stroke::new(1.0, t.card_bd), egui::StrokeKind::Inside);
+            p.rect(card, 10.0, t.surface, egui::Stroke::new(1.0_f32, t.card_bd), egui::StrokeKind::Inside);
             // Status dot / tick.
             let c = egui::pos2(card.min.x + 22.0, card.min.y + 22.0);
             match &state {
@@ -403,14 +403,14 @@ impl SetupApp {
                 }
                 State::Working(_) | State::Checking => {
                     let a = ui.input(|i| i.time) as f32 * 300.0;
-                    dm_arc(&p, c, 8.0, a, a + 260.0, egui::Stroke::new(2.2, t.primary));
+                    dm_arc(&p, c, 8.0, a, a + 260.0, egui::Stroke::new(2.2_f32, t.primary));
                 }
                 State::Failed(_) => {
                     p.circle_filled(c, 11.0, t.warning.gamma_multiply(0.18));
                     p.stext(c, egui::Align2::CENTER_CENTER, "!", semi(13.0), t.warning);
                 }
                 State::Missing(_) => {
-                    p.circle_stroke(c, 9.0, egui::Stroke::new(1.6, DM_YEL));
+                    p.circle_stroke(c, 9.0, egui::Stroke::new(1.6_f32, DM_YEL));
                 }
             }
             let tx = card.min.x + 44.0;
@@ -497,7 +497,7 @@ impl SetupApp {
         let cb = egui::Rect::from_min_size(egui::pos2(x0, fy - 9.0), egui::vec2(18.0, 18.0));
         let lab = "Show at start when something is missing";
         let cbr = ui.interact(cb.union(egui::Rect::from_min_size(egui::pos2(cb.max.x + 6.0, fy - 9.0), egui::vec2(240.0, 18.0))), egui::Id::new("setup-cb"), egui::Sense::click());
-        p.rect(cb, 4.0, if self.show_at_start { t.primary } else { t.bg }, egui::Stroke::new(1.0, if self.show_at_start { t.primary } else { t.card_bd }), egui::StrokeKind::Inside);
+        p.rect(cb, 4.0, if self.show_at_start { t.primary } else { t.bg }, egui::Stroke::new(1.0_f32, if self.show_at_start { t.primary } else { t.card_bd }), egui::StrokeKind::Inside);
         if self.show_at_start {
             dm_icon(&p, cb.shrink(4.0), DmIcon::Check, egui::Color32::WHITE, 2.6);
         }

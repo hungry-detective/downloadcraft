@@ -336,11 +336,11 @@ unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
 unsafe extern "system" fn cbt_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HCBT_CREATEWND as i32 {
         let hwnd = wparam as HWND;
-        if is_menu_window(hwnd) && GetWindowLongPtrW(hwnd, GWLP_WNDPROC) != menu_proc as usize as isize {
+        if is_menu_window(hwnd) && GetWindowLongPtrW(hwnd, GWLP_WNDPROC) != menu_proc as *const () as usize as isize {
             if let Ok(mut last) = RGN_SIZE.lock() {
                 *last = (0, 0);
             }
-            let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, menu_proc as usize as isize);
+            let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, menu_proc as *const () as usize as isize);
             OLD_PROC.store(old, std::sync::atomic::Ordering::SeqCst);
         }
     }

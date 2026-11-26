@@ -300,44 +300,6 @@ fn visuals_light(p: &Palette) -> egui::Visuals {
     v
 }
 
-/// Pure-black preset, kept for configs that already selected it.
-pub fn black_visuals() -> egui::Visuals {
-    let p = &DARK_PAL;
-    let mut v = egui::Visuals::dark();
-    let black = egui::Color32::BLACK;
-    let panel = egui::Color32::from_rgb(0x0C, 0x0C, 0x0E);
-    v.window_fill = panel;
-    v.panel_fill = black;
-    v.faint_bg_color = black;
-    v.extreme_bg_color = panel;
-    v.override_text_color = Some(p.txt);
-    v.weak_text_color = Some(p.dim);
-    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, black);
-    v.selection.bg_fill = p.sel_bg;
-    v.selection.stroke = egui::Stroke::new(1.0_f32, p.sel_bd);
-    v.widgets.inactive.bg_fill = panel;
-    v.widgets.hovered.bg_fill = p.surface;
-    v.widgets.active.bg_fill = p.surface_lt;
-    v.widgets.noninteractive.bg_fill = panel;
-    v
-}
-
-pub fn dark_visuals() -> egui::Visuals {
-    visuals_dark(&DARK_PAL)
-}
-
-pub fn light_visuals() -> egui::Visuals {
-    visuals_light(&LIGHT_PAL)
-}
-
-pub fn visuals_for(theme: &str) -> egui::Visuals {
-    match theme {
-        "black" => black_visuals(),
-        "light" => light_visuals(),
-        _ => dark_visuals(),
-    }
-}
-
 /// Does `theme` ("system" | "dark" | "light" | "black") resolve to a dark
 /// palette right now? "system" follows the OS and falls back to dark when the
 /// platform reports no theme.
@@ -634,45 +596,6 @@ fn dm_slider(p: &egui::Painter, man: &ManState, rect: egui::Rect, frac: f32) {
 }
 
 
-/// Static field keys for the capped dynamic rows (rules ≤8, windows ≤6).
-/// `HitKind::Field` needs `&'static str`, so a fixed pool stands in for
-/// per-row dynamic ids.
-fn rule_ext_key(i: usize) -> &'static str {
-    match i {
-        0 => "rule_ext_0", 1 => "rule_ext_1", 2 => "rule_ext_2", 3 => "rule_ext_3",
-        4 => "rule_ext_4", 5 => "rule_ext_5", 6 => "rule_ext_6",
-        _ => "rule_ext_7",
-    }
-}
-fn rule_dir_key(i: usize) -> &'static str {
-    match i {
-        0 => "rule_dir_0", 1 => "rule_dir_1", 2 => "rule_dir_2", 3 => "rule_dir_3",
-        4 => "rule_dir_4", 5 => "rule_dir_5", 6 => "rule_dir_6",
-        _ => "rule_dir_7",
-    }
-}
-fn win_start_key(i: usize) -> &'static str {
-    match i {
-        0 => "win_s_0", 1 => "win_s_1", 2 => "win_s_2",
-        3 => "win_s_3", 4 => "win_s_4",
-        _ => "win_s_5",
-    }
-}
-fn win_end_key(i: usize) -> &'static str {
-    match i {
-        0 => "win_e_0", 1 => "win_e_1", 2 => "win_e_2",
-        3 => "win_e_3", 4 => "win_e_4",
-        _ => "win_e_5",
-    }
-}
-fn win_lim_key(i: usize) -> &'static str {
-    match i {
-        0 => "win_l_0", 1 => "win_l_1", 2 => "win_l_2",
-        3 => "win_l_3", 4 => "win_l_4",
-        _ => "win_l_5",
-    }
-}
-
 /// Full-width sidebar navigation row, following `main_window.html`:
 /// 6px/8px padding, 6px radius, 13px icon, 11px label left, pill count right.
 /// Selected rows take a raised fill and the accent colour (no bar); hovered
@@ -813,37 +736,6 @@ fn status_dot_at(p: &egui::Painter, rect: egui::Rect, text: &str, color: egui::C
     p.stext(egui::pos2(x0 + 11.0, rect.center().y), egui::Align2::LEFT_CENTER, shown, font, color);
 }
 
-/// Small rounded status badge, painted into an explicit rect (no cursor use).
-/// `right` anchors it to the cell's right edge, matching the concept's
-/// right-aligned Status column.
-fn status_pill_at(p: &egui::Painter, rect: egui::Rect, text: &str, color: egui::Color32, right: bool) {
-    let font = egui::FontId::proportional(10.5);
-    let avail = (rect.width() - 16.0).max(18.0);
-    let shown = truncate_to_width(p, text, font.clone(), color, avail);
-    let galley = p.layout_no_wrap(shown, font, color);
-    let h = (galley.size().y + 6.0).max(16.0);
-    let pw = (galley.size().x + 16.0).min(rect.width().max(20.0)).max(18.0);
-    let cx = if right {
-        rect.max.x - 8.0 - pw / 2.0
-    } else {
-        rect.center().x
-    };
-    let pr = egui::Rect::from_min_size(
-        egui::pos2(cx - pw / 2.0, rect.center().y - h / 2.0),
-        egui::vec2(pw, h),
-    );
-    let bg = egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 36);
-    p.rect_filled(pr, pr.height() / 2.0, bg);
-    p.galley(
-        egui::pos2(
-            pr.center().x - galley.size().x / 2.0,
-            pr.center().y - galley.size().y / 2.0,
-        ),
-        galley,
-        color,
-    );
-}
-
 /// Manual checkbox (paint only; input via manual routing).
 fn paint_check(p: &egui::Painter, rect: egui::Rect, checked: bool, hov: bool) {
     p.rect_filled(
@@ -858,18 +750,18 @@ fn paint_check(p: &egui::Painter, rect: egui::Rect, checked: bool, hov: bool) {
     p.rect_stroke(
         rect,
         3.0,
-        egui::Stroke::new(1.2, if hov || checked { pl().txt } else { pl().dim }),
+        egui::Stroke::new(1.2_f32, if hov || checked { pl().txt } else { pl().dim }),
         egui::StrokeKind::Inside,
     );
     if checked {
         let c = rect.center();
         p.line_segment(
             [c + egui::vec2(-4.5, 0.0), c + egui::vec2(-1.5, 3.0)],
-            egui::Stroke::new(1.8, egui::Color32::WHITE),
+            egui::Stroke::new(1.8_f32, egui::Color32::WHITE),
         );
         p.line_segment(
             [c + egui::vec2(-1.5, 3.0), c + egui::vec2(4.5, -3.5)],
-            egui::Stroke::new(1.8, egui::Color32::WHITE),
+            egui::Stroke::new(1.8_f32, egui::Color32::WHITE),
         );
     }
 }
@@ -1059,7 +951,7 @@ fn mbutton(
         p.rect_stroke(
             rect,
             radius(),
-            egui::Stroke::new(1.0, pl().modal_bd),
+            egui::Stroke::new(1.0_f32, pl().modal_bd),
             egui::StrokeKind::Inside,
         );
     }
@@ -1120,7 +1012,7 @@ fn about_btn(
             } else {
                 mix(pal.modal_bg, pal.surface_lt, 0.45)
             },
-            egui::Stroke::new(1.0, mix(pal.modal_bg, pal.modal_bd, 0.6)),
+            egui::Stroke::new(1.0_f32, mix(pal.modal_bg, pal.modal_bd, 0.6)),
             egui::StrokeKind::Inside,
         );
     }
@@ -1315,7 +1207,7 @@ fn dp_small(ui: &mut egui::Ui, man: &ManState, label: &str, w: f32) -> egui::Rec
     p.rect_stroke(
         rect,
         5.0,
-        egui::Stroke::new(1.0, pl().modal_bd),
+        egui::Stroke::new(1.0_f32, pl().modal_bd),
         egui::StrokeKind::Inside,
     );
     p.stext(
@@ -1340,7 +1232,7 @@ fn dp_button(ui: &mut egui::Ui, man: &ManState, label: &str, primary: bool) -> e
         p.rect_stroke(
             rect,
             6.0,
-            egui::Stroke::new(1.0, pl().modal_bd),
+            egui::Stroke::new(1.0_f32, pl().modal_bd),
             egui::StrokeKind::Inside,
         );
     }
@@ -1380,15 +1272,15 @@ fn dp_input(
                 w.corner_radius = egui::CornerRadius::same(5);
             }
             v.widgets.inactive.bg_stroke = egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 if underline {
                     egui::Color32::TRANSPARENT
                 } else {
                     pl().modal_bd
                 },
             );
-            v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, pl().primary);
-            v.widgets.active.bg_stroke = egui::Stroke::new(1.0, pl().primary);
+            v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, pl().primary);
+            v.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, pl().primary);
             ui.spacing_mut().interact_size.y = if underline { 18.0 } else { 22.0 };
             let mut te = egui::TextEdit::singleline(text)
                 .id(egui::Id::new(id))
@@ -1413,7 +1305,7 @@ fn dp_input(
                 egui::pos2(rect.min.x, rect.max.y + 1.0),
                 egui::pos2(rect.max.x, rect.max.y + 1.0),
             ],
-            egui::Stroke::new(1.0, pl().modal_bd),
+            egui::Stroke::new(1.0_f32, pl().modal_bd),
         );
     }
     rect
@@ -1439,7 +1331,7 @@ fn dp_rule_soft(ui: &mut egui::Ui, color: egui::Color32) {
     );
     ui.painter().line_segment(
         [r.left_center(), r.right_center()],
-        egui::Stroke::new(1.0, color),
+        egui::Stroke::new(1.0_f32, color),
     );
 }
 
@@ -1501,40 +1393,9 @@ fn page_url_of(referer: &str) -> String {
     }
 }
 
-/// Small square icon button (paint only; input via manual routing).
-fn micon(ui: &mut egui::Ui, man: &ManState, glyph: &str) -> egui::Rect {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
-    if man.hover(&rect) {
-        ui.painter().rect_filled(rect, 6.0, pl().surface_lt);
-    }
-    ui.painter().stext(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph.to_string(),
-        crate::fonts::icon(16.0),
-        pl().dim,
-    );
-    rect
-}
-
 /// Focus a text field by its explicit id (manual click routing).
 fn focus_field(ctx: &egui::Context, id: &str) {
     ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
-}
-
-/// Manual mini progress bar (paint only).
-fn paint_progress(p: &egui::Painter, center_x: f32, top_y: f32, width: f32, frac: f32) {
-    let w = width.max(20.0);
-    let bar = egui::Rect::from_min_size(egui::pos2(center_x - w / 2.0, top_y), egui::vec2(w, 6.0));
-    p.rect_filled(bar, 3.0, pl().surface);
-    let fw = (w * frac.clamp(0.0, 1.0)).max(if frac > 0.0 { 5.0 } else { 0.0 });
-    if fw > 0.0 {
-        p.rect_filled(
-            egui::Rect::from_min_size(bar.min, egui::vec2(fw, 6.0)),
-            3.0,
-            pl().primary,
-        );
-    }
 }
 
 /// One-line cell text anchored to the cell's 8px padding edge — left for the
@@ -2326,23 +2187,19 @@ fn add_url_button(ui: &mut egui::Ui, man: &ManState, hot: bool) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(tool_w(ui, &label), TOOL_H), egui::Sense::hover());
     let hov = man.hover(&rect);
     let p = ui.painter();
-    // A link waiting on the clipboard: a soft ring breathes around the
-    // button for the first seconds, then stays as a steady outline.
+    // A link waiting on the clipboard: the button's background glows
+    // gently (one slow breath every 2.4 s) for the first seconds, then
+    // stays softly highlighted.
     if hot {
         let now = ui.input(|i| i.time);
         let since_id = egui::Id::new("add_url_hot_since");
         let since = ui.ctx().data_mut(|d| *d.get_temp_mut_or_insert_with(since_id, || now));
-        let animate = now - since < 6.0;
-        let pulse = if animate { 0.5 + 0.5 * ((now as f32) * 2.6).sin() } else { 0.6 };
+        let animate = now - since < 9.6;
+        let pulse = if animate { breath(now - since) } else { 0.35 };
         if animate {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(70));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
         }
-        p.rect_stroke(
-            rect.expand(2.5),
-            10.0,
-            egui::Stroke::new(2.0_f32, pl().primary.gamma_multiply(0.25 + 0.45 * pulse)),
-            egui::StrokeKind::Outside,
-        );
+        p.rect_filled(rect, 8.0, pl().primary.gamma_multiply(0.08 + 0.22 * pulse));
     } else {
         ui.ctx().data_mut(|d| d.remove::<f64>(egui::Id::new("add_url_hot_since")));
     }
@@ -2374,40 +2231,6 @@ fn add_url_button(ui: &mut egui::Ui, man: &ManState, hot: bool) -> egui::Rect {
             });
     }
     rect
-}
-
-fn status_bar_w(ui: &mut egui::Ui, w: f32, frac: f32, c0: egui::Color32, c1: egui::Color32) {
-    let w = w.max(20.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 5.0), egui::Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, 2.5, pl().surface);
-    p.rect_stroke(
-        rect,
-        2.5,
-        egui::Stroke::new(1.0_f32, pl().bar_bd),
-        egui::StrokeKind::Inside,
-    );
-    if frac > 0.0 {
-        let w = (rect.width() * frac.clamp(0.0, 1.0)).max(5.0);
-        let fill = egui::Rect::from_min_size(rect.min, egui::vec2(w, rect.height()));
-        let strips = 12;
-        for i in 0..strips {
-            let t0 = i as f32 / strips as f32;
-            let t1 = (i + 1) as f32 / strips as f32;
-            let seg = egui::Rect::from_min_max(
-                egui::pos2(fill.min.x + fill.width() * t0, fill.min.y),
-                egui::pos2(fill.min.x + fill.width() * t1, fill.max.y),
-            );
-            let c = egui::Color32::from_rgb(
-                (c0.r() as f32 + (c1.r() as f32 - c0.r() as f32) * t0) as u8,
-                (c0.g() as f32 + (c1.g() as f32 - c0.g() as f32) * t0) as u8,
-                (c0.b() as f32 + (c1.b() as f32 - c0.b() as f32) * t0) as u8,
-            );
-            p.rect_filled(seg, 0.0, c);
-        }
-        p.circle_filled(egui::pos2(fill.min.x + 2.5, fill.center().y), 2.5, c0);
-        p.circle_filled(egui::pos2(fill.max.x - 2.5, fill.center().y), 2.5, c1);
-    }
 }
 
 struct ActiveTask {
@@ -2819,6 +2642,9 @@ pub struct CraftApp {
     /// The Add dialog's quality list (YouTube links) is open.
     add_quality_open: bool,
     add_checksum: String,
+    /// Add download → advanced: only this part of a video ("2:10", "5:40").
+    add_part_from: String,
+    add_part_to: String,
     add_overwrite: bool,
     verify_jobs: Vec<(u64, std::sync::mpsc::Receiver<anyhow::Result<String>>)>,
     // ---- P3: site grabber ----
@@ -3087,6 +2913,8 @@ impl CraftApp {
             add_adv: false,
             add_quality_open: false,
             add_checksum: String::new(),
+            add_part_from: String::new(),
+            add_part_to: String::new(),
             add_overwrite: false,
             verify_jobs: Vec::new(),
             show_grabber: false,
@@ -3295,7 +3123,9 @@ impl CraftApp {
                 }),
             );
         }
-        if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
+        // Compact: a stream lists every piece, and pretty-printed this was
+        // about 100 KB written ten times a second.
+        if let Ok(json) = serde_json::to_string(&serde_json::json!({
             "items": serde_json::Value::Object(items)
         })) {
             Self::atomic_write(&path, json.as_bytes());
@@ -3851,6 +3681,8 @@ impl CraftApp {
                 self.add_url.clear();
                 self.add_file.clear();
                 self.add_checksum.clear();
+                self.add_part_from.clear();
+                self.add_part_to.clear();
                 self.add_quality.clear();
                 self.clear_add_credentials();
                 self.show_add = true;
@@ -4179,7 +4011,7 @@ impl CraftApp {
                 let p = ui.painter().clone();
                 p.line_segment(
                     [egui::pos2(bar.min.x, bar.max.y - 0.5), egui::pos2(bar.max.x, bar.max.y - 0.5)],
-                    egui::Stroke::new(1.0, pl().modal_bd),
+                    egui::Stroke::new(1.0_f32, pl().modal_bd),
                 );
                 let tile = egui::Rect::from_center_size(egui::pos2(bar.min.x + 26.0, bar.center().y), egui::vec2(28.0, 28.0));
                 p.rect_filled(tile, 8.0, mix(pl().modal_bg, pl().primary, 0.18));
@@ -4206,7 +4038,7 @@ impl CraftApp {
                     // The file, with its type icon.
                     let (file_r, _) = ui.allocate_exact_size(egui::vec2(row_w, 40.0), egui::Sense::hover());
                     let p = ui.painter().clone();
-                    p.rect(file_r, 8.0, pl().surface, egui::Stroke::new(1.0, mix(pl().modal_bg, pl().modal_bd, 0.45)), egui::StrokeKind::Inside);
+                    p.rect(file_r, 8.0, pl().surface, egui::Stroke::new(1.0_f32, mix(pl().modal_bg, pl().modal_bd, 0.45)), egui::StrokeKind::Inside);
                     let cat = crate::model::category_of(&name);
                     p.stext(egui::pos2(file_r.min.x + 20.0, file_r.center().y), egui::Align2::CENTER_CENTER, file_icon(cat), crate::fonts::icon(16.0), cat_color(cat));
                     let shown = truncate_to_width(&p, &name, crate::fonts::semi(11.5), pl().txt, row_w - 48.0);
@@ -4707,7 +4539,7 @@ impl CraftApp {
                             // "- YouTube": the page of a video that is not there.
                             let placeholder = title.trim().trim_start_matches('-').trim().eq_ignore_ascii_case("youtube");
                             if !title.trim().is_empty() && !title.starts_with("youtube_") && !placeholder {
-                                let ext = match opts.quality_pref.to_ascii_lowercase().as_str() {
+                                let ext = match crate::engine::split_part(&opts.quality_pref).0.to_ascii_lowercase().as_str() {
                                     "mp3" => "mp3",
                                     "m4a" => "m4a",
                                     _ => "mp4",
@@ -5535,6 +5367,7 @@ impl CraftApp {
             any_ip: false,
             impersonate: false,
             digest: Default::default(),
+            part: None,
         };
         let shared2 = shared.clone();
         // Adaptive pairs (video-only + audio) merge via ffmpeg on completion.
@@ -6515,8 +6348,8 @@ impl CraftApp {
                             let r = tool_button(ui, &self.man, icon, label, *enabled, tip);
                             if let Some(slot) = glow {
                                 let now = ui.input(|i| i.time);
-                                let pulse = 0.5 + 0.5 * ((now as f32) * 2.4).sin();
-                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(70));
+                                let pulse = breath(now);
+                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
                                 ui.painter().set(slot, egui::Shape::rect_filled(r, 10.0, wash(pl().acc, (26.0 + 46.0 * pulse) as u8)));
                             }
                             used += r.width() + 2.0;
@@ -6916,7 +6749,7 @@ impl CraftApp {
         };
         let edge = if d.selected { pl().acc } else if hov { pl().dim.gamma_multiply(0.5) } else { pl().card_bd };
         let fill = if d.selected { mix(pl().central_bg, pl().acc, 0.06) } else { pl().central_bg };
-        p.rect(r, radius() + 2.0, fill, egui::Stroke::new(if d.selected { 2.0 } else { 1.0 }, edge), egui::StrokeKind::Inside);
+        p.rect(r, radius() + 2.0, fill, egui::Stroke::new(if d.selected { 2.0 } else { 1.0_f32 }, edge), egui::StrokeKind::Inside);
         self.hits.push((HitKind::Row(id), r.intersect(view)));
         // File badge: the extension (ZIP, EXE, MKV…) in the category's tint,
         // or the category glyph when the name has none.
@@ -7832,6 +7665,8 @@ impl CraftApp {
         self.add_referer = referer;
         self.add_cookie = cookie;
         self.add_checksum.clear();
+                self.add_part_from.clear();
+                self.add_part_to.clear();
         self.add_quality = quality.filter(|s| !s.trim().is_empty()).unwrap_or_default();
         // Browser-measured size rides along: show it without a server-side
         // re-probe (which can 403 off-session on expiring CDN links).
@@ -8651,6 +8486,45 @@ fn is_youtube_video_link(url: &str) -> bool {
         && !crate::engine::is_youtube_list(url)
 }
 
+/// "2:10" / "1:02:10" / "130" -> seconds.
+fn parse_clock(text: &str) -> Option<f64> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let mut total = 0.0;
+    for part in t.split(':') {
+        let v: f64 = part.trim().parse().ok()?;
+        if !v.is_finite() || v < 0.0 {
+            return None;
+        }
+        total = total * 60.0 + v;
+    }
+    Some(total)
+}
+
+/// Add download → Part from / to: `None` when both are empty, the range
+/// in seconds otherwise (an empty From is the start), or what is wrong.
+fn part_range(from: &str, to: &str) -> Result<Option<(f64, f64)>, String> {
+    if from.trim().is_empty() && to.trim().is_empty() {
+        return Ok(None);
+    }
+    let a = if from.trim().is_empty() { Some(0.0) } else { parse_clock(from) };
+    let Some(a) = a else { return Err("write the part's start like 1:30 or 1:02:30.".into()) };
+    let Some(b) = parse_clock(to) else { return Err("write where the part ends, like 5:40.".into()) };
+    if b <= a + 0.5 {
+        return Err("the part must end after it starts.".into());
+    }
+    Ok(Some((a, b)))
+}
+
+/// A slow, smooth "breath" for attention highlights: 0 → 1 → 0 once every
+/// 2.4 s, easing in and out (a cosine), starting from 0.
+fn breath(elapsed: f64) -> f32 {
+    let phase = (elapsed / 2.4).fract() as f32;
+    0.5 - 0.5 * (phase * std::f32::consts::TAU).cos()
+}
+
 /// The qualities the Add dialog offers for a YouTube link: (preference the
 /// engine reads, label).
 const YT_QUALITIES: [(&str, &str); 9] = [
@@ -9285,7 +9159,7 @@ impl eframe::App for CraftApp {
                     pl().txt,
                 );
                 let mut x = mark.right() + 6.0 + name.size().x + 11.0;
-                p.vline(x, (cy - 9.0)..=(cy + 9.0), egui::Stroke::new(1.0, pl().card_bd));
+                p.vline(x, (cy - 9.0)..=(cy + 9.0), egui::Stroke::new(1.0_f32, pl().card_bd));
                 x += 9.0;
 
                 // ---- menus (`.menu-item`): the same dropdowns, now up here ----
@@ -9416,9 +9290,11 @@ impl eframe::App for CraftApp {
                     // so it is noticed; then it rests.
                     let now = ui.input(|i| i.time);
                     let since = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(egui::Id::new("update_chip_since"), || now));
-                    let blink = if now - since < 6.0 && !hov {
-                        ctx.request_repaint_after(std::time::Duration::from_millis(50));
-                        0.5 + 0.5 * ((now - since) as f32 * 5.0).sin()
+                    // A slow, smooth breath (one every 2.4 s, four of them):
+                    // the quick blink looked nervous.
+                    let blink = if now - since < 9.6 && !hov {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(33));
+                        breath(now - since)
                     } else {
                         0.0
                     };
@@ -9438,8 +9314,8 @@ impl eframe::App for CraftApp {
                         p.rect_stroke(chip, 14.0, egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
                     }
                     if blink > 0.0 {
-                        p.rect_filled(chip, 14.0, accent.gamma_multiply(0.35 * blink));
-                        p.rect_stroke(chip, 14.0, egui::Stroke::new(1.5_f32, accent.gamma_multiply(blink)), egui::StrokeKind::Inside);
+                        p.rect_filled(chip, 14.0, accent.gamma_multiply(0.30 * blink));
+                        p.rect_stroke(chip, 14.0, egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.7 * blink)), egui::StrokeKind::Inside);
                     }
                     // The whole arrow (head included) from the icon font: the
                     // hand-drawn strokes lost their head at this size.
@@ -9517,7 +9393,7 @@ impl eframe::App for CraftApp {
                     14.0,
                     wash(pl().txt, if focused { 16 } else if hov { 16 } else { 10 }),
                     egui::Stroke::new(
-                        1.0,
+                        1.0_f32,
                         if focused { pl().card_bd } else { egui::Color32::TRANSPARENT },
                     ),
                     egui::StrokeKind::Inside,
@@ -11157,7 +11033,7 @@ impl eframe::App for CraftApp {
                         ui.painter().rect_stroke(
                             r,
                             6.0,
-                            egui::Stroke::new(1.0, pl().modal_bd),
+                            egui::Stroke::new(1.0_f32, pl().modal_bd),
                             egui::StrokeKind::Inside,
                         );
                         ui.painter().galley(
@@ -11296,7 +11172,7 @@ impl eframe::App for CraftApp {
                                     egui::pos2(bar.min.x, bar.max.y - 0.5),
                                     egui::pos2(bar.max.x, bar.max.y - 0.5),
                                 ],
-                                egui::Stroke::new(1.0, pl().modal_bd),
+                                egui::Stroke::new(1.0_f32, pl().modal_bd),
                             );
                             p.stext(
                                 egui::pos2(bar.min.x + 22.0, bar.center().y),
@@ -11382,7 +11258,7 @@ impl eframe::App for CraftApp {
                                             strip,
                                             8.0,
                                             pl().surface,
-                                            egui::Stroke::new(1.0, soft),
+                                            egui::Stroke::new(1.0_f32, soft),
                                             egui::StrokeKind::Inside,
                                         );
                                         let fr = [1.5_f32, 0.95, 1.0];
@@ -11396,7 +11272,7 @@ impl eframe::App for CraftApp {
                                                         egui::pos2(cx, strip.min.y + 6.0),
                                                         egui::pos2(cx, strip.max.y - 6.0),
                                                     ],
-                                                    egui::Stroke::new(1.0, soft),
+                                                    egui::Stroke::new(1.0_f32, soft),
                                                 );
                                             }
                                             let tx = cx + 11.0;
@@ -11741,7 +11617,7 @@ impl eframe::App for CraftApp {
                             );
                             ui.painter().line_segment(
                                 [rule.left_center(), rule.right_center()],
-                                egui::Stroke::new(1.0, pl().modal_bd),
+                                egui::Stroke::new(1.0_f32, pl().modal_bd),
                             );
                             egui::Frame::new()
                                 .inner_margin(egui::Margin {
@@ -12017,13 +11893,13 @@ impl eframe::App for CraftApp {
                     pf.rect_stroke(
                         card,
                         14.0,
-                        egui::Stroke::new(1.0, p.modal_bd),
+                        egui::Stroke::new(1.0_f32, p.modal_bd),
                         egui::StrokeKind::Inside,
                     );
                     pf.hline(
                         card.x_range(),
                         card.top() + 0.5,
-                        egui::Stroke::new(1.0, wash(accent, 110)),
+                        egui::Stroke::new(1.0_f32, wash(accent, 110)),
                     );
 
                     // ---- header: centered title + close ----
@@ -12031,7 +11907,7 @@ impl eframe::App for CraftApp {
                     pf.hline(
                         card.x_range(),
                         head.bottom() - 0.5,
-                        egui::Stroke::new(1.0, soft),
+                        egui::Stroke::new(1.0_f32, soft),
                     );
                     let title_g = pf.layout_no_wrap("About".to_owned(), f_title.clone(), p.txt);
                     pf.galley(
@@ -12068,7 +11944,7 @@ impl eframe::App for CraftApp {
                         tile,
                         12.0,
                         wash(accent, 26),
-                        egui::Stroke::new(1.0, wash(accent, 72)),
+                        egui::Stroke::new(1.0_f32, wash(accent, 72)),
                         egui::StrokeKind::Inside,
                     );
                     pf.text(
@@ -12095,7 +11971,7 @@ impl eframe::App for CraftApp {
                         tag,
                         8.5,
                         wash(green, 30),
-                        egui::Stroke::new(1.0, wash(green, 64)),
+                        egui::Stroke::new(1.0_f32, wash(green, 64)),
                         egui::StrokeKind::Inside,
                     );
                     pf.galley(tag.center() - tag_g.size() / 2.0, tag_g, green);
@@ -12106,7 +11982,7 @@ impl eframe::App for CraftApp {
                     );
                     y += brand_h + 16.0;
                     // divider
-                    pf.hline(bx..=card.right() - pad, y, egui::Stroke::new(1.0, soft));
+                    pf.hline(bx..=card.right() - pad, y, egui::Stroke::new(1.0_f32, soft));
                     y += 1.0 + 14.0;
                     // copy
                     for g in [&desc1, &desc2, &desc3] {
@@ -12120,7 +11996,7 @@ impl eframe::App for CraftApp {
                         cb,
                         9.0,
                         mix(p.modal_bg, p.surface_lt, 0.30),
-                        egui::Stroke::new(1.0, soft),
+                        egui::Stroke::new(1.0_f32, soft),
                         egui::StrokeKind::Inside,
                     );
                     pf.text(
@@ -12183,7 +12059,7 @@ impl eframe::App for CraftApp {
                     pf.hline(
                         card.x_range(),
                         foot.top() + 0.5,
-                        egui::Stroke::new(1.0, soft),
+                        egui::Stroke::new(1.0_f32, soft),
                     );
                     let cw = {
                         let g = pf.layout_no_wrap("Close".to_owned(), f_body.clone(), egui::Color32::WHITE);
@@ -12254,7 +12130,7 @@ impl CraftApp {
                     card,
                     8.0,
                     pl().dm_card,
-                    egui::Stroke::new(1.0, pl().dm_line),
+                    egui::Stroke::new(1.0_f32, pl().dm_line),
                     egui::StrokeKind::Inside,
                 );
                 // ---- header: mark + title + window controls ----
@@ -12271,7 +12147,7 @@ impl CraftApp {
                         egui::pos2(o.x + 1.0, o.y + 39.5),
                         egui::pos2(o.x + DM_W - 1.0, o.y + 39.5),
                     ],
-                    egui::Stroke::new(1.0, pl().dm_line),
+                    egui::Stroke::new(1.0_f32, pl().dm_line),
                 );
                 // The dialog lives in the main canvas, so minimise/restore
                 // drive the real OS window and the X closes the dialog.
@@ -12482,7 +12358,7 @@ impl CraftApp {
                 if pbusy {
                     // The size and qualities are being read: a turning ring.
                     let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
-                    dm_arc(&p, egui::pos2(chip.max.x - 18.0, chip.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
+                    dm_arc(&p, egui::pos2(chip.max.x - 18.0, chip.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8_f32, DM_ACC()));
                     ui.ctx().request_repaint();
                 }
                 if known {
@@ -12520,7 +12396,7 @@ impl CraftApp {
                 if pbusy && (self.add_file.trim().is_empty() || self.add_file == self.add_file_auto) {
                     // The real name is on its way (a video's title).
                     let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
-                    dm_arc(&p, egui::pos2(file_box.max.x - 22.0, file_box.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
+                    dm_arc(&p, egui::pos2(file_box.max.x - 22.0, file_box.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8_f32, DM_ACC()));
                     ui.ctx().request_repaint();
                 }
                 dm_icon_btn_box(&p, &self.man, refr_btn, DmIcon::Refresh, 14.0, 1.5, pl().dm_dim);
@@ -12583,9 +12459,17 @@ impl CraftApp {
                     dm_field(ui, "add_pass", r_pwd, r_pwd.max.x - 13.0, &mut self.add_pass, "Password", true);
                     self.hits.push((HitKind::Field("add_pass"), r_pwd));
                     cy += DM_BOX_H + 8.0;
-                    let r_sum = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, DM_BOX_H));
-                    dm_field(ui, "add_sum", r_sum, r_sum.max.x - 13.0, &mut self.add_checksum, "SHA-256 checksum (optional, 64 hex)", false);
+                    // Checksum, then only a part of a video (From / To).
+                    let r_sum = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(half, DM_BOX_H));
+                    dm_field(ui, "add_sum", r_sum, r_sum.max.x - 13.0, &mut self.add_checksum, "SHA-256 (optional)", false);
                     self.hits.push((HitKind::Field("add_sum"), r_sum));
+                    let quarter = (half - 8.0) / 2.0;
+                    let r_pf = egui::Rect::from_min_size(egui::pos2(cx + half + 8.0, cy), egui::vec2(quarter, DM_BOX_H));
+                    let r_pt = egui::Rect::from_min_size(egui::pos2(r_pf.max.x + 8.0, cy), egui::vec2(quarter, DM_BOX_H));
+                    dm_field(ui, "add_pfrom", r_pf, r_pf.max.x - 13.0, &mut self.add_part_from, "Part from", false);
+                    self.hits.push((HitKind::Field("add_pfrom"), r_pf));
+                    dm_field(ui, "add_pto", r_pt, r_pt.max.x - 13.0, &mut self.add_part_to, "to (2:10)", false);
+                    self.hits.push((HitKind::Field("add_pto"), r_pt));
                     cy += DM_BOX_H + 8.0;
                     let ow = egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cw, 22.0));
                     let cbx = egui::Rect::from_min_size(
@@ -12606,7 +12490,7 @@ impl CraftApp {
                             cbx,
                             4.0,
                             pl().dm_card,
-                            egui::Stroke::new(1.0, pl().dm_box_bd),
+                            egui::Stroke::new(1.0_f32, pl().dm_box_bd),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -12703,7 +12587,7 @@ impl CraftApp {
                         .show(ctx, |ui| {
                             egui::Frame::new()
                                 .fill(pl().dm_card)
-                                .stroke(egui::Stroke::new(1.0, pl().dm_line))
+                                .stroke(egui::Stroke::new(1.0_f32, pl().dm_line))
                                 .corner_radius(DM_RAD)
                                 .inner_margin(egui::Margin::same(6))
                                 .show(ui, |ui| {
@@ -12914,6 +12798,19 @@ impl CraftApp {
             self.push_log("Add download: invalid SHA-256 (want 64 hex chars).");
             return;
         }
+        // Only a part of the video: From (empty = the start) to To.
+        let part = match part_range(&self.add_part_from, &self.add_part_to) {
+            Ok(p) => p,
+            Err(why) => {
+                self.show_add = true;
+                self.push_log(format!("Add download: {why}"));
+                return;
+            }
+        };
+        let quality_full = match part {
+            Some((a, b)) => format!("{}@part={a:.3}-{b:.3}", self.add_quality.trim()),
+            None => self.add_quality.trim().to_string(),
+        };
         // Same URL already tracked: a live row (queued/downloading/paused, or
         // finished with its file present) blocks a duplicate, but a DEAD row —
         // failed, or "Completed" with the file gone — is refreshed in place
@@ -12924,7 +12821,7 @@ impl CraftApp {
             // Same download = same URL at the same quality (one page at
             // 1080p and 720p is two files), as everywhere else.
             .position(|d| {
-                d.url == self.add_url.trim() && crate::model::same_quality(&d.quality_pref, &self.add_quality)
+                d.url == self.add_url.trim() && crate::model::same_quality(&d.quality_pref, &quality_full)
             });
         // Options -> Downloads: "If a duplicate download link is added".
         let mut dup_numbered = false;
@@ -13008,7 +12905,16 @@ impl CraftApp {
         item.password = self.add_pass.clone();
         item.checksum_sha256 = csum;
         item.overwrite_existing = self.add_overwrite;
-        item.quality_pref = self.add_quality.trim().to_string();
+        item.quality_pref = quality_full.clone();
+        // A part is its own file: "<name> [part 2-10 to 5-40].mp4".
+        if let Some((a, b)) = part {
+            let path = std::path::Path::new(&item.filename);
+            let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "video".into());
+            let ext = path.extension().map(|e| e.to_string_lossy().to_string()).filter(|e| !e.is_empty()).unwrap_or_else(|| "mp4".into());
+            let tag = |x: f64| crate::engine::fmt_clock(x).replace(':', "-");
+            item.filename = format!("{stem} [part {} to {}].{ext}", tag(a), tag(b));
+            item.duration_secs = (b - a).max(1.0).round() as u64;
+        }
         if dup_numbered {
             // A numbered copy: a name no file and no other row uses yet.
             let dir = std::path::PathBuf::from(&item.save_dir);
@@ -13080,6 +12986,8 @@ impl CraftApp {
         self.add_file.clear();
         self.add_file_auto.clear();
         self.add_checksum.clear();
+                self.add_part_from.clear();
+                self.add_part_to.clear();
         self.add_quality.clear();
         self.clear_add_credentials();
         if finished_early {
@@ -13899,6 +13807,8 @@ impl CraftApp {
                                 self.add_url.clear();
                                 self.add_file.clear();
                                 self.add_checksum.clear();
+                self.add_part_from.clear();
+                self.add_part_to.clear();
                                 self.add_quality.clear();
                                 self.clear_add_credentials();
                                 // A link picked up from the clipboard is
@@ -14374,5 +14284,19 @@ mod web_release_tests {
         assert_eq!(picked.url, "https://github.com/o/r/releases/download/v1.2.3/App-1.2.3-windows-x64-portable.zip");
         assert_eq!(picked.sha256.as_deref(), Some("f6d0809d84a8650d7ec87a3bd3014e4b2420c4d36daa6e748b16cfa104071f48"));
         assert!(a[1].get("digest").is_none());
+    }
+}
+
+#[cfg(test)]
+mod part_range_tests {
+    use super::*;
+    #[test]
+    fn part_fields() {
+        assert_eq!(part_range("", ""), Ok(None));
+        assert_eq!(part_range("2:10", "5:40"), Ok(Some((130.0, 340.0))));
+        assert_eq!(part_range("", "1:00:00"), Ok(Some((0.0, 3600.0))));
+        assert!(part_range("5:40", "2:10").is_err());
+        assert!(part_range("abc", "2:10").is_err());
+        assert!(part_range("1:00", "").is_err());
     }
 }

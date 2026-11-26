@@ -133,5 +133,35 @@
   },
   "popSmallButtonHint": {
     "message": "Show only the download icon on video players, without the text."
+  },
+  "menuRecordVideo": {
+    "message": "Record this video with Download Craft"
+  },
+  "chipRecord": {
+    "message": "Record"
+  },
+  "chipRecordTip": {
+    "message": "Record this video as it plays: only the player's picture and sound (no mouse, no buttons), saved as MP4"
+  },
+  "chipPart": {
+    "message": "Part"
+  },
+  "chipPartTip": {
+    "message": "Download only a part of this video (From–To), cut exactly"
+  },
+  "partTitle": {
+    "message": "Download a part"
+  },
+  "partNote": {
+    "message": "Only this part is downloaded, cut exactly. The video does not need to play."
+  },
+  "partGo": {
+    "message": "Download part"
+  },
+  "popDesign": {
+    "message": "Design"
+  },
+  "popDesignHint": {
+    "message": "How the video list looks. It changes at once; Now playing is the default."
   }
 }

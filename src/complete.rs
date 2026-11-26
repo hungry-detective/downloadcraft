@@ -119,7 +119,7 @@ impl CompleteApp {
         p.rect_stroke(
             at(o, 0.0, 0.0, CW, CH),
             RAD,
-            egui::Stroke::new(1.0, pl().cg_bd),
+            egui::Stroke::new(1.0_f32, pl().cg_bd),
             egui::StrokeKind::Inside,
         );
         self.title_bar(&ctx, ui, &p, o);
@@ -223,7 +223,7 @@ impl CompleteApp {
             p.rect_stroke(
                 cbr,
                 3.0,
-                egui::Stroke::new(1.0, pl().cg_btn_bd),
+                egui::Stroke::new(1.0_f32, pl().cg_btn_bd),
                 egui::StrokeKind::Inside,
             );
         }
@@ -251,7 +251,7 @@ impl CompleteApp {
         o: egui::Pos2,
     ) {
         let c = egui::pos2(o.x + MARK_X + MARK_S / 2.0, o.y + HDR_CY);
-        p.circle_stroke(c, 5.5, egui::Stroke::new(1.3, DM_ACC()));
+        p.circle_stroke(c, 5.5, egui::Stroke::new(1.3_f32, DM_ACC()));
         dm_icon(
             p,
             egui::Rect::from_center_size(c, egui::Vec2::splat(8.0)),
@@ -327,7 +327,7 @@ fn field(p: &egui::Painter, o: egui::Pos2, y: f32, label: &str, value: &str) {
     p.rect_stroke(
         r,
         3.0,
-        egui::Stroke::new(1.0, pl().cg_box_bd),
+        egui::Stroke::new(1.0_f32, pl().cg_box_bd),
         egui::StrokeKind::Inside,
     );
     let txt = elide_mid(p, value, reg(10.0), r.width() - 2.0 * BOX_PAD);
@@ -349,7 +349,7 @@ fn dlg_btn(p: &egui::Painter, r: egui::Rect, hov: bool, label: &str) {
     p.rect_stroke(
         r,
         3.0,
-        egui::Stroke::new(1.0, if hov { pl().cg_ctl } else { pl().cg_btn_bd }),
+        egui::Stroke::new(1.0_f32, if hov { pl().cg_ctl } else { pl().cg_btn_bd }),
         egui::StrokeKind::Inside,
     );
     p.stext(

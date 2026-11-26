@@ -366,6 +366,52 @@ fn app_downloads() -> Vec<serde_json::Value> {
 
 /// A file the extension saved itself ("Download in browser"): list it in the
 /// app as finished. `filename` is the saved file's full path; it must exist.
+/// A video the extension recorded ("<title> [recording].mp4" or .webm),
+/// saved by the browser: the browser's recorder leaves out the length and
+/// the seeking index, so players show no duration and seek badly. FFmpeg
+/// copies the same picture and sound into a tidy file (no re-encoding) that
+/// replaces it. Only such recordings are touched; anything else is refused.
+fn remux_recording(path: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if !recording_name_ok(&name, &ext) {
+        return Err("not a recording".into());
+    }
+    if !p.is_file() {
+        return Err("the recording is not there".into());
+    }
+    let ff = crate::engine::ffmpeg_path().ok_or("FFmpeg is not installed")?;
+    let tmp = p.with_extension(format!("tidy.{ext}"));
+    let mut cmd = std::process::Command::new(ff);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"])
+        .arg(p)
+        .args(["-map", "0", "-c", "copy"]);
+    if ext == "mp4" {
+        cmd.args(["-movflags", "+faststart"]);
+    }
+    let out = cmd.arg(&tmp).stdin(std::process::Stdio::null()).output().map_err(|e| format!("FFmpeg would not start: {e}"))?;
+    let made = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+    if !out.status.success() || made == 0 {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("FFmpeg could not read it").to_string());
+    }
+    std::fs::rename(&tmp, p).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not replace the recording: {e}")
+    })
+}
+
+/// "<title> [recording].mp4", "<title> [recording] (2).webm".
+fn recording_name_ok(name: &str, ext: &str) -> bool {
+    (ext == "mp4" || ext == "webm") && name.contains("[recording]")
+}
+
 fn record_browser_download(msg: &Incoming) -> Result<(), String> {
     let url = msg.url.clone().filter(|u| u.starts_with("http")).unwrap_or_default();
     let path = std::path::PathBuf::from(msg.filename.clone().unwrap_or_default());
@@ -1129,6 +1175,10 @@ pub fn run() -> eframe::Result<()> {
                 theme: None,
                 items: Some(app_downloads()),
             }),
+            "remux" => match remux_recording(msg.filename.as_deref().unwrap_or("")) {
+                Ok(()) => write_message(&Reply::ok()),
+                Err(e) => write_message(&Reply::err(e)),
+            },
             "record" => match record_browser_download(&msg) {
                 Ok(()) => write_message(&Reply::ok()),
                 Err(e) => write_message(&Reply::err(e)),
@@ -1164,6 +1214,14 @@ static PUSHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 #[cfg(test)]
 mod media_tests {
     use super::*;
+    #[test]
+    fn only_recordings_are_tidied() {
+        assert!(recording_name_ok("talk [recording].mp4", "mp4"));
+        assert!(recording_name_ok("talk [recording] (2).webm", "webm"));
+        assert!(!recording_name_ok("talk.mp4", "mp4"));
+        assert!(!recording_name_ok("talk [recording].exe", "exe"));
+        assert!(remux_recording("C:/Windows/notepad.exe").is_err());
+    }
     #[test]
     fn an_embedded_players_referer_beats_the_outer_page() {
         let s = |v: &str| Some(v.to_string());

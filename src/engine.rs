@@ -186,6 +186,39 @@ pub(crate) fn io_message(e: &std::io::Error) -> String {
     format!("file error: {e}")
 }
 
+/// Split "720p@part=130-340.5" into ("720p", Some((130.0, 340.5))). A
+/// quality without a valid part comes back whole with `None`. The part
+/// rides on the quality so it travels with the download everywhere the
+/// quality does (the queue, the browser bridge, the Download File Info
+/// window).
+pub fn split_part(pref: &str) -> (String, Option<(f64, f64)>) {
+    let Some((q, part)) = pref.split_once("@part=") else {
+        return (pref.to_string(), None);
+    };
+    let range = part.split_once('-').and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)));
+    match range {
+        Some((a, b)) if a.is_finite() && b.is_finite() && a >= 0.0 && b > a + 0.5 => (q.to_string(), Some((a, b))),
+        _ => (q.to_string(), None),
+    }
+}
+
+/// The quality as people read it: "720p · part 2:10–5:40".
+pub fn quality_label(pref: &str) -> String {
+    let (q, part) = split_part(pref);
+    match part {
+        Some((a, b)) if q.trim().is_empty() => format!("part {}–{}", fmt_clock(a), fmt_clock(b)),
+        Some((a, b)) => format!("{} · part {}–{}", q.trim(), fmt_clock(a), fmt_clock(b)),
+        None => q,
+    }
+}
+
+/// Seconds as "2:10" / "1:02:10".
+pub fn fmt_clock(secs: f64) -> String {
+    let s = secs.max(0.0).round() as u64;
+    let (h, m, x) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 { format!("{h}:{m:02}:{x:02}") } else { format!("{m}:{x:02}") }
+}
+
 /// Per-download + global options for the engine.
 #[derive(Debug, Clone)]
 pub struct EngineOpts {
@@ -213,6 +246,10 @@ pub struct EngineOpts {
     /// ...). Empty = best available. Honored at resolve time by picking the
     /// highest stream at or below it.
     pub quality_pref: String,
+    /// Only this part of the video, in seconds (from, to): yt-dlp fetches
+    /// just that section and cuts it exactly. Set from a "@part=" suffix on
+    /// the quality (see [`split_part`]).
+    pub part: Option<(f64, f64)>,
     /// Live scheduler override (speed windows): when present, the rate
     /// limiter honors it over `speed_limit_bps` without restarts.
     pub global_limit: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
@@ -424,6 +461,7 @@ impl Default for EngineOpts {
             require_audio: false,
             overwrite_existing: false,
             quality_pref: String::new(),
+            part: None,
             global_limit: None,
             per_host_conns: 0,
             captured_headers: CapturedHeaders::default(),
@@ -1271,7 +1309,7 @@ fn is_final_http_error(e: &anyhow::Error) -> bool {
 /// Saturating counter decrement (plain `fetch_sub` wraps to u64::MAX on
 /// underflow — which once painted a stuck-full progress bar).
 fn sub_saturating(a: &std::sync::atomic::AtomicU64, n: u64) {
-    a.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(v.saturating_sub(n)))
+    a.try_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(v.saturating_sub(n)))
         .ok();
 }
 
@@ -4774,6 +4812,27 @@ pub async fn download(
         let client = opts.build_client()?;
         return crate::gallery::download(&url, &dest, client, shared, &log).await;
     }
+    // Only a part of the video (from-to): yt-dlp fetches just that section
+    // (FFmpeg reads it from the server) and cuts it exactly. Works for
+    // YouTube and other pages as well as direct video and stream links.
+    let (quality, part) = split_part(&opts.quality_pref);
+    if let Some((from, to)) = part {
+        opts.quality_pref = quality;
+        opts.part = Some((from, to));
+        // The finished file is checked against the part's length, not the
+        // whole video's (that read as "incomplete").
+        let len = (to - from).max(1.0).round() as u64;
+        opts.expected_duration_secs = len;
+        shared.expected_duration.store(len, Ordering::SeqCst);
+        job_log(&log, format!("start: {url} (only {} to {}, through yt-dlp)", fmt_clock(from), fmt_clock(to)));
+        let client = opts.build_client()?;
+        if ffmpeg_path().is_none() {
+            shared.set_phase("Fetching ffmpeg");
+            ensure_ffmpeg(&client).await.map_err(|e| anyhow!("downloading a part needs FFmpeg, and {e:#}"))?;
+        }
+        let exe = ensure_ytdlp(&client).await?;
+        return download_with_ytdlp(&exe, &url, &dest, connections, &opts, &shared).await;
+    }
     // A file host's link through the user's debrid account (src/debrid.rs).
     let url = if crate::debrid::applies(&url) {
         let client = opts.build_client()?;
@@ -5754,7 +5813,7 @@ async fn download_inner(
     // throttle or botch parallel Range requests (FB/IG CDN class).
     let mut retried_fresh = false;
     let mut fell_back_single = fragile_cdn;
-    let mut last_segmented = false;
+    let mut last_segmented;
     loop {
         // googlevideo's strict ~2 MiB window is a per-request limit inside
         // the segmented engine (`max_request`), not a smaller split.
@@ -5906,7 +5965,7 @@ async fn download_inner(
 
 /// Include common Unix tool locations when launched from a Dock or desktop.
 fn tool_dirs() -> Vec<std::path::PathBuf> {
-    let mut paths: Vec<_> = std::env::var_os("PATH").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
+    let paths: Vec<_> = std::env::var_os("PATH").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
     #[cfg(unix)]
     {
         for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
@@ -7945,6 +8004,15 @@ async fn ytdlp_direct(
     download_adaptive_as(video, audio, dest.clone(), connections, o, shared.clone(), true).await
 }
 
+/// yt-dlp's `--print` line (`dcinfo@{...}`) as JSON. A field yt-dlp has
+/// no value for prints as a bare `NA`, which is not JSON: the whole line
+/// failed to parse (every video without a stream manifest), so its length,
+/// sound and live facts were never used. `NA` becomes `null`.
+fn ytdlp_info_json(text: &str) -> Option<serde_json::Value> {
+    let fixed = text.replace(":NA,", ":null,").replace(":NA}", ":null}");
+    serde_json::from_str(&fixed).ok()
+}
+
 async fn download_with_ytdlp(
     exe: &std::path::Path,
     url: &str,
@@ -7955,6 +8023,9 @@ async fn download_with_ytdlp(
 ) -> Result<()> {
     shared.external_helper.store(true, Ordering::SeqCst);
     shared.ytdlp_tried.store(true, Ordering::SeqCst);
+    // Copied out: the progress reader runs on its own task.
+    let is_part = opts.part.is_some();
+    let trust_length = youtube_id(url).is_some();
     wait_if_paused(shared).await?;
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -8018,7 +8089,7 @@ async fn download_with_ytdlp(
     // yt-dlp fetches a plain video file over one connection. When it only
     // has to find the file (not convert it, not gather a stream's pieces),
     // the app downloads what it found over every connection, with resume.
-    if !wants_audio_only(&opts.quality_pref) && !is_playlist_url(url) && !opts.overwrite_existing {
+    if !wants_audio_only(&opts.quality_pref) && !is_playlist_url(url) && !opts.overwrite_existing && opts.part.is_none() {
         match ytdlp_direct(exe, url, dest, &format, connections, opts, shared, jar.as_ref().map(|j| j.0.as_path()), source_ip).await {
             Ok(()) => return Ok(()),
             Err(e) if e.to_string() == "cancelled" => return Err(e),
@@ -8075,6 +8146,14 @@ async fn download_with_ytdlp(
     }
     if let Some(ff) = &merge_ffmpeg {
         cmd.arg("--ffmpeg-location").arg(ff);
+        // Only the chosen part. Nothing is re-encoded: FFmpeg copies the
+        // section and marks where playback starts, so it plays from the
+        // exact second asked. ("--force-keyframes-at-cuts" re-encoded the
+        // whole part: four minutes for a minute and a half of 1080p,
+        // against fifteen seconds this way, with the same frames.)
+        if let Some((from, to)) = opts.part {
+            cmd.arg("--download-sections").arg(format!("*{from:.3}-{to:.3}"));
+        }
         // Audio only: an MP3 (best VBR); without ffmpeg, or when M4A was
         // asked for, the m4a as served.
         if wants_audio_only(&opts.quality_pref) && !wants_m4a(&opts.quality_pref) {
@@ -8165,15 +8244,29 @@ async fn download_with_ytdlp(
         // size ends up being all legs together.
         let mut folded = MergedProgress::default();
         let mut final_path=None;
+        // A part's fetch has begun: yt-dlp's later "[info]" lines must not
+        // put the status back to "Getting info".
+        let mut part_started = false;
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some(json)=line.strip_prefix("dcfile@") {
                 final_path=serde_json::from_str::<String>(json).ok().map(PathBuf::from);
                 continue;
             }
             if let Some(json) = line.strip_prefix("dcinfo@") {
-                if let Ok(info) = serde_json::from_str::<serde_json::Value>(json) {
-                    if let Some(d) = info.get("duration").and_then(|v| v.as_f64()).filter(|d| d.is_finite() && *d > 0.0 && *d < 86400.0) {
-                        let _ = progress.expected_duration.compare_exchange(0, d.round().max(1.0) as u64, Ordering::SeqCst, Ordering::SeqCst);
+                // The video is read: for a part, FFmpeg now fetches the
+                // section (it prints no progress of its own).
+                if is_part {
+                    part_started = true;
+                    progress.set_phase("Downloading the part");
+                }
+                if let Some(info) = ytdlp_info_json(json) {
+                    // The length is checked against the finished file only
+                    // where it is exact (YouTube): other sites round it, or
+                    // report the page's video rather than the one saved.
+                    if trust_length {
+                        if let Some(d) = info.get("duration").and_then(|v| v.as_f64()).filter(|d| d.is_finite() && *d > 0.0 && *d < 86400.0) {
+                            let _ = progress.expected_duration.compare_exchange(0, d.round().max(1.0) as u64, Ordering::SeqCst, Ordering::SeqCst);
+                        }
                     }
                     if info.get("acodec").and_then(|v| v.as_str()).map(|a| !matches!(a, "none" | "NA" | "unknown" | "")).unwrap_or(false) {
                         progress.expects_audio.store(true, Ordering::SeqCst);
@@ -8191,7 +8284,13 @@ async fn download_with_ytdlp(
                 // Not a progress line: it may still name the stage the run is
                 // in ("[download] Destination:", "[Merger] …").
                 if let Some(ph) = phase_for_line(&line) {
-                    progress.set_phase(ph);
+                    // A part is fetched by FFmpeg, which prints no progress:
+                    // say what is happening instead of "Getting info".
+                    if is_part && (ph == "Downloading" || part_started) {
+                        progress.set_phase("Downloading the part");
+                    } else {
+                        progress.set_phase(ph);
+                    }
                 }
                 continue;
             };
@@ -10021,7 +10120,8 @@ async fn chunked_stream(
                             *slot = 0;
                         }
                     }
-                    if let (t, _, _, _) = probe(client, opts, url).await {
+                    let (t, _, _, _) = probe(client, opts, url).await;
+                    {
                         if let Some(t) = t {
                             total = t;
                             shared.total.store(t, Ordering::SeqCst);
@@ -13191,5 +13291,41 @@ mod ffmpeg_facts_tests {
         assert!(completed_facts_check(Some(600.0), false, 600, true).is_err());
         assert!(completed_facts_check(None, true, 600, false).is_err());
         assert!(completed_facts_check(None, true, 0, false).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod part_tests {
+    use super::*;
+
+    #[test]
+    fn a_part_rides_on_the_quality() {
+        assert_eq!(split_part("720p@part=130-340.5"), ("720p".to_string(), Some((130.0, 340.5))));
+        assert_eq!(split_part("@part=5-10"), (String::new(), Some((5.0, 10.0))));
+        assert_eq!(split_part("1080p"), ("1080p".to_string(), None));
+        // Broken or backwards: no part.
+        assert_eq!(split_part("720p@part=50-20"), ("720p".to_string(), None));
+        assert_eq!(split_part("720p@part=x-20"), ("720p".to_string(), None));
+        assert_eq!(quality_label("720p@part=130-340"), "720p · part 2:10–5:40");
+        assert_eq!(quality_label("@part=3600-3725"), "part 1:00:00–1:02:05");
+        assert_eq!(quality_label("mp3"), "mp3");
+    }
+}
+
+#[cfg(test)]
+mod ytdlp_info_tests {
+    use super::*;
+    #[test]
+    fn na_fields_do_not_spoil_the_line() {
+        let v = ytdlp_info_json(r#"{"duration":213,"acodec":"mp4a.40.2","live":false,"manifest":NA}"#).unwrap();
+        assert_eq!(v["duration"], 213);
+        assert_eq!(v["acodec"], "mp4a.40.2");
+        assert!(v["manifest"].is_null());
+        let w = ytdlp_info_json(r#"{"duration":NA,"acodec":NA,"live":NA,"manifest":"https://x/m.m3u8"}"#).unwrap();
+        assert!(w["duration"].is_null());
+        assert_eq!(w["manifest"], "https://x/m.m3u8");
+        // A real "NA" inside a string stays.
+        let t = ytdlp_info_json(r#"{"acodec":"NA","manifest":NA}"#).unwrap();
+        assert_eq!(t["acodec"], "NA");
     }
 }

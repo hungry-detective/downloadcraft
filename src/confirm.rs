@@ -415,7 +415,7 @@ fn plus_square(ui: &mut egui::Ui, rect: egui::Rect, salt: u64) -> egui::Response
         egui::StrokeKind::Inside,
     );
     let c = rect.center();
-    let st = egui::Stroke::new(2.0, egui::Color32::WHITE);
+    let st = egui::Stroke::new(2.0_f32, egui::Color32::WHITE);
     p.line_segment([egui::pos2(c.x - 6.0, c.y), egui::pos2(c.x + 6.0, c.y)], st);
     p.line_segment([egui::pos2(c.x, c.y - 6.0), egui::pos2(c.x, c.y + 6.0)], st);
     r
@@ -631,7 +631,7 @@ impl ConfirmApp {
             v.push("video-only + audio — merged on completion (needs ffmpeg)".to_string());
         }
         if !self.quality_pref.trim().is_empty() {
-            v.push(format!("Quality: {}", self.quality_pref.trim()));
+            v.push(format!("Quality: {}", crate::engine::quality_label(self.quality_pref.trim())));
         }
         v
     }
@@ -1530,7 +1530,7 @@ impl eframe::App for ConfirmApp {
                 card,
                 8.0,
                 pl().dm_card,
-                egui::Stroke::new(1.0, pl().dm_line),
+                egui::Stroke::new(1.0_f32, pl().dm_line),
                 egui::StrokeKind::Inside,
             );
             // ---- header: mark + title + window controls (drag to move) ----
@@ -1547,7 +1547,7 @@ impl eframe::App for ConfirmApp {
                     egui::pos2(o.x + 1.0, o.y + 39.5),
                     egui::pos2(o.x + DM_W - 1.0, o.y + 39.5),
                 ],
-                egui::Stroke::new(1.0, pl().dm_line),
+                egui::Stroke::new(1.0_f32, pl().dm_line),
             );
             if ui
                 .interact(
@@ -1714,7 +1714,7 @@ impl eframe::App for ConfirmApp {
             if self.probing {
                 // The size and length are being read: a turning ring.
                 let a = (ui.input(|i| i.time) as f32 * 300.0) % 360.0;
-                dm_arc(&p, egui::pos2(chip.max.x - 18.0, chip.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8, DM_ACC()));
+                dm_arc(&p, egui::pos2(chip.max.x - 18.0, chip.center().y), 6.0, a, a + 270.0, egui::Stroke::new(1.8_f32, DM_ACC()));
                 ui.ctx().request_repaint();
             }
             if known {

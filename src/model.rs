@@ -1187,6 +1187,17 @@ impl WindowSpot {
         true
     }
 
+    /// Move the just-placed window by `by` (a second window opening beside
+    /// the first); like `center`, not a move to remember.
+    pub fn nudge(&mut self, ctx: &egui::Context, by: egui::Vec2) {
+        if let Some(p) = self.seen {
+            let q = p + by;
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(q));
+            self.seen = Some(q);
+            self.moved_at = None;
+        }
+    }
+
     /// Put the window in the middle of the work area; this move is the
     /// window's own, not one to remember.
     pub fn center(&mut self, ctx: &egui::Context, size: egui::Vec2) -> bool {
